@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "voyager-api-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "CONTROL_DB",
+      "database_name": "voyager-dev-control",
+      "database_id": "f7daaf1f-6584-4bb6-89cd-79ab78d38f97"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ATTACHMENTS_BUCKET",
+      "bucket_name": "voyager-dev-attachments"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
