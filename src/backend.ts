@@ -737,8 +737,10 @@ async function createGroupRoom(env: Env, auth: AuthContext, body: Record<string,
     throw new HttpError(409, "group_quota_reached", "Maximum owned group count reached");
   }
   const memberPrincipalIds = stringArrayField(body, "memberPrincipalIds", { maxItems: policy.maximum_group_memberships - 1 });
-  const uniquePrincipalIds = uniqueStrings([auth.principal.principal_id, ...memberPrincipalIds]);
-  const principals = await getActivePrincipals(env, uniquePrincipalIds);
+  if (memberPrincipalIds.length > 0) {
+    throw new HttpError(400, "initial_group_members_not_supported", "Create the group first, then invite humans or add agents");
+  }
+  const principals = await getActivePrincipals(env, [auth.principal.principal_id]);
   const room = await createRoom(env, auth, {
     type: "group",
     name: stringField(body, "name", { required: true, min: 1, max: 120 }),

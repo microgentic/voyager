@@ -31,6 +31,9 @@ jobs:
       - name: Type check
         run: npm run check
 
+      - name: Backend smoke
+        run: npm run smoke:backend:local
+
       - name: Apply D1 migrations
         if: github.event_name != 'pull_request'
         run: npm run db:migrate:remote
