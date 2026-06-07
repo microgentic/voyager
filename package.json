@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply voyager-dev-control --local",
+    "db:migrate:remote": "wrangler d1 migrations apply voyager-dev-control --remote",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "wrangler": "wrangler"
