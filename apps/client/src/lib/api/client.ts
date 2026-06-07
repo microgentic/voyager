@@ -1,0 +1,536 @@
+import { getApiBase } from '$lib/config';
+import { ApiError } from './errors';
+import type {
+	Account,
+	AgentRequest,
+	Attachment,
+	AuthResult,
+	BootstrapStatus,
+	DeliveryReceipt,
+	Device,
+	DeviceInput,
+	KeyPackage,
+	MeResult,
+	Membership,
+	MessageEnvelope,
+	OwnershipTransfer,
+	Paginated,
+	Principal,
+	Room,
+	RoomInvitation,
+	RoomInvitationRole,
+	RoomInvitationStatus,
+	SendMessageInput,
+	Session,
+	SidebarCollection,
+	SyncResult
+} from './types';
+
+type Json = Record<string, unknown>;
+
+interface RequestOptions {
+	json?: Json;
+	auth?: boolean;
+	query?: Record<string, string | number | undefined>;
+	signal?: AbortSignal;
+}
+
+/**
+ * Thin, typed wrapper over the Voyager Worker HTTP API. One instance is shared
+ * app-wide (see $lib/api). The session token is injected by the auth store via
+ * `setToken`; a 401 fires `onUnauthorized` so the store can sign out cleanly.
+ */
+export class VoyagerClient {
+	private token: string | null = null;
+	onUnauthorized: (() => void) | null = null;
+
+	setToken(token: string | null): void {
+		this.token = token;
+	}
+
+	private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
+		const { json, auth = true, query, signal } = options;
+		// An empty base means same-origin (relative) — used with a dev proxy or
+		// when the client is hosted on the same domain as the Worker.
+		const origin = getApiBase() || (typeof location !== 'undefined' ? location.origin : 'http://localhost');
+		const url = new URL(path, origin);
+		if (query) {
+			for (const [key, value] of Object.entries(query)) {
+				if (value !== undefined && value !== null && value !== '') {
+					url.searchParams.set(key, String(value));
+				}
+			}
+		}
+
+		const headers: Record<string, string> = {};
+		if (json !== undefined) headers['content-type'] = 'application/json';
+		if (auth && this.token) headers.authorization = `Bearer ${this.token}`;
+
+		let response: Response;
+		try {
+			response = await fetch(url, {
+				method,
+				headers,
+				body: json !== undefined ? JSON.stringify(json) : undefined,
+				signal
+			});
+		} catch (error) {
+			if ((error as Error)?.name === 'AbortError') throw error;
+			throw new ApiError(0, 'network_error', (error as Error)?.message ?? 'Network request failed');
+		}
+
+		const payload = (await response.json().catch(() => null)) as
+			| (Json & { ok?: boolean; error?: string; message?: string; requestId?: string })
+			| null;
+
+		if (!response.ok || !payload || payload.ok === false) {
+			const code = payload?.error ?? `http_${response.status}`;
+			const message = payload?.message ?? response.statusText ?? 'Request failed';
+			if (response.status === 401) this.onUnauthorized?.();
+			throw new ApiError(response.status, code, message, payload?.requestId, payload?.details);
+		}
+
+		return payload as T;
+	}
+
+	private async requestBinary(
+		method: string,
+		path: string,
+		body: BodyInit | undefined,
+		contentType?: string
+	): Promise<Response> {
+		const url = getApiBase() + path;
+		const headers: Record<string, string> = {};
+		if (contentType) headers['content-type'] = contentType;
+		if (this.token) headers.authorization = `Bearer ${this.token}`;
+		let response: Response;
+		try {
+			response = await fetch(url, { method, headers, body });
+		} catch (error) {
+			throw new ApiError(0, 'network_error', (error as Error)?.message ?? 'Network request failed');
+		}
+		if (!response.ok) {
+			const payload = (await response.json().catch(() => null)) as Json | null;
+			if (response.status === 401) this.onUnauthorized?.();
+			throw new ApiError(
+				response.status,
+				(payload?.error as string) ?? `http_${response.status}`,
+				(payload?.message as string) ?? 'Request failed',
+				payload?.requestId as string | undefined
+			);
+		}
+		return response;
+	}
+
+	// --- Public / auth -------------------------------------------------------
+
+	bootstrapStatus(): Promise<BootstrapStatus & { ok: true }> {
+		return this.request('GET', '/v1/admin/bootstrap/status', { auth: false });
+	}
+
+	login(email: string, password: string, device?: DeviceInput): Promise<AuthResult> {
+		return this.request('POST', '/v1/auth/password/login', {
+			auth: false,
+			json: { email, password, device: device ?? {} }
+		});
+	}
+
+	acceptInvitation(token: string, password: string, device?: DeviceInput): Promise<AuthResult> {
+		return this.request('POST', '/v1/invitations/accept', {
+			auth: false,
+			json: { token, password, device: device ?? {} }
+		});
+	}
+
+	completeReset(token: string, password: string, device?: DeviceInput): Promise<AuthResult> {
+		return this.request('POST', '/v1/auth/password/reset/complete', {
+			auth: false,
+			json: { token, password, device: device ?? {} }
+		});
+	}
+
+	me(): Promise<MeResult> {
+		return this.request('GET', '/v1/me');
+	}
+
+	logout(): Promise<{ ok: true }> {
+		return this.request('POST', '/v1/auth/logout');
+	}
+
+	changePassword(currentPassword: string, newPassword: string): Promise<{ ok: true }> {
+		return this.request('POST', '/v1/auth/password/change', {
+			json: { currentPassword, newPassword }
+		});
+	}
+
+	// --- Sessions & devices --------------------------------------------------
+
+	async listSessions(): Promise<Session[]> {
+		const res = await this.request<{ sessions: Session[] }>('GET', '/v1/sessions');
+		return res.sessions;
+	}
+
+	revokeSession(sessionId: string): Promise<{ ok: true }> {
+		return this.request('DELETE', `/v1/sessions/${encodeURIComponent(sessionId)}`);
+	}
+
+	async listDevices(): Promise<Device[]> {
+		const res = await this.request<{ devices: Device[] }>('GET', '/v1/devices');
+		return res.devices;
+	}
+
+	async createDevice(input: DeviceInput): Promise<Device> {
+		const res = await this.request<{ device: Device }>('POST', '/v1/devices', {
+			json: input as unknown as Json
+		});
+		return res.device;
+	}
+
+	revokeDevice(deviceId: string, reason?: string): Promise<{ ok: true }> {
+		return this.request('POST', `/v1/devices/${encodeURIComponent(deviceId)}/revoke`, {
+			json: reason ? { reason } : {}
+		});
+	}
+
+	// --- Principals & key packages ------------------------------------------
+
+	async listPrincipals(): Promise<Principal[]> {
+		const res = await this.request<{ principals: Principal[] }>('GET', '/v1/principals');
+		return res.principals;
+	}
+
+	async listPrincipalDevices(principalId: string): Promise<Device[]> {
+		const res = await this.request<{ devices: Device[] }>(
+			'GET',
+			`/v1/principals/${encodeURIComponent(principalId)}/devices`
+		);
+		return res.devices;
+	}
+
+	async listPrincipalKeyPackages(principalId: string): Promise<KeyPackage[]> {
+		const res = await this.request<{ keyPackages: KeyPackage[] }>(
+			'GET',
+			`/v1/principals/${encodeURIComponent(principalId)}/key-packages`
+		);
+		return res.keyPackages;
+	}
+
+	async publishKeyPackage(deviceId: string, body: Json): Promise<KeyPackage> {
+		const res = await this.request<{ keyPackage: KeyPackage }>(
+			'POST',
+			`/v1/devices/${encodeURIComponent(deviceId)}/key-packages`,
+			{ json: body }
+		);
+		return res.keyPackage;
+	}
+
+	async claimKeyPackage(keyPackageId: string): Promise<KeyPackage> {
+		const res = await this.request<{ keyPackage: KeyPackage }>(
+			'POST',
+			`/v1/key-packages/${encodeURIComponent(keyPackageId)}/claim`
+		);
+		return res.keyPackage;
+	}
+
+	// --- Rooms ---------------------------------------------------------------
+
+	async listRooms(opts: { limit?: number; cursor?: string } = {}): Promise<Paginated<Room>> {
+		const res = await this.request<{ rooms: Room[]; nextCursor: string | null }>('GET', '/v1/rooms', {
+			query: { limit: opts.limit, cursor: opts.cursor }
+		});
+		return { items: res.rooms, nextCursor: res.nextCursor };
+	}
+
+	async createDirectRoom(principalId: string, name?: string): Promise<Room> {
+		const res = await this.request<{ room: Room }>('POST', '/v1/rooms/direct', {
+			json: { principalIds: [principalId], name }
+		});
+		return res.room;
+	}
+
+	async createGroupRoom(name: string, description?: string): Promise<Room> {
+		const res = await this.request<{ room: Room }>('POST', '/v1/rooms/groups', {
+			json: { name, description }
+		});
+		return res.room;
+	}
+
+	async getRoom(roomId: string): Promise<Room> {
+		const res = await this.request<{ room: Room }>('GET', `/v1/rooms/${encodeURIComponent(roomId)}`);
+		return res.room;
+	}
+
+	async updateRoom(
+		roomId: string,
+		patch: { name?: string; description?: string }
+	): Promise<Room> {
+		const res = await this.request<{ room: Room }>(
+			'PATCH',
+			`/v1/rooms/${encodeURIComponent(roomId)}`,
+			{ json: patch }
+		);
+		return res.room;
+	}
+
+	async archiveRoom(roomId: string): Promise<Room> {
+		const res = await this.request<{ room: Room }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/archive`
+		);
+		return res.room;
+	}
+
+	async addRoomMember(roomId: string, principalId: string, role?: string): Promise<Membership> {
+		const res = await this.request<{ member: Membership }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/members`,
+			{ json: { principalId, role } }
+		);
+		return res.member;
+	}
+
+	async inviteToRoom(
+		roomId: string,
+		principalId: string,
+		role: RoomInvitationRole = 'member',
+		expiresInDays?: number
+	): Promise<RoomInvitation> {
+		const res = await this.request<{ invitation: RoomInvitation }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/invitations`,
+			{ json: { principalId, role, expiresInDays } }
+		);
+		return res.invitation;
+	}
+
+	async listRoomInvitations(
+		opts: { status?: RoomInvitationStatus; limit?: number; cursor?: string } = {}
+	): Promise<Paginated<RoomInvitation>> {
+		const res = await this.request<{ invitations: RoomInvitation[]; nextCursor: string | null }>(
+			'GET',
+			'/v1/room-invitations',
+			{ query: { status: opts.status, limit: opts.limit, cursor: opts.cursor } }
+		);
+		return { items: res.invitations, nextCursor: res.nextCursor };
+	}
+
+	async respondToInvitation(
+		roomInvitationId: string,
+		action: 'accept' | 'decline'
+	): Promise<RoomInvitation> {
+		const res = await this.request<{ invitation: RoomInvitation }>(
+			'POST',
+			`/v1/room-invitations/${encodeURIComponent(roomInvitationId)}/${action}`
+		);
+		return res.invitation;
+	}
+
+	async updateMemberRole(roomId: string, principalId: string, role: string): Promise<Membership> {
+		const res = await this.request<{ member: Membership }>(
+			'PATCH',
+			`/v1/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(principalId)}/role`,
+			{ json: { role } }
+		);
+		return res.member;
+	}
+
+	removeMember(roomId: string, principalId: string): Promise<{ ok: true }> {
+		return this.request(
+			'DELETE',
+			`/v1/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(principalId)}`
+		);
+	}
+
+	leaveRoom(roomId: string): Promise<{ ok: true }> {
+		return this.request('POST', `/v1/rooms/${encodeURIComponent(roomId)}/leave`);
+	}
+
+	async proposeOwnershipTransfer(roomId: string, toPrincipalId: string): Promise<OwnershipTransfer> {
+		const res = await this.request<{ transfer: OwnershipTransfer }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/ownership-transfers`,
+			{ json: { toPrincipalId } }
+		);
+		return res.transfer;
+	}
+
+	async acceptOwnershipTransfer(roomId: string, transferId: string): Promise<OwnershipTransfer> {
+		const res = await this.request<{ transfer: OwnershipTransfer }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/ownership-transfers/${encodeURIComponent(transferId)}/accept`
+		);
+		return res.transfer;
+	}
+
+	// --- Messages & sync -----------------------------------------------------
+
+	async listMessages(
+		roomId: string,
+		opts: { after?: number; limit?: number } = {}
+	): Promise<MessageEnvelope[]> {
+		const res = await this.request<{ messages: MessageEnvelope[] }>(
+			'GET',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages`,
+			{ query: { after: opts.after, limit: opts.limit } }
+		);
+		return res.messages;
+	}
+
+	async sendMessage(roomId: string, input: SendMessageInput): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages`,
+			{ json: { ...input } }
+		);
+		return res.message;
+	}
+
+	async ackMessage(
+		roomId: string,
+		envelopeId: string,
+		status: 'stored' | 'read'
+	): Promise<DeliveryReceipt> {
+		const res = await this.request<{ receipt: DeliveryReceipt }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(envelopeId)}/ack`,
+			{ json: { status } }
+		);
+		return res.receipt;
+	}
+
+	async sync(opts: { limit?: number } = {}, signal?: AbortSignal): Promise<SyncResult> {
+		const res = await this.request<{ sync: SyncResult }>('GET', '/v1/sync', {
+			query: { limit: opts.limit },
+			signal
+		});
+		return res.sync;
+	}
+
+	// --- Attachments ---------------------------------------------------------
+
+	async allocateAttachment(
+		roomId: string,
+		input: { expectedBytes: number; contentCategory?: string; retentionClass?: string }
+	): Promise<Attachment> {
+		const res = await this.request<{ attachment: Attachment }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/attachments`,
+			{ json: input }
+		);
+		return res.attachment;
+	}
+
+	async uploadAttachmentBlob(attachmentId: string, bytes: ArrayBuffer | Uint8Array): Promise<void> {
+		await this.requestBinary(
+			'PUT',
+			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob`,
+			bytes as BodyInit,
+			'application/octet-stream'
+		);
+	}
+
+	async completeAttachment(
+		attachmentId: string,
+		input: { ciphertextSha256?: string; ciphertextBytes?: number } = {}
+	): Promise<Attachment> {
+		const res = await this.request<{ attachment: Attachment }>(
+			'POST',
+			`/v1/attachments/${encodeURIComponent(attachmentId)}/complete`,
+			{ json: input }
+		);
+		return res.attachment;
+	}
+
+	async downloadAttachmentBlob(attachmentId: string): Promise<ArrayBuffer> {
+		const res = await this.requestBinary(
+			'GET',
+			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob`,
+			undefined
+		);
+		return res.arrayBuffer();
+	}
+
+	deleteAttachment(attachmentId: string): Promise<{ ok: true }> {
+		return this.request('DELETE', `/v1/attachments/${encodeURIComponent(attachmentId)}`);
+	}
+
+	// --- Sidebar collections -------------------------------------------------
+
+	async listCollections(): Promise<SidebarCollection[]> {
+		const res = await this.request<{ collections: SidebarCollection[] }>(
+			'GET',
+			'/v1/sidebar-collections'
+		);
+		return res.collections;
+	}
+
+	async createCollection(input: {
+		name: string;
+		sortOrder?: number;
+		collapsed?: boolean;
+	}): Promise<SidebarCollection> {
+		const res = await this.request<{ collection: SidebarCollection }>(
+			'POST',
+			'/v1/sidebar-collections',
+			{ json: input }
+		);
+		return res.collection;
+	}
+
+	async updateCollection(
+		collectionId: string,
+		patch: { name?: string; sortOrder?: number; collapsed?: boolean }
+	): Promise<SidebarCollection> {
+		const res = await this.request<{ collection: SidebarCollection }>(
+			'PATCH',
+			`/v1/sidebar-collections/${encodeURIComponent(collectionId)}`,
+			{ json: patch }
+		);
+		return res.collection;
+	}
+
+	deleteCollection(collectionId: string): Promise<{ ok: true }> {
+		return this.request('DELETE', `/v1/sidebar-collections/${encodeURIComponent(collectionId)}`);
+	}
+
+	addCollectionItem(
+		collectionId: string,
+		roomId: string,
+		sortOrder?: number
+	): Promise<{ ok: true }> {
+		return this.request('POST', `/v1/sidebar-collections/${encodeURIComponent(collectionId)}/items`, {
+			json: { roomId, sortOrder }
+		});
+	}
+
+	removeCollectionItem(collectionId: string, roomId: string): Promise<{ ok: true }> {
+		return this.request(
+			'DELETE',
+			`/v1/sidebar-collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(roomId)}`
+		);
+	}
+
+	// --- Agent requests ------------------------------------------------------
+
+	async listAgentRequests(
+		opts: { limit?: number; cursor?: string } = {}
+	): Promise<Paginated<AgentRequest>> {
+		const res = await this.request<{ requests: AgentRequest[]; nextCursor: string | null }>(
+			'GET',
+			'/v1/agent-requests',
+			{ query: { limit: opts.limit, cursor: opts.cursor } }
+		);
+		return { items: res.requests, nextCursor: res.nextCursor };
+	}
+
+	async createAgentRequest(input: {
+		desiredAgentName: string;
+		summary: string;
+		metadata?: unknown;
+	}): Promise<AgentRequest> {
+		const res = await this.request<{ request: AgentRequest }>('POST', '/v1/agent-requests', {
+			json: input as Json
+		});
+		return res.request;
+	}
+}
