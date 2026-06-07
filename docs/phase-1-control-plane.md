@@ -15,23 +15,24 @@ This PR implements the Phase 1 backend control plane:
 - Password login/logout.
 - Password change and admin-issued credential reset.
 - Session listing and revocation.
-- Device listing, registration, and revocation.
+- Device listing, registration, login reuse, and own-device revocation.
 - Admin account suspend/restore/auth-reset actions.
 - Admin role grant/revoke.
+- Platform-owner hierarchy protection for privileged account and role actions.
 - Policy listing and account policy assignment.
 - Audit event recording and listing.
 - Usage summary endpoint.
 - Principal directory and manually created agent principals.
 - Device key-package metadata APIs.
 - Direct and group rooms.
-- Room membership, human room invitations, roles, archiving, leaving, and ownership transfer.
+- Room membership, human room invitations, agent direct-add, roles, archiving, leaving, and ownership transfer.
 - Opaque encrypted message envelopes with idempotency, sequencing, sync, and acknowledgements.
 - Worker-mediated encrypted attachment allocation, upload, completion, download, and deletion.
 - Sidebar collections.
 - Agent request submission and admin review.
 - CI type check, D1 migration, and Worker deployment workflow.
 
-Password/passphrase authentication is active. Passkeys/WebAuthn, push providers, app-store packaging, code signing, live agent runtimes, Durable Object realtime coordination, Queues, external identity providers, and provider webhooks are intentionally deferred for the backend-first path.
+Password/passphrase authentication is active. Clients should persist `device.deviceId` and send it on password login to reuse an enrolled device; omitting it enrolls a new device. Passkeys/WebAuthn, push providers, app-store packaging, code signing, live agent runtimes, Durable Object realtime coordination, Queues, external identity providers, and provider webhooks are intentionally deferred for the backend-first path.
 
 ## Bootstrap
 
@@ -79,7 +80,7 @@ Authenticated user:
 - `DELETE /v1/sessions/{session_id}`
 - `GET /v1/devices`
 - `POST /v1/devices`
-- `POST /v1/devices/{device_id}/revoke`
+- `POST /v1/devices/{device_id}/revoke` for an owned device
 - `GET /v1/principals`
 - `GET /v1/principals/{principal_id}/devices`
 - `GET /v1/devices/{device_id}/key-packages`
@@ -152,7 +153,7 @@ The API can be exercised with curl or a plain fetch-based script:
 4. Change passwords or complete admin credential reset tokens.
 5. Publish, list, claim, and revoke device key-package metadata.
 6. Create direct or group rooms.
-7. Add members, send human room invitations, or add manually created agent principals.
+7. Send human room invitations or add manually created agent principals.
 8. Send opaque encrypted envelopes with idempotency keys.
 9. Sync pending messages and acknowledge them.
 10. Allocate, upload, complete, download, and delete opaque attachment blobs.

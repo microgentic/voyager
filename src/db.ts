@@ -164,6 +164,16 @@ export function requireAdmin(auth: AuthContext, allowedRoles: string[]): string 
   return role;
 }
 
+export function isPlatformOwner(auth: AuthContext): boolean {
+  return auth.roles.includes("platform_owner");
+}
+
+export async function assertCanAdministerAccount(env: Env, auth: AuthContext, targetAccountId: string): Promise<void> {
+  if ((await accountHasAdminRole(env, targetAccountId, "platform_owner")) && !isPlatformOwner(auth)) {
+    throw new HttpError(403, "platform_owner_required", "Platform owner authority is required for this account");
+  }
+}
+
 export async function bootstrapAdmin(
   env: Env,
   input: {
@@ -314,7 +324,7 @@ export async function loginWithPassword(
     .bind(authenticator.authenticator_id)
     .run();
   const principal = await getPrincipal(env, account.default_principal_id);
-  const device = await createDeviceForPrincipal(env, account.account_id, principal.principal_id, input.device);
+  const device = await getOrCreateLoginDevice(env, account.account_id, principal.principal_id, input.device);
   const sessionToken = await createSession(env, account.account_id, device.device_id);
   return { account, principal, device, sessionToken };
 }
@@ -351,7 +361,7 @@ export async function createCredentialReset(
   }
 ): Promise<CredentialResetResult> {
   const account = await getAccount(env, input.accountId);
-  if (account.status === "deleted" || account.status === "pending_deletion") {
+  if (account.status !== "active" && account.status !== "locked") {
     throw new HttpError(409, "account_not_resettable", "Account cannot be reset");
   }
   const resetId = randomId("rst");
@@ -360,11 +370,14 @@ export async function createCredentialReset(
   const expiresAt = sqliteTimestamp(Date.now() + (input.expiresInDays ?? CREDENTIAL_RESET_DAYS) * 24 * 60 * 60 * 1000);
   const statements = [
     env.CONTROL_DB.prepare(
+      "UPDATE credential_reset_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND used_at IS NULL AND revoked_at IS NULL"
+    ).bind(input.accountId),
+    env.CONTROL_DB.prepare(
       `INSERT INTO credential_reset_tokens (
         reset_id, token_hash, account_id, created_by_account_id, reason, expires_at
       ) VALUES (?, ?, ?, ?, ?, ?)`
     ).bind(resetId, tokenHash, input.accountId, input.createdByAccountId, input.reason ?? null, expiresAt),
-    env.CONTROL_DB.prepare("UPDATE accounts SET status = 'locked', updated_at = CURRENT_TIMESTAMP WHERE account_id = ?").bind(input.accountId),
+    env.CONTROL_DB.prepare("UPDATE accounts SET status = 'locked', updated_at = CURRENT_TIMESTAMP WHERE account_id = ? AND status IN ('active', 'locked')").bind(input.accountId),
     env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL").bind(input.accountId)
   ];
   if (input.revokeDevices ?? true) {
@@ -401,18 +414,39 @@ export async function completeCredentialReset(
   if (account.status === "deleted" || account.status === "pending_deletion") {
     throw new HttpError(409, "account_not_resettable", "Account cannot be reset");
   }
+  if (account.status !== "locked") {
+    throw new HttpError(409, "account_not_resettable", "Account is not locked for credential reset");
+  }
   if (!account.default_principal_id) {
     throw new HttpError(500, "missing_principal", "Account is missing its default principal");
   }
 
+  const claim = await env.CONTROL_DB.prepare(
+    `UPDATE credential_reset_tokens
+     SET used_at = CURRENT_TIMESTAMP
+     WHERE reset_id = ?
+       AND used_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > CURRENT_TIMESTAMP`
+  )
+    .bind(reset.reset_id)
+    .run();
+  if (changesFrom(claim) !== 1) {
+    throw new HttpError(400, "invalid_credential_reset", "Credential reset token is invalid or expired");
+  }
+
+  const activation = await env.CONTROL_DB.prepare(
+    "UPDATE accounts SET status = 'active', activated_at = COALESCE(activated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE account_id = ? AND status = 'locked'"
+  )
+    .bind(account.account_id)
+    .run();
+  if (changesFrom(activation) !== 1) {
+    throw new HttpError(409, "account_not_resettable", "Account is not locked for credential reset");
+  }
   await replacePassword(env, account.account_id, input.password);
-  await env.CONTROL_DB.batch([
-    env.CONTROL_DB.prepare(
-      "UPDATE accounts SET status = 'active', activated_at = COALESCE(activated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE account_id = ?"
-    ).bind(account.account_id),
-    env.CONTROL_DB.prepare("UPDATE credential_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE reset_id = ?").bind(reset.reset_id),
-    env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL").bind(account.account_id)
-  ]);
+  await env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL")
+    .bind(account.account_id)
+    .run();
 
   const activeAccount = await getAccount(env, account.account_id);
   const principal = await getPrincipal(env, account.default_principal_id);
@@ -479,6 +513,23 @@ export async function createDeviceForPrincipal(
   return getDevice(env, deviceId);
 }
 
+async function getOrCreateLoginDevice(env: Env, accountId: string, principalId: string, input: DeviceInput): Promise<DeviceRow> {
+  const deviceId = optionalStringValue(input.deviceId, 80);
+  if (!deviceId) {
+    return createDeviceForPrincipal(env, accountId, principalId, input);
+  }
+  const device = await env.CONTROL_DB.prepare(
+    "SELECT * FROM devices WHERE device_id = ? AND account_id = ? AND principal_id = ? AND revoked_at IS NULL"
+  )
+    .bind(deviceId, accountId, principalId)
+    .first<DeviceRow>();
+  if (!device) {
+    throw new HttpError(403, "device_not_available", "Device is not enrolled or has been revoked");
+  }
+  await env.CONTROL_DB.prepare("UPDATE devices SET last_seen_at = CURRENT_TIMESTAMP WHERE device_id = ?").bind(deviceId).run();
+  return getDevice(env, deviceId);
+}
+
 export async function createSession(env: Env, accountId: string, deviceId: string): Promise<string> {
   const token = randomToken();
   const tokenHash = await sha256Base64Url(token);
@@ -499,14 +550,28 @@ export async function revokeSession(env: Env, sessionId: string, accountId?: str
   await stmt.run();
 }
 
-export async function revokeDevice(env: Env, deviceId: string, reason: string): Promise<void> {
+export async function revokeOwnDevice(env: Env, accountId: string, deviceId: string, reason: string): Promise<void> {
+  const device = await env.CONTROL_DB.prepare("SELECT device_id FROM devices WHERE device_id = ? AND account_id = ?")
+    .bind(deviceId, accountId)
+    .first<{ device_id: string }>();
+  if (!device) {
+    throw new HttpError(404, "device_not_found", "Device not found");
+  }
+  await revokeDevice(env, deviceId, reason, accountId);
+}
+
+export async function revokeDevice(env: Env, deviceId: string, reason: string, accountId?: string): Promise<void> {
+  const deviceWhere = accountId ? "device_id = ? AND account_id = ? AND revoked_at IS NULL" : "device_id = ? AND revoked_at IS NULL";
+  const deviceBinds = accountId ? [reason, deviceId, accountId] : [reason, deviceId];
+  const sessionWhere = accountId ? "device_id = ? AND account_id = ? AND revoked_at IS NULL" : "device_id = ? AND revoked_at IS NULL";
+  const sessionBinds = accountId ? [deviceId, accountId] : [deviceId];
   await env.CONTROL_DB.batch([
     env.CONTROL_DB.prepare(
-      "UPDATE devices SET revoked_at = CURRENT_TIMESTAMP, revocation_reason = ? WHERE device_id = ? AND revoked_at IS NULL"
-    ).bind(reason, deviceId),
+      `UPDATE devices SET revoked_at = CURRENT_TIMESTAMP, revocation_reason = ? WHERE ${deviceWhere}`
+    ).bind(...deviceBinds),
     env.CONTROL_DB.prepare(
-      "UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE device_id = ? AND revoked_at IS NULL"
-    ).bind(deviceId)
+      `UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE ${sessionWhere}`
+    ).bind(...sessionBinds)
   ]);
 }
 
@@ -550,20 +615,22 @@ export async function listPolicies(env: Env): Promise<PolicyRow[]> {
 
 export async function grantAdminRoleToAccount(
   env: Env,
+  auth: AuthContext,
   accountId: string,
-  roleName: string,
-  grantedByAccountId: string
+  roleName: string
 ): Promise<string[]> {
   await getAccount(env, accountId);
-  await grantAdminRole(env, accountId, roleName, grantedByAccountId);
+  await assertCanManageAdminRole(env, auth, accountId, roleName, "grant");
+  await grantAdminRole(env, accountId, roleName, auth.account.account_id);
   return getActiveAdminRoles(env, accountId);
 }
 
-export async function revokeAdminRoleFromAccount(env: Env, accountId: string, roleName: string): Promise<string[]> {
+export async function revokeAdminRoleFromAccount(env: Env, auth: AuthContext, accountId: string, roleName: string): Promise<string[]> {
   const role = await env.CONTROL_DB.prepare("SELECT role_id FROM admin_roles WHERE name = ?")
     .bind(roleName)
     .first<{ role_id: string }>();
   if (!role) throw new HttpError(400, "invalid_role", "Unknown admin role");
+  await assertCanManageAdminRole(env, auth, accountId, roleName, "revoke");
   await env.CONTROL_DB.prepare(
     "UPDATE account_admin_roles SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND role_id = ? AND revoked_at IS NULL"
   )
@@ -687,12 +754,15 @@ async function setPassword(env: Env, accountId: string, password: string): Promi
 }
 
 async function replacePassword(env: Env, accountId: string, password: string): Promise<void> {
-  await env.CONTROL_DB.prepare(
-    "UPDATE authenticators SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND type = 'password' AND revoked_at IS NULL"
-  )
-    .bind(accountId)
-    .run();
-  await setPassword(env, accountId, password);
+  const passwordVerifier = await hashPassword(password);
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      "UPDATE authenticators SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND type = 'password' AND revoked_at IS NULL"
+    ).bind(accountId),
+    env.CONTROL_DB.prepare(
+      "INSERT INTO authenticators (authenticator_id, account_id, type, password_verifier) VALUES (?, ?, 'password', ?)"
+    ).bind(randomId("auth"), accountId, passwordVerifier)
+  ]);
 }
 
 async function grantAdminRole(env: Env, accountId: string, roleName: string, grantedByAccountId: string | null): Promise<void> {
@@ -700,11 +770,67 @@ async function grantAdminRole(env: Env, accountId: string, roleName: string, gra
     .bind(roleName)
     .first<{ role_id: string }>();
   if (!role) throw new HttpError(400, "invalid_role", "Unknown admin role");
+  const existing = await env.CONTROL_DB.prepare(
+    "SELECT account_id FROM account_admin_roles WHERE account_id = ? AND role_id = ? AND revoked_at IS NULL LIMIT 1"
+  )
+    .bind(accountId, role.role_id)
+    .first<{ account_id: string }>();
+  if (existing) {
+    return;
+  }
   await env.CONTROL_DB.prepare(
     "INSERT INTO account_admin_roles (account_id, role_id, granted_by_account_id) VALUES (?, ?, ?)"
   )
     .bind(accountId, role.role_id, grantedByAccountId)
     .run();
+}
+
+async function assertCanManageAdminRole(
+  env: Env,
+  auth: AuthContext,
+  targetAccountId: string,
+  roleName: string,
+  action: "grant" | "revoke"
+): Promise<void> {
+  await assertCanAdministerAccount(env, auth, targetAccountId);
+  if (roleName === "platform_owner" && !isPlatformOwner(auth)) {
+    throw new HttpError(403, "platform_owner_required", "Only a platform owner can manage platform owner grants");
+  }
+  if (action === "revoke" && roleName === "platform_owner") {
+    const targetHasRole = await accountHasAdminRole(env, targetAccountId, "platform_owner");
+    const ownerCount = await countActiveAdminRoleAccounts(env, "platform_owner");
+    if (targetHasRole && ownerCount <= 1) {
+      throw new HttpError(409, "last_platform_owner_required", "At least one active platform owner is required");
+    }
+  }
+}
+
+async function accountHasAdminRole(env: Env, accountId: string, roleName: string): Promise<boolean> {
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT aar.account_id
+     FROM account_admin_roles aar
+     JOIN admin_roles ar ON ar.role_id = aar.role_id
+     WHERE aar.account_id = ? AND ar.name = ? AND aar.revoked_at IS NULL
+     LIMIT 1`
+  )
+    .bind(accountId, roleName)
+    .first<{ account_id: string }>();
+  return Boolean(row);
+}
+
+async function countActiveAdminRoleAccounts(env: Env, roleName: string): Promise<number> {
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT COUNT(DISTINCT aar.account_id) AS count
+     FROM account_admin_roles aar
+     JOIN admin_roles ar ON ar.role_id = aar.role_id
+     JOIN accounts a ON a.account_id = aar.account_id
+     WHERE ar.name = ?
+       AND aar.revoked_at IS NULL
+       AND a.status = 'active'`
+  )
+    .bind(roleName)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 export async function getAccount(env: Env, accountId: string): Promise<AccountRow> {
@@ -769,6 +895,10 @@ function optionalStringValue(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed.slice(0, max) : null;
+}
+
+function changesFrom(result: D1Result): number {
+  return (result.meta as { changes?: number } | undefined)?.changes ?? 0;
 }
 
 function sqliteTimestamp(value: number | Date): string {

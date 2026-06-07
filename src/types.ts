@@ -90,6 +90,7 @@ export interface AuthContext {
 }
 
 export interface DeviceInput {
+  deviceId?: unknown;
   platform?: unknown;
   label?: unknown;
   credentialFingerprint?: unknown;

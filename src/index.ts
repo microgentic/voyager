@@ -1,5 +1,6 @@
 import {
   acceptInvitation,
+  assertCanAdministerAccount,
   audit,
   bootstrapAdmin,
   changePassword,
@@ -21,7 +22,7 @@ import {
   requireAdmin,
   requireAuthReset,
   revokeAdminRoleFromAccount,
-  revokeDevice,
+  revokeOwnDevice,
   revokeSession,
   setAccountStatus,
   updateAccountPolicy
@@ -292,7 +293,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   if (deviceRevokeMatch) {
     requireMethod(request, "POST");
     const body = await readJsonObject(request);
-    await revokeDevice(env, deviceRevokeMatch[1], stringField(body, "reason", { max: 120 }) ?? "user_requested");
+    await revokeOwnDevice(env, auth.account.account_id, deviceRevokeMatch[1], stringField(body, "reason", { max: 120 }) ?? "user_requested");
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "device.revoke",
@@ -348,6 +349,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "POST");
     const adminRole = requireAdmin(auth, ["user_admin", "security_admin"]);
     const [, accountId, action] = adminAccountAction;
+    await assertCanAdministerAccount(env, auth, accountId);
     const account =
       action === "suspend"
         ? await setAccountStatus(env, accountId, "suspended")
@@ -371,6 +373,10 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "POST");
     const adminRole = requireAdmin(auth, ["user_admin", "security_admin"]);
     const body = await readJsonObject(request);
+    if (adminCredentialReset[1] === auth.account.account_id) {
+      throw new HttpError(409, "self_admin_reset_not_allowed", "Use password change instead of admin reset for the current account");
+    }
+    await assertCanAdministerAccount(env, auth, adminCredentialReset[1]);
     const reset = await createCredentialReset(env, {
       accountId: adminCredentialReset[1],
       createdByAccountId: auth.account.account_id,
@@ -405,6 +411,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "PATCH");
     const adminRole = requireAdmin(auth, ["user_admin", "quota_operator", "security_admin"]);
     const body = await readJsonObject(request);
+    await assertCanAdministerAccount(env, auth, adminPolicyPatch[1]);
     const account = await updateAccountPolicy(env, adminPolicyPatch[1], stringField(body, "policyId", { required: true, max: 80 })!);
     await audit(env, {
       actorAccountId: auth.account.account_id,
@@ -423,7 +430,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "POST");
     const adminRole = requireAdmin(auth, ["security_admin"]);
     const body = await readJsonObject(request);
-    const roles = await grantAdminRoleToAccount(env, adminRolePost[1], stringField(body, "roleName", { required: true, max: 80 })!, auth.account.account_id);
+    const roles = await grantAdminRoleToAccount(env, auth, adminRolePost[1], stringField(body, "roleName", { required: true, max: 80 })!);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       actorAdminRole: adminRole,
@@ -440,7 +447,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   if (adminRoleDelete) {
     requireMethod(request, "DELETE");
     const adminRole = requireAdmin(auth, ["security_admin"]);
-    const roles = await revokeAdminRoleFromAccount(env, adminRoleDelete[1], decodeURIComponent(adminRoleDelete[2]));
+    const roles = await revokeAdminRoleFromAccount(env, auth, adminRoleDelete[1], decodeURIComponent(adminRoleDelete[2]));
     await audit(env, {
       actorAccountId: auth.account.account_id,
       actorAdminRole: adminRole,
