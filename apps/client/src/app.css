@@ -208,6 +208,16 @@
 	::placeholder {
 		color: var(--color-faint);
 	}
+
+	/* Prevent iOS focus-zoom by keeping touch inputs ≥16px — without disabling
+	   the user's ability to zoom the page (accessibility). */
+	@media (pointer: coarse) {
+		input:not([type='checkbox']):not([type='radio']),
+		textarea,
+		select {
+			font-size: 16px;
+		}
+	}
 }
 
 @layer utilities {

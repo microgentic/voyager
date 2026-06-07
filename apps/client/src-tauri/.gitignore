@@ -2,5 +2,8 @@
 /target
 /gen/schemas
 
-# Rasterized icon source (regenerate with `npm run tauri icon src-tauri/app-icon.svg`)
-/app-icon.png
+# Note: app-icon.svg (vector master) and app-icon.png (1024 raster) are the
+# committed icon sources. ImageMagick cannot rasterize the SVG's gradients —
+# re-render it with a WebKit renderer (e.g. macOS `qlmanage -t -s 1024`) to
+# refresh app-icon.png, then `npm run tauri icon src-tauri/app-icon.png`.
+# The macOS icons/icon.icns is additionally rounded + inset (Apple grid).

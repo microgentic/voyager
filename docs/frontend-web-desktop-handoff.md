@@ -99,7 +99,10 @@ a room acks others' messages as read.
    shipped codec is `OpaqueTestCodec`: it base64-encodes the application payload
    (master plan §4.12) into `ciphertext`. It is **not** encryption and is named
    to say so. UI copy avoids asserting active E2EE; Settings → About states the
-   status plainly. Swapping in an `MlsCodec` later touches only `codec.ts`.
+   status plainly. An `MlsCodec` keeps the UI and transport stable, but MLS
+   also needs client security-state, persistence, device enrollment,
+   key-package lifecycle, and encryption/verification error handling — it is
+   not only a `codec.ts` swap.
 
 2. **Message list is a robust scroller, not virtualized — for now.** At pilot
    scale a correct bottom-anchored scroller (day dividers, sender grouping,

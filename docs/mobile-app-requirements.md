@@ -42,7 +42,7 @@ rewrite.
 
 | Need | Plugin / approach |
 | --- | --- |
-| Push notifications | APNs (iOS) + FCM (Android). Requires the **deferred backend push** work (`push_endpoints`, APNs/FCM dispatch). Generic/encrypted-safe payloads only. |
+| Push notifications | APNs (iOS) + FCM (Android). Requires the **deferred backend push** work (`push_endpoints`, APNs/FCM dispatch). A best-effort wake-up/awareness hint only — never the source of truth; generic/encrypted-safe payloads. |
 | Secure storage | `tauri-plugin-stronghold` or Keychain/Keystore via a native command — to wrap the local DB key / unlock secret (master plan §1.12, §5.4). |
 | Biometric unlock | `tauri-plugin-biometric` (Face ID / Touch ID / Android BiometricPrompt) gating release of the local key. |
 | Local notifications | `tauri-plugin-notification` for in-app/local alerts. |
@@ -54,13 +54,17 @@ rewrite.
 | Clipboard | `tauri-plugin-clipboard-manager` (copy code blocks, tokens). |
 | Network status | Detect offline to pause polling and show state. |
 
+> Plugin names above are **implementation candidates** — validate each on both
+> iOS and Android before committing to it.
+
 ## 4. Behavior differences to handle
 
 - **Background execution + delivery.** Mobile OSes suspend the app and its
-  sockets/timers, so the polling `sync` loop won't run in the background. Rely on
-  **push to wake** the app, then fetch via the existing sync/mailbox endpoints
-  (the backend is already store-and-forward). On resume, run an immediate sync
-  (already wired to `visibilitychange`).
+  sockets/timers, so the polling `sync` loop won't run in the background. Treat
+  **push as a best-effort wake-up / awareness hint — not the source of truth and
+  not guaranteed.** Attempt a background wake through push, but always recover
+  through the durable mailbox + sync-on-resume path (the backend is
+  store-and-forward; an immediate sync is already wired to `visibilitychange`).
 - **Keyboard.** Use `visualViewport` to keep the composer above the keyboard;
   ensure the message list stays pinned to the latest on keyboard open.
 - **Gestures.** Add edge **swipe-back**, **pull-to-refresh** on lists,

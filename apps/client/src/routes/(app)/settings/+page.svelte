@@ -9,6 +9,7 @@
 	import { api, isApiError } from '$lib/api';
 	import { auth, ui, toasts } from '$lib/stores';
 	import { APP_VERSION, getApiBase, setApiBase, defaultApiBase } from '$lib/config';
+	import { isTauri } from '$lib/platform';
 	import { messageCodec } from '$lib/protocol/codec';
 	import SectionHeader from '$lib/components/nav/SectionHeader.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
@@ -253,12 +254,21 @@
 						<Info class="h-4 w-4" /> Advanced {showAdvanced ? '▴' : '▾'}
 					</button>
 					{#if showAdvanced}
-						<Field label="API endpoint" hint="Changing this signs you out.">
-							<div class="flex gap-2">
-								<TextInput bind:value={apiBase} placeholder={defaultApiBase()} class="flex-1" />
-								<Button variant="secondary" onclick={saveApiBase}>Save</Button>
-							</div>
-						</Field>
+						{#if isTauri()}
+							<Field
+								label="API endpoint"
+								hint="Fixed in desktop builds — the app's security policy (CSP) only permits the compiled-in endpoints."
+							>
+								<TextInput value={getApiBase() || defaultApiBase()} readonly class="opacity-70" />
+							</Field>
+						{:else}
+							<Field label="API endpoint" hint="Changing this signs you out.">
+								<div class="flex gap-2">
+									<TextInput bind:value={apiBase} placeholder={defaultApiBase()} class="flex-1" />
+									<Button variant="secondary" onclick={saveApiBase}>Save</Button>
+								</div>
+							</Field>
+						{/if}
 					{/if}
 					<p class="text-xs text-faint">Voyager · v{APP_VERSION}</p>
 				</div>

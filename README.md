@@ -14,8 +14,10 @@ principals you can message, add to rooms, and request.
 > **Encryption status (honest):** messages travel as opaque envelopes over
 > HTTPS and are gated by server-enforced room membership. Device-to-device
 > **end-to-end encryption (MLS) is in development and not yet active.** Treat
-> the current build as a pilot. The client already isolates this behind a
-> swappable message codec, so enabling MLS will not change the UI.
+> the current build as a pilot. The client isolates this behind a swappable
+> message codec — a clean seam — but enabling MLS also requires the client
+> security core (cryptographic state, device enrollment, key-package lifecycle,
+> error handling), not just a codec swap.
 
 ---
 
@@ -95,6 +97,10 @@ npm run tauri dev        # opens the desktop window
 **web and desktop apps side by side** — just open `http://localhost:1420` in a
 browser while the desktop window is running.
 
+> The Voyager Dock/app icon appears in the **built** app (`npm run tauri build`,
+> then open the `.app`). In `tauri dev` macOS shows the parent terminal's icon —
+> a known dev-only limitation (the macOS Dock icon can't be set at runtime).
+
 > Point the client at a different backend from **Settings → About → Advanced**,
 > or with `VITE_API_BASE_URL` at build time.
 
@@ -151,10 +157,14 @@ GitHub Actions:
 
 ## Security posture (summary)
 
-- The backend stores **opaque** message envelopes and encrypted-blob attachments;
+- The backend stores **opaque** message envelopes and **opaque attachment blobs**;
   it is designed never to require plaintext.
+- **Attachments are not yet client-side encrypted.** Files currently upload as
+  opaque blobs over HTTPS; authenticated client-side attachment encryption is
+  planned with the native security core and is not guaranteed in this build.
 - Account **passphrases** authenticate to the service and are **not recoverable**
   by an administrator; they are separate from any future device unlock.
 - Admin reset restores **account access only** — it cannot decrypt prior content.
-- **MLS end-to-end encryption is not yet active.** The client is structured to
-  drop it in without UI changes; until then, do not rely on E2EE guarantees.
+- **MLS end-to-end encryption is not yet active.** The codec seam minimizes
+  UI/transport churn, but MLS also needs the client security core; until it
+  ships, do not rely on E2EE guarantees.

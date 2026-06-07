@@ -79,7 +79,21 @@ async function main() {
 		throw err;
 	}
 	if (status.bootstrapped) {
-		printCredentials('Backend already seeded — sign in with:');
+		// Verify the demo owner actually works — the backend may have been
+		// bootstrapped with a different account, in which case the demo
+		// credentials would be misleading.
+		const ownerWorks = await call('/v1/auth/password/login', {
+			body: { email: CREDS.owner.email, password: PW, device: { platform: 'web', label: 'Seed check' } }
+		})
+			.then(() => true)
+			.catch(() => false);
+		if (ownerWorks) {
+			printCredentials('Backend already seeded — sign in with:');
+		} else {
+			console.warn('⚠ Backend is already bootstrapped, but the demo owner is not present.');
+			console.warn('  The demo credentials below will NOT work — this script only seeds a FRESH local state.');
+			console.warn('  Reset: stop the Worker, `rm -rf .wrangler/local-state`, then re-run `dev:backend` + `seed`.');
+		}
 		return;
 	}
 

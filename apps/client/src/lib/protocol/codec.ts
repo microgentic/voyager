@@ -13,7 +13,9 @@ import type { ProtocolType } from '$lib/api/types';
  * it into `ciphertext` with `protocolType: "opaque-test"`. THIS IS NOT
  * ENCRYPTION — it is a transport encoding that keeps the UI honest about the
  * envelope shape. When the Rust MLS core lands, an `MlsCodec` implements this
- * same interface and the UI/stores change nothing.
+ * same interface — minimizing UI/transport churn. (MLS also brings persistent
+ * cryptographic state, device enrollment, key-package lifecycle, and error
+ * handling beyond this seam; it is not only a codec swap.)
  */
 
 export type RenderableContentType = 'text/plain' | 'text/markdown';
