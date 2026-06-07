@@ -118,6 +118,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_authenticators_webauthn_credential_id
   ON authenticators(webauthn_credential_id)
   WHERE webauthn_credential_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS webauthn_challenges (
+  challenge_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+  challenge TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('registration', 'authentication')),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  used_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_account_type
+  ON webauthn_challenges(account_id, type, expires_at);
+
 CREATE TABLE IF NOT EXISTS devices (
   device_id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,

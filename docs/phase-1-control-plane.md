@@ -18,9 +18,12 @@ This PR implements the Phase 1 backend control plane:
 - Policy listing and account policy assignment.
 - Audit event recording and listing.
 - Usage summary endpoint.
+- Passkey/WebAuthn registration and login ceremonies.
 - CI type check, D1 migration, and Worker deployment workflow.
 
-Passkey tables and route placeholders exist, but WebAuthn verification is intentionally not faked. Password/passphrase fallback is functional. Passkey verification should be implemented as a focused follow-up before production use.
+Password/passphrase fallback and passkey login both exist. Passkeys are implemented with server-side WebAuthn challenge storage, credential verification, replay counter updates, and authenticator audit records.
+
+WebAuthn defaults to the Worker request origin and hostname. When a separate frontend origin is introduced, configure `WEBAUTHN_ORIGIN` and `WEBAUTHN_RP_ID` on the Worker so browser-origin validation matches the frontend host.
 
 ## Bootstrap
 
@@ -57,11 +60,15 @@ Public:
 - `POST /v1/admin/bootstrap`
 - `POST /v1/invitations/accept`
 - `POST /v1/auth/password/login`
+- `POST /v1/auth/passkeys/login/options`
+- `POST /v1/auth/passkeys/login/verify`
 
 Authenticated user:
 
 - `GET /v1/me`
 - `POST /v1/auth/logout`
+- `POST /v1/auth/passkeys/register/options`
+- `POST /v1/auth/passkeys/register/verify`
 - `GET /v1/sessions`
 - `DELETE /v1/sessions/{session_id}`
 - `GET /v1/devices`
@@ -81,3 +88,19 @@ Admin:
 - `GET /v1/admin/policies`
 - `GET /v1/admin/usage`
 - `GET /v1/admin/audit-events`
+
+## Passkey Flow
+
+Registration requires an authenticated session:
+
+1. `POST /v1/auth/passkeys/register/options` with bearer auth.
+2. Frontend calls `navigator.credentials.create()` with the returned `options`.
+3. `POST /v1/auth/passkeys/register/verify` with the browser credential response and bearer auth.
+
+Login is public:
+
+1. `POST /v1/auth/passkeys/login/options` with the account email.
+2. Frontend calls `navigator.credentials.get()` with the returned `options`.
+3. `POST /v1/auth/passkeys/login/verify` with the browser credential response and optional `device` metadata.
+
+Successful passkey login creates a normal device/session pair and returns a bearer `sessionToken`, the same as password login.

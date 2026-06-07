@@ -25,6 +25,12 @@ import {
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, stringField } from "./http";
 import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow } from "./types";
+import {
+  createPasskeyLoginOptions,
+  createPasskeyRegistrationOptions,
+  verifyPasskeyLogin,
+  verifyPasskeyRegistration
+} from "./webauthn";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -168,11 +174,56 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     });
   }
 
-  if (url.pathname.startsWith("/v1/auth/passkeys/")) {
-    throw new HttpError(501, "passkey_not_implemented", "Passkey schema is reserved; WebAuthn verification is a Phase 1 follow-up before production use");
+  if (url.pathname === "/v1/auth/passkeys/login/options") {
+    requireMethod(request, "POST");
+    const result = await createPasskeyLoginOptions(env, request, url);
+    return json({ ok: true, ...result });
+  }
+
+  if (url.pathname === "/v1/auth/passkeys/login/verify") {
+    requireMethod(request, "POST");
+    const result = await verifyPasskeyLogin(env, request, url);
+    await audit(env, {
+      actorAccountId: result.account.account_id,
+      action: "auth.passkey.login",
+      targetType: "account",
+      targetId: result.account.account_id,
+      requestId,
+      result: "success",
+      metadata: { authenticatorId: result.authenticatorId }
+    });
+    return json({
+      ok: true,
+      account: publicAccount(result.account),
+      principal: publicPrincipal(result.principal),
+      device: publicDevice(result.device),
+      authenticatorId: result.authenticatorId,
+      sessionToken: result.sessionToken
+    });
   }
 
   const auth = await getAuthContext(env, request);
+
+  if (url.pathname === "/v1/auth/passkeys/register/options") {
+    requireMethod(request, "POST");
+    const result = await createPasskeyRegistrationOptions(env, url, auth);
+    return json({ ok: true, ...result });
+  }
+
+  if (url.pathname === "/v1/auth/passkeys/register/verify") {
+    requireMethod(request, "POST");
+    const result = await verifyPasskeyRegistration(env, request, url, auth);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "auth.passkey.register",
+      targetType: "authenticator",
+      targetId: result.authenticatorId,
+      requestId,
+      result: "success",
+      metadata: { credentialId: result.credentialId }
+    });
+    return json({ ok: true, passkey: result }, { status: 201 });
+  }
 
   if (url.pathname === "/v1/me") {
     requireMethod(request, "GET");

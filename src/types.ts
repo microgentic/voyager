@@ -2,6 +2,9 @@ export interface Env {
   CONTROL_DB: D1Database;
   ATTACHMENTS_BUCKET: R2Bucket;
   BOOTSTRAP_TOKEN?: string;
+  WEBAUTHN_ORIGIN?: string;
+  WEBAUTHN_RP_ID?: string;
+  WEBAUTHN_RP_NAME?: string;
 }
 
 export interface AccountRow {
