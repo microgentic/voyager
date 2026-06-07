@@ -1,5 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "673a41a654ed01f9bf90d253ae426a18",
   "name": "voyager-api-dev",
   "main": "src/index.ts",
   "compatibility_date": "2025-01-01",
