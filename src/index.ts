@@ -2,7 +2,11 @@ import {
   acceptInvitation,
   audit,
   bootstrapAdmin,
+  changePassword,
+  checkRateLimit,
+  completeCredentialReset,
   createDeviceForPrincipal,
+  createCredentialReset,
   createInvitation,
   getActiveAdminRoles,
   getAuditEvents,
@@ -147,8 +151,10 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   if (url.pathname === "/v1/auth/password/login") {
     requireMethod(request, "POST");
     const body = await readJsonObject(request);
+    const email = stringField(body, "email", { required: true, max: 254, pattern: EMAIL_PATTERN })!;
+    await checkRateLimit(env, { key: `password-login:${email.toLowerCase()}:${clientIp(request)}`, action: "password-login", limit: 12, windowSeconds: 15 * 60 });
     const result = await loginWithPassword(env, {
-      email: stringField(body, "email", { required: true, max: 254, pattern: EMAIL_PATTERN })!,
+      email,
       password: stringField(body, "password", { required: true, min: 1, max: 512 })!,
       device: optionalObject(body, "device") ?? {}
     });
@@ -167,6 +173,35 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       device: publicDevice(result.device),
       sessionToken: result.sessionToken
     });
+  }
+
+  if (url.pathname === "/v1/auth/password/reset/complete") {
+    requireMethod(request, "POST");
+    await checkRateLimit(env, { key: `credential-reset:${clientIp(request)}`, action: "credential-reset", limit: 10, windowSeconds: 15 * 60 });
+    const body = await readJsonObject(request);
+    const result = await completeCredentialReset(env, {
+      token: stringField(body, "token", { required: true, min: 20, max: 256 })!,
+      password: stringField(body, "password", { required: true, min: 14, max: 512 })!,
+      device: optionalObject(body, "device") ?? {}
+    });
+    await audit(env, {
+      actorAccountId: result.account.account_id,
+      action: "auth.password.reset.complete",
+      targetType: "account",
+      targetId: result.account.account_id,
+      requestId,
+      result: "success"
+    });
+    return json(
+      {
+        ok: true,
+        account: publicAccount(result.account),
+        principal: publicPrincipal(result.principal),
+        device: publicDevice(result.device),
+        sessionToken: result.sessionToken
+      },
+      { status: 201 }
+    );
   }
 
   const auth = await getAuthContext(env, request);
@@ -188,6 +223,26 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       action: "auth.logout",
       targetType: "session",
       targetId: auth.session.session_id,
+      requestId,
+      result: "success"
+    });
+    return json({ ok: true });
+  }
+
+  if (url.pathname === "/v1/auth/password/change") {
+    requireMethod(request, "POST");
+    const body = await readJsonObject(request);
+    await changePassword(
+      env,
+      auth,
+      stringField(body, "currentPassword", { required: true, min: 1, max: 512 })!,
+      stringField(body, "newPassword", { required: true, min: 14, max: 512 })!
+    );
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "auth.password.change",
+      targetType: "account",
+      targetId: auth.account.account_id,
       requestId,
       result: "success"
     });
@@ -309,6 +364,40 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       result: "success"
     });
     return json({ ok: true, account: publicAccount(account) });
+  }
+
+  const adminCredentialReset = routeParams(/^\/v1\/admin\/accounts\/([^/]+)\/credential-reset$/, url.pathname);
+  if (adminCredentialReset) {
+    requireMethod(request, "POST");
+    const adminRole = requireAdmin(auth, ["user_admin", "security_admin"]);
+    const body = await readJsonObject(request);
+    const reset = await createCredentialReset(env, {
+      accountId: adminCredentialReset[1],
+      createdByAccountId: auth.account.account_id,
+      reason: stringField(body, "reason", { max: 240 }),
+      expiresInDays: numberField(body, "expiresInDays", 1, 14),
+      revokeDevices: body.revokeDevices === undefined ? true : booleanField(body, "revokeDevices")
+    });
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      actorAdminRole: adminRole,
+      action: "admin.account.credential_reset.create",
+      targetType: "account",
+      targetId: adminCredentialReset[1],
+      requestId,
+      result: "success",
+      metadata: { resetId: reset.resetId }
+    });
+    return json(
+      {
+        ok: true,
+        account: publicAccount(reset.account),
+        resetId: reset.resetId,
+        resetToken: reset.resetToken,
+        expiresAt: reset.expiresAt
+      },
+      { status: 201 }
+    );
   }
 
   const adminPolicyPatch = routeParams(/^\/v1\/admin\/accounts\/([^/]+)\/policy$/, url.pathname);
@@ -435,4 +524,16 @@ function numberField(body: Record<string, unknown>, key: string, min: number, ma
     throw new HttpError(400, "invalid_field", `Field must be an integer between ${min} and ${max}: ${key}`);
   }
   return value;
+}
+
+function booleanField(body: Record<string, unknown>, key: string): boolean {
+  const value = body[key];
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, "invalid_field", `Field must be a boolean: ${key}`);
+  }
+  return value;
+}
+
+function clientIp(request: Request): string {
+  return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 }

@@ -13,6 +13,7 @@ This PR implements the Phase 1 backend control plane:
 - Account shell and invitation creation.
 - Invitation acceptance with user-established password.
 - Password login/logout.
+- Password change and admin-issued credential reset.
 - Session listing and revocation.
 - Device listing, registration, and revocation.
 - Admin account suspend/restore/auth-reset actions.
@@ -23,7 +24,7 @@ This PR implements the Phase 1 backend control plane:
 - Principal directory and manually created agent principals.
 - Device key-package metadata APIs.
 - Direct and group rooms.
-- Room membership, roles, archiving, leaving, and ownership transfer.
+- Room membership, human room invitations, roles, archiving, leaving, and ownership transfer.
 - Opaque encrypted message envelopes with idempotency, sequencing, sync, and acknowledgements.
 - Worker-mediated encrypted attachment allocation, upload, completion, download, and deletion.
 - Sidebar collections.
@@ -67,11 +68,13 @@ Public:
 - `POST /v1/admin/bootstrap`
 - `POST /v1/invitations/accept`
 - `POST /v1/auth/password/login`
+- `POST /v1/auth/password/reset/complete`
 
 Authenticated user:
 
 - `GET /v1/me`
 - `POST /v1/auth/logout`
+- `POST /v1/auth/password/change`
 - `GET /v1/sessions`
 - `DELETE /v1/sessions/{session_id}`
 - `GET /v1/devices`
@@ -79,9 +82,11 @@ Authenticated user:
 - `POST /v1/devices/{device_id}/revoke`
 - `GET /v1/principals`
 - `GET /v1/principals/{principal_id}/devices`
+- `GET /v1/devices/{device_id}/key-packages`
 - `POST /v1/devices/{device_id}/key-packages`
 - `GET /v1/principals/{principal_id}/key-packages`
 - `POST /v1/key-packages/{key_package_id}/claim`
+- `POST /v1/key-packages/{key_package_id}/revoke`
 - `GET /v1/rooms`
 - `POST /v1/rooms/direct`
 - `POST /v1/rooms/groups`
@@ -89,6 +94,10 @@ Authenticated user:
 - `PATCH /v1/rooms/{room_id}`
 - `POST /v1/rooms/{room_id}/archive`
 - `POST /v1/rooms/{room_id}/members`
+- `POST /v1/rooms/{room_id}/invitations`
+- `GET /v1/room-invitations`
+- `POST /v1/room-invitations/{room_invitation_id}/accept`
+- `POST /v1/room-invitations/{room_invitation_id}/decline`
 - `PATCH /v1/rooms/{room_id}/members/{principal_id}/role`
 - `DELETE /v1/rooms/{room_id}/members/{principal_id}`
 - `POST /v1/rooms/{room_id}/leave`
@@ -119,6 +128,7 @@ Admin:
 - `POST /v1/admin/accounts/{account_id}/suspend`
 - `POST /v1/admin/accounts/{account_id}/restore`
 - `POST /v1/admin/accounts/{account_id}/require-auth-reset`
+- `POST /v1/admin/accounts/{account_id}/credential-reset`
 - `PATCH /v1/admin/accounts/{account_id}/policy`
 - `POST /v1/admin/accounts/{account_id}/roles`
 - `DELETE /v1/admin/accounts/{account_id}/roles/{role_name}`
@@ -129,6 +139,8 @@ Admin:
 - `GET /v1/admin/agent-requests`
 - `PATCH /v1/admin/agent-requests/{request_id}`
 - `POST /v1/admin/agents`
+- `GET /v1/admin/maintenance/runs`
+- `POST /v1/admin/maintenance/cleanup`
 
 ## Backend-First Test Path
 
@@ -137,10 +149,12 @@ The API can be exercised with curl or a plain fetch-based script:
 1. Bootstrap the platform owner.
 2. Create and accept user invitations.
 3. Login with password/passphrase and collect bearer tokens.
-4. Publish device key-package metadata.
-5. Create direct or group rooms.
-6. Add members or manually created agent principals.
-7. Send opaque encrypted envelopes with idempotency keys.
-8. Sync pending messages and acknowledge them.
-9. Allocate, upload, complete, download, and delete opaque attachment blobs.
-10. Submit and review agent requests without contacting a live agent runtime.
+4. Change passwords or complete admin credential reset tokens.
+5. Publish, list, claim, and revoke device key-package metadata.
+6. Create direct or group rooms.
+7. Add members, send human room invitations, or add manually created agent principals.
+8. Send opaque encrypted envelopes with idempotency keys.
+9. Sync pending messages and acknowledge them.
+10. Allocate, upload, complete, download, and delete opaque attachment blobs.
+11. Submit and review agent requests without contacting a live agent runtime.
+12. Run admin cleanup and inspect maintenance history.
