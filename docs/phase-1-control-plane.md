@@ -2,6 +2,8 @@
 
 Status: pull request implementation notes
 
+See `docs/backend-first-deviation.md` for the accepted backend-first deviation that removes active external blockers from this pass.
+
 ## Scope
 
 This PR implements the Phase 1 backend control plane:
@@ -18,12 +20,17 @@ This PR implements the Phase 1 backend control plane:
 - Policy listing and account policy assignment.
 - Audit event recording and listing.
 - Usage summary endpoint.
-- Passkey/WebAuthn registration and login ceremonies.
+- Principal directory and manually created agent principals.
+- Device key-package metadata APIs.
+- Direct and group rooms.
+- Room membership, roles, archiving, leaving, and ownership transfer.
+- Opaque encrypted message envelopes with idempotency, sequencing, sync, and acknowledgements.
+- Worker-mediated encrypted attachment allocation, upload, completion, download, and deletion.
+- Sidebar collections.
+- Agent request submission and admin review.
 - CI type check, D1 migration, and Worker deployment workflow.
 
-Password/passphrase fallback and passkey login both exist. Passkeys are implemented with server-side WebAuthn challenge storage, credential verification, replay counter updates, and authenticator audit records.
-
-WebAuthn defaults to the Worker request origin and hostname. When a separate frontend origin is introduced, configure `WEBAUTHN_ORIGIN` and `WEBAUTHN_RP_ID` on the Worker so browser-origin validation matches the frontend host.
+Password/passphrase authentication is active. Passkeys/WebAuthn, push providers, app-store packaging, code signing, live agent runtimes, Durable Object realtime coordination, Queues, external identity providers, and provider webhooks are intentionally deferred for the backend-first path.
 
 ## Bootstrap
 
@@ -60,20 +67,50 @@ Public:
 - `POST /v1/admin/bootstrap`
 - `POST /v1/invitations/accept`
 - `POST /v1/auth/password/login`
-- `POST /v1/auth/passkeys/login/options`
-- `POST /v1/auth/passkeys/login/verify`
 
 Authenticated user:
 
 - `GET /v1/me`
 - `POST /v1/auth/logout`
-- `POST /v1/auth/passkeys/register/options`
-- `POST /v1/auth/passkeys/register/verify`
 - `GET /v1/sessions`
 - `DELETE /v1/sessions/{session_id}`
 - `GET /v1/devices`
 - `POST /v1/devices`
 - `POST /v1/devices/{device_id}/revoke`
+- `GET /v1/principals`
+- `GET /v1/principals/{principal_id}/devices`
+- `POST /v1/devices/{device_id}/key-packages`
+- `GET /v1/principals/{principal_id}/key-packages`
+- `POST /v1/key-packages/{key_package_id}/claim`
+- `GET /v1/rooms`
+- `POST /v1/rooms/direct`
+- `POST /v1/rooms/groups`
+- `GET /v1/rooms/{room_id}`
+- `PATCH /v1/rooms/{room_id}`
+- `POST /v1/rooms/{room_id}/archive`
+- `POST /v1/rooms/{room_id}/members`
+- `PATCH /v1/rooms/{room_id}/members/{principal_id}/role`
+- `DELETE /v1/rooms/{room_id}/members/{principal_id}`
+- `POST /v1/rooms/{room_id}/leave`
+- `POST /v1/rooms/{room_id}/ownership-transfers`
+- `POST /v1/rooms/{room_id}/ownership-transfers/{transfer_id}/accept`
+- `GET /v1/rooms/{room_id}/messages`
+- `POST /v1/rooms/{room_id}/messages`
+- `POST /v1/rooms/{room_id}/messages/{envelope_id}/ack`
+- `GET /v1/sync`
+- `POST /v1/rooms/{room_id}/attachments`
+- `PUT /v1/attachments/{attachment_id}/blob`
+- `POST /v1/attachments/{attachment_id}/complete`
+- `GET /v1/attachments/{attachment_id}/blob`
+- `DELETE /v1/attachments/{attachment_id}`
+- `GET /v1/sidebar-collections`
+- `POST /v1/sidebar-collections`
+- `PATCH /v1/sidebar-collections/{collection_id}`
+- `DELETE /v1/sidebar-collections/{collection_id}`
+- `POST /v1/sidebar-collections/{collection_id}/items`
+- `DELETE /v1/sidebar-collections/{collection_id}/items/{room_id}`
+- `GET /v1/agent-requests`
+- `POST /v1/agent-requests`
 
 Admin:
 
@@ -88,19 +125,22 @@ Admin:
 - `GET /v1/admin/policies`
 - `GET /v1/admin/usage`
 - `GET /v1/admin/audit-events`
+- `GET /v1/admin/rooms`
+- `GET /v1/admin/agent-requests`
+- `PATCH /v1/admin/agent-requests/{request_id}`
+- `POST /v1/admin/agents`
 
-## Passkey Flow
+## Backend-First Test Path
 
-Registration requires an authenticated session:
+The API can be exercised with curl or a plain fetch-based script:
 
-1. `POST /v1/auth/passkeys/register/options` with bearer auth.
-2. Frontend calls `navigator.credentials.create()` with the returned `options`.
-3. `POST /v1/auth/passkeys/register/verify` with the browser credential response and bearer auth.
-
-Login is public:
-
-1. `POST /v1/auth/passkeys/login/options` with the account email.
-2. Frontend calls `navigator.credentials.get()` with the returned `options`.
-3. `POST /v1/auth/passkeys/login/verify` with the browser credential response and optional `device` metadata.
-
-Successful passkey login creates a normal device/session pair and returns a bearer `sessionToken`, the same as password login.
+1. Bootstrap the platform owner.
+2. Create and accept user invitations.
+3. Login with password/passphrase and collect bearer tokens.
+4. Publish device key-package metadata.
+5. Create direct or group rooms.
+6. Add members or manually created agent principals.
+7. Send opaque encrypted envelopes with idempotency keys.
+8. Sync pending messages and acknowledge them.
+9. Allocate, upload, complete, download, and delete opaque attachment blobs.
+10. Submit and review agent requests without contacting a live agent runtime.
