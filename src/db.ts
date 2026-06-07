@@ -4,6 +4,14 @@ import type { AccountRow, AuthContext, DeviceInput, DeviceRow, Env, PolicyRow, P
 
 const SESSION_DAYS = 30;
 const INVITATION_DAYS = 7;
+const CREDENTIAL_RESET_DAYS = 3;
+
+export interface CredentialResetResult {
+  account: AccountRow;
+  resetId: string;
+  resetToken: string;
+  expiresAt: string;
+}
 
 export async function audit(
   env: Env,
@@ -311,6 +319,108 @@ export async function loginWithPassword(
   return { account, principal, device, sessionToken };
 }
 
+export async function changePassword(
+  env: Env,
+  auth: AuthContext,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const authenticator = await env.CONTROL_DB.prepare(
+    `SELECT authenticator_id, password_verifier
+     FROM authenticators
+     WHERE account_id = ? AND type = 'password' AND revoked_at IS NULL
+     ORDER BY created_at DESC
+     LIMIT 1`
+  )
+    .bind(auth.account.account_id)
+    .first<{ authenticator_id: string; password_verifier: string }>();
+  if (!authenticator || !(await verifyPassword(currentPassword, authenticator.password_verifier))) {
+    throw new HttpError(401, "invalid_credentials", "Invalid credentials");
+  }
+  await replacePassword(env, auth.account.account_id, newPassword);
+}
+
+export async function createCredentialReset(
+  env: Env,
+  input: {
+    accountId: string;
+    createdByAccountId: string;
+    reason?: string;
+    expiresInDays?: number;
+    revokeDevices?: boolean;
+  }
+): Promise<CredentialResetResult> {
+  const account = await getAccount(env, input.accountId);
+  if (account.status === "deleted" || account.status === "pending_deletion") {
+    throw new HttpError(409, "account_not_resettable", "Account cannot be reset");
+  }
+  const resetId = randomId("rst");
+  const resetToken = randomToken();
+  const tokenHash = await sha256Base64Url(resetToken);
+  const expiresAt = sqliteTimestamp(Date.now() + (input.expiresInDays ?? CREDENTIAL_RESET_DAYS) * 24 * 60 * 60 * 1000);
+  const statements = [
+    env.CONTROL_DB.prepare(
+      `INSERT INTO credential_reset_tokens (
+        reset_id, token_hash, account_id, created_by_account_id, reason, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(resetId, tokenHash, input.accountId, input.createdByAccountId, input.reason ?? null, expiresAt),
+    env.CONTROL_DB.prepare("UPDATE accounts SET status = 'locked', updated_at = CURRENT_TIMESTAMP WHERE account_id = ?").bind(input.accountId),
+    env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL").bind(input.accountId)
+  ];
+  if (input.revokeDevices ?? true) {
+    statements.push(
+      env.CONTROL_DB.prepare(
+        "UPDATE devices SET revoked_at = CURRENT_TIMESTAMP, revocation_reason = 'credential_reset' WHERE account_id = ? AND revoked_at IS NULL"
+      ).bind(input.accountId)
+    );
+  }
+  await env.CONTROL_DB.batch(statements);
+  return { account: await getAccount(env, input.accountId), resetId, resetToken, expiresAt };
+}
+
+export async function completeCredentialReset(
+  env: Env,
+  input: { token: string; password: string; device: DeviceInput }
+): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; sessionToken: string }> {
+  const tokenHash = await sha256Base64Url(input.token);
+  const reset = await env.CONTROL_DB.prepare(
+    `SELECT reset_id, account_id
+     FROM credential_reset_tokens
+     WHERE token_hash = ?
+       AND used_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > CURRENT_TIMESTAMP`
+  )
+    .bind(tokenHash)
+    .first<{ reset_id: string; account_id: string }>();
+  if (!reset) {
+    throw new HttpError(400, "invalid_credential_reset", "Credential reset token is invalid or expired");
+  }
+
+  const account = await getAccount(env, reset.account_id);
+  if (account.status === "deleted" || account.status === "pending_deletion") {
+    throw new HttpError(409, "account_not_resettable", "Account cannot be reset");
+  }
+  if (!account.default_principal_id) {
+    throw new HttpError(500, "missing_principal", "Account is missing its default principal");
+  }
+
+  await replacePassword(env, account.account_id, input.password);
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      "UPDATE accounts SET status = 'active', activated_at = COALESCE(activated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE account_id = ?"
+    ).bind(account.account_id),
+    env.CONTROL_DB.prepare("UPDATE credential_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE reset_id = ?").bind(reset.reset_id),
+    env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL").bind(account.account_id)
+  ]);
+
+  const activeAccount = await getAccount(env, account.account_id);
+  const principal = await getPrincipal(env, account.default_principal_id);
+  const device = await createDeviceForPrincipal(env, activeAccount.account_id, principal.principal_id, input.device);
+  const sessionToken = await createSession(env, activeAccount.account_id, device.device_id);
+  return { account: activeAccount, principal, device, sessionToken };
+}
+
 export async function getActiveAccountByEmail(env: Env, email: string): Promise<AccountRow | null> {
   const account = await env.CONTROL_DB.prepare("SELECT * FROM accounts WHERE lower(email) = lower(?)")
     .bind(email)
@@ -462,6 +572,31 @@ export async function revokeAdminRoleFromAccount(env: Env, accountId: string, ro
   return getActiveAdminRoles(env, accountId);
 }
 
+export async function checkRateLimit(
+  env: Env,
+  input: { key: string; action: string; limit: number; windowSeconds: number }
+): Promise<void> {
+  const now = Date.now();
+  const windowExpiresAt = sqliteTimestamp(now + input.windowSeconds * 1000);
+  const existing = await env.CONTROL_DB.prepare("SELECT count, expires_at FROM rate_limits WHERE rate_limit_key = ?")
+    .bind(input.key)
+    .first<{ count: number; expires_at: string }>();
+  if (!existing || existing.expires_at <= sqliteTimestamp(now)) {
+    await env.CONTROL_DB.prepare(
+      "INSERT INTO rate_limits (rate_limit_key, action, count, window_start, expires_at) VALUES (?, ?, 1, CURRENT_TIMESTAMP, ?) ON CONFLICT(rate_limit_key) DO UPDATE SET action = excluded.action, count = 1, window_start = CURRENT_TIMESTAMP, expires_at = excluded.expires_at, updated_at = CURRENT_TIMESTAMP"
+    )
+      .bind(input.key, input.action, windowExpiresAt)
+      .run();
+    return;
+  }
+  if (existing.count >= input.limit) {
+    throw new HttpError(429, "rate_limited", "Too many attempts");
+  }
+  await env.CONTROL_DB.prepare("UPDATE rate_limits SET count = count + 1, updated_at = CURRENT_TIMESTAMP WHERE rate_limit_key = ?")
+    .bind(input.key)
+    .run();
+}
+
 export async function getUsage(env: Env): Promise<Record<string, number>> {
   const [accounts, activeDevices, activeSessions, invitations, audits, rooms, messages, attachments, agentRequests] = await Promise.all([
     count(env, "accounts"),
@@ -549,6 +684,15 @@ async function setPassword(env: Env, accountId: string, password: string): Promi
   )
     .bind(randomId("auth"), accountId, passwordVerifier)
     .run();
+}
+
+async function replacePassword(env: Env, accountId: string, password: string): Promise<void> {
+  await env.CONTROL_DB.prepare(
+    "UPDATE authenticators SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND type = 'password' AND revoked_at IS NULL"
+  )
+    .bind(accountId)
+    .run();
+  await setPassword(env, accountId, password);
 }
 
 async function grantAdminRole(env: Env, accountId: string, roleName: string, grantedByAccountId: string | null): Promise<void> {

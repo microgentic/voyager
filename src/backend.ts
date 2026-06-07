@@ -8,9 +8,15 @@ const MAX_KEY_PACKAGE_BYTES = 16_384;
 const DEFAULT_KEY_PACKAGE_DAYS = 30;
 const OWNERSHIP_TRANSFER_DAYS = 7;
 const DEFAULT_ATTACHMENT_DAYS = 30;
+const ROOM_INVITATION_DAYS = 7;
 
 type RouteResult = Response | null;
 type JsonObject = Record<string, unknown>;
+
+interface PageParams {
+  limit: number;
+  offset: number;
+}
 
 interface PrincipalRecord extends PrincipalRow {
   account_status: AccountRow["status"];
@@ -65,6 +71,23 @@ interface AttachmentRow {
   deleted_at: string | null;
 }
 
+interface RoomInvitationRow {
+  room_invitation_id: string;
+  room_id: string;
+  invited_account_id: string;
+  invited_principal_id: string;
+  invited_by_account_id: string;
+  invited_by_principal_id: string;
+  role: "admin" | "member";
+  status: "pending" | "accepted" | "declined" | "revoked" | "expired";
+  expires_at: string;
+  responded_at: string | null;
+  created_at: string;
+  room_name?: string | null;
+  room_type?: RoomRow["type"];
+  invited_by_display_name?: string;
+}
+
 export async function handleBackendFirstRoutes(
   request: Request,
   env: Env,
@@ -85,6 +108,9 @@ export async function handleBackendFirstRoutes(
 
   const publishKeyPackageMatch = routeParams(/^\/v1\/devices\/([^/]+)\/key-packages$/, url.pathname);
   if (publishKeyPackageMatch) {
+    if (request.method === "GET") {
+      return json({ ok: true, ...(await listOwnDeviceKeyPackages(env, auth, publishKeyPackageMatch[1], url)) });
+    }
     requireMethod(request, "POST");
     const body = await readJsonObject(request);
     const keyPackage = await publishKeyPackage(env, auth, publishKeyPackageMatch[1], body);
@@ -121,9 +147,24 @@ export async function handleBackendFirstRoutes(
     return json({ ok: true, keyPackage });
   }
 
+  const revokeKeyPackageMatch = routeParams(/^\/v1\/key-packages\/([^/]+)\/revoke$/, url.pathname);
+  if (revokeKeyPackageMatch) {
+    requireMethod(request, "POST");
+    await revokeKeyPackage(env, auth, revokeKeyPackageMatch[1]);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "device.key_package.revoke",
+      targetType: "key_package",
+      targetId: revokeKeyPackageMatch[1],
+      requestId,
+      result: "success"
+    });
+    return json({ ok: true });
+  }
+
   if (url.pathname === "/v1/rooms") {
     requireMethod(request, "GET");
-    return json({ ok: true, rooms: await listRooms(env, auth) });
+    return json({ ok: true, ...(await listRooms(env, auth, url)) });
   }
 
   if (url.pathname === "/v1/rooms/direct") {
@@ -202,6 +243,43 @@ export async function handleBackendFirstRoutes(
       metadata: { principalId: member.principalId, role: member.role }
     });
     return json({ ok: true, member }, { status: 201 });
+  }
+
+  const roomInvitationsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/invitations$/, url.pathname);
+  if (roomInvitationsMatch) {
+    requireMethod(request, "POST");
+    const invitation = await createRoomInvitation(env, auth, roomInvitationsMatch[1], await readJsonObject(request));
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "room.invitation.create",
+      targetType: "room",
+      targetId: roomInvitationsMatch[1],
+      requestId,
+      result: "success",
+      metadata: { roomInvitationId: invitation.roomInvitationId, invitedPrincipalId: invitation.invitedPrincipalId }
+    });
+    return json({ ok: true, invitation }, { status: 201 });
+  }
+
+  if (url.pathname === "/v1/room-invitations") {
+    requireMethod(request, "GET");
+    return json({ ok: true, ...(await listRoomInvitations(env, auth, url)) });
+  }
+
+  const roomInvitationActionMatch = routeParams(/^\/v1\/room-invitations\/([^/]+)\/(accept|decline)$/, url.pathname);
+  if (roomInvitationActionMatch) {
+    requireMethod(request, "POST");
+    const [, roomInvitationId, action] = roomInvitationActionMatch;
+    const invitation = action === "accept" ? await acceptRoomInvitation(env, auth, roomInvitationId) : await declineRoomInvitation(env, auth, roomInvitationId);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: `room.invitation.${action}`,
+      targetType: "room_invitation",
+      targetId: roomInvitationId,
+      requestId,
+      result: "success"
+    });
+    return json({ ok: true, invitation });
   }
 
   const roomMemberRoleMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members\/([^/]+)\/role$/, url.pathname);
@@ -407,7 +485,7 @@ export async function handleBackendFirstRoutes(
 
   if (url.pathname === "/v1/agent-requests") {
     if (request.method === "GET") {
-      return json({ ok: true, requests: await listOwnAgentRequests(env, auth) });
+      return json({ ok: true, ...(await listOwnAgentRequests(env, auth, url)) });
     }
     if (request.method === "POST") {
       const agentRequest = await createAgentRequest(env, auth, await readJsonObject(request));
@@ -426,7 +504,7 @@ export async function handleBackendFirstRoutes(
   if (url.pathname === "/v1/admin/agent-requests") {
     requireMethod(request, "GET");
     requireAdmin(auth, ["agent_provisioner", "user_admin", "auditor"]);
-    return json({ ok: true, requests: await listAdminAgentRequests(env) });
+    return json({ ok: true, ...(await listAdminAgentRequests(env, url)) });
   }
 
   const adminAgentRequestMatch = routeParams(/^\/v1\/admin\/agent-requests\/([^/]+)$/, url.pathname);
@@ -466,7 +544,30 @@ export async function handleBackendFirstRoutes(
   if (url.pathname === "/v1/admin/rooms") {
     requireMethod(request, "GET");
     requireAdmin(auth, ["user_admin", "security_admin", "auditor"]);
-    return json({ ok: true, rooms: await listAdminRooms(env) });
+    return json({ ok: true, ...(await listAdminRooms(env, url)) });
+  }
+
+  if (url.pathname === "/v1/admin/maintenance/runs") {
+    requireMethod(request, "GET");
+    requireAdmin(auth, ["security_admin", "auditor"]);
+    return json({ ok: true, ...(await listMaintenanceRuns(env, url)) });
+  }
+
+  if (url.pathname === "/v1/admin/maintenance/cleanup") {
+    requireMethod(request, "POST");
+    const adminRole = requireAdmin(auth, ["security_admin"]);
+    const result = await runCleanup(env, auth);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      actorAdminRole: adminRole,
+      action: "admin.maintenance.cleanup",
+      targetType: "maintenance",
+      targetId: String(result.maintenanceRunId),
+      requestId,
+      result: "success",
+      metadata: result
+    });
+    return json({ ok: true, cleanup: result }, { status: 201 });
   }
 
   return null;
@@ -542,6 +643,29 @@ async function listAvailableKeyPackages(env: Env, principalId: string): Promise<
   return (result.results ?? []).map(publicKeyPackage);
 }
 
+async function listOwnDeviceKeyPackages(env: Env, auth: AuthContext, deviceId: string, url: URL): Promise<JsonObject> {
+  const device = await env.CONTROL_DB.prepare("SELECT device_id FROM devices WHERE device_id = ? AND account_id = ?")
+    .bind(deviceId, auth.account.account_id)
+    .first<{ device_id: string }>();
+  if (!device) {
+    throw new HttpError(404, "device_not_found", "Device not found");
+  }
+  const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
+  const result = await env.CONTROL_DB.prepare(
+    `SELECT key_package_id, account_id, principal_id, device_id, protocol, public_identity_key,
+      signed_prekey, one_time_prekey, package_json, status, claimed_by_device_id,
+      claimed_at, expires_at, created_at
+     FROM device_key_packages
+     WHERE device_id = ?
+     ORDER BY created_at DESC
+     LIMIT ? OFFSET ?`
+  )
+    .bind(deviceId, page.limit, page.offset)
+    .all<Record<string, unknown>>();
+  const keyPackages = (result.results ?? []).map(publicKeyPackage);
+  return { keyPackages, nextCursor: nextCursor(keyPackages.length, page) };
+}
+
 async function claimKeyPackage(env: Env, auth: AuthContext, keyPackageId: string): Promise<JsonObject> {
   const existing = await getRawKeyPackage(env, keyPackageId);
   if (!existing || existing.status !== "available" || String(existing.expires_at) <= sqliteTimestamp(Date.now())) {
@@ -558,17 +682,33 @@ async function claimKeyPackage(env: Env, auth: AuthContext, keyPackageId: string
   return getKeyPackage(env, keyPackageId, true);
 }
 
-async function listRooms(env: Env, auth: AuthContext): Promise<unknown[]> {
+async function revokeKeyPackage(env: Env, auth: AuthContext, keyPackageId: string): Promise<void> {
+  const existing = await getRawKeyPackage(env, keyPackageId);
+  if (!existing) {
+    throw new HttpError(404, "key_package_not_found", "Key package not found");
+  }
+  if (existing.account_id !== auth.account.account_id) {
+    throw new HttpError(403, "forbidden", "Key package belongs to another account");
+  }
+  await env.CONTROL_DB.prepare("UPDATE device_key_packages SET status = 'revoked' WHERE key_package_id = ? AND status != 'revoked'")
+    .bind(keyPackageId)
+    .run();
+}
+
+async function listRooms(env: Env, auth: AuthContext, url?: URL): Promise<JsonObject> {
+  const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
   const result = await env.CONTROL_DB.prepare(
     `SELECT r.*
      FROM rooms r
      JOIN room_memberships rm ON rm.room_id = r.room_id
      WHERE rm.principal_id = ? AND rm.status = 'active' AND r.status != 'deleted'
-     ORDER BY r.updated_at DESC`
+     ORDER BY r.updated_at DESC
+     LIMIT ? OFFSET ?`
   )
-    .bind(auth.principal.principal_id)
+    .bind(auth.principal.principal_id, page.limit, page.offset)
     .all<RoomRow>();
-  return Promise.all((result.results ?? []).map((room) => publicRoomWithMembers(env, room)));
+  const rooms = await Promise.all((result.results ?? []).map((room) => publicRoomWithMembers(env, room)));
+  return { rooms, nextCursor: nextCursor(rooms.length, page) };
 }
 
 async function createDirectRoom(env: Env, auth: AuthContext, body: Record<string, unknown>): Promise<JsonObject> {
@@ -658,10 +798,115 @@ async function addRoomMember(env: Env, auth: AuthContext, roomId: string, body: 
   }
   const principal = await getActivePrincipal(env, stringField(body, "principalId", { required: true, max: 80 })!);
   const role = normalizedRole(stringField(body, "role", { max: 20 }), principal.principal_type);
-  await enforceMemberQuota(env, auth, roomId);
+  await enforceMemberQuota(env, roomId);
   await upsertMembership(env, roomId, principal, role, auth.principal.principal_id);
   await bumpRoom(env, roomId);
   return publicMembership(await getMembership(env, roomId, principal.principal_id));
+}
+
+async function createRoomInvitation(env: Env, auth: AuthContext, roomId: string, body: Record<string, unknown>): Promise<JsonObject> {
+  await requireRoomManager(env, auth, roomId);
+  const room = await getRoom(env, roomId);
+  if (room.type === "direct") {
+    throw new HttpError(409, "direct_room_members_locked", "Direct room members cannot be changed");
+  }
+  const principal = await getActivePrincipal(env, stringField(body, "principalId", { required: true, max: 80 })!);
+  if (principal.principal_type !== "human") {
+    throw new HttpError(400, "agent_invitation_not_supported", "Agent principals should be added directly by a room admin");
+  }
+  const activeMembership = await env.CONTROL_DB.prepare(
+    "SELECT membership_id FROM room_memberships WHERE room_id = ? AND principal_id = ? AND status = 'active'"
+  )
+    .bind(roomId, principal.principal_id)
+    .first<{ membership_id: string }>();
+  if (activeMembership) {
+    throw new HttpError(409, "room_member_already_active", "Principal is already an active room member");
+  }
+  const existingInvitation = await env.CONTROL_DB.prepare(
+    "SELECT room_invitation_id FROM room_invitations WHERE room_id = ? AND invited_principal_id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP"
+  )
+    .bind(roomId, principal.principal_id)
+    .first<{ room_invitation_id: string }>();
+  if (existingInvitation) {
+    throw new HttpError(409, "room_invitation_exists", "A pending room invitation already exists");
+  }
+  await enforceMemberQuota(env, roomId);
+
+  const roomInvitationId = randomId("rinv");
+  const expiresAt = sqliteTimestamp(Date.now() + numberField(body, "expiresInDays", 1, 30, ROOM_INVITATION_DAYS) * 24 * 60 * 60 * 1000);
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO room_invitations (
+      room_invitation_id, room_id, invited_account_id, invited_principal_id,
+      invited_by_account_id, invited_by_principal_id, role, status, expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+  )
+    .bind(
+      roomInvitationId,
+      roomId,
+      principal.account_id,
+      principal.principal_id,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      normalizedInvitationRole(stringField(body, "role", { max: 20 })),
+      expiresAt
+    )
+    .run();
+  return publicRoomInvitation(await getRoomInvitation(env, roomInvitationId));
+}
+
+async function listRoomInvitations(env: Env, auth: AuthContext, url: URL): Promise<JsonObject> {
+  const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
+  const status = url.searchParams.get("status") ?? "pending";
+  if (!["pending", "accepted", "declined", "revoked", "expired"].includes(status)) {
+    throw new HttpError(400, "invalid_invitation_status", "Room invitation status is invalid");
+  }
+  const pendingFilter = status === "pending" ? "AND ri.expires_at > CURRENT_TIMESTAMP" : "";
+  const result = await env.CONTROL_DB.prepare(
+    `SELECT ri.*, r.name AS room_name, r.type AS room_type, p.display_name AS invited_by_display_name
+     FROM room_invitations ri
+     JOIN rooms r ON r.room_id = ri.room_id
+     JOIN principals p ON p.principal_id = ri.invited_by_principal_id
+     WHERE ri.invited_principal_id = ?
+       AND ri.status = ?
+       ${pendingFilter}
+     ORDER BY ri.created_at DESC
+     LIMIT ? OFFSET ?`
+  )
+    .bind(auth.principal.principal_id, status, page.limit, page.offset)
+    .all<RoomInvitationRow>();
+  const invitations = (result.results ?? []).map(publicRoomInvitation);
+  return { invitations, nextCursor: nextCursor(invitations.length, page) };
+}
+
+async function acceptRoomInvitation(env: Env, auth: AuthContext, roomInvitationId: string): Promise<JsonObject> {
+  const invitation = await getPendingRoomInvitationForPrincipal(env, roomInvitationId, auth.principal.principal_id);
+  const existingMembership = await env.CONTROL_DB.prepare(
+    "SELECT membership_id FROM room_memberships WHERE room_id = ? AND principal_id = ? AND status = 'active'"
+  )
+    .bind(invitation.room_id, auth.principal.principal_id)
+    .first<{ membership_id: string }>();
+  if (!existingMembership) {
+    await enforceMemberQuota(env, invitation.room_id);
+    const principal = await getActivePrincipal(env, auth.principal.principal_id);
+    await upsertMembership(env, invitation.room_id, principal, invitation.role, invitation.invited_by_principal_id);
+    await bumpRoom(env, invitation.room_id);
+  }
+  await env.CONTROL_DB.prepare(
+    "UPDATE room_invitations SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE room_invitation_id = ? AND status = 'pending'"
+  )
+    .bind(roomInvitationId)
+    .run();
+  return publicRoomInvitation(await getRoomInvitation(env, roomInvitationId));
+}
+
+async function declineRoomInvitation(env: Env, auth: AuthContext, roomInvitationId: string): Promise<JsonObject> {
+  const invitation = await getPendingRoomInvitationForPrincipal(env, roomInvitationId, auth.principal.principal_id);
+  await env.CONTROL_DB.prepare(
+    "UPDATE room_invitations SET status = 'declined', responded_at = CURRENT_TIMESTAMP WHERE room_invitation_id = ? AND status = 'pending'"
+  )
+    .bind(invitation.room_invitation_id)
+    .run();
+  return publicRoomInvitation(await getRoomInvitation(env, roomInvitationId));
 }
 
 async function updateRoomMemberRole(env: Env, auth: AuthContext, roomId: string, principalId: string, body: Record<string, unknown>): Promise<JsonObject> {
@@ -842,7 +1087,7 @@ async function acknowledgeMessage(env: Env, auth: AuthContext, roomId: string, e
 
 async function syncAccount(env: Env, auth: AuthContext, url: URL): Promise<JsonObject> {
   const limit = numberParam(url, "limit", 1, 200, 50);
-  const rooms = await listRooms(env, auth);
+  const roomPage = await listRooms(env, auth, url);
   const result = await env.CONTROL_DB.prepare(
     `SELECT me.*
      FROM delivery_receipts dr
@@ -856,7 +1101,7 @@ async function syncAccount(env: Env, auth: AuthContext, url: URL): Promise<JsonO
   )
     .bind(auth.device.device_id, limit)
     .all<Record<string, unknown>>();
-  return { rooms, pendingMessages: (result.results ?? []).map(publicMessage) };
+  return { rooms: roomPage.rooms, roomsNextCursor: roomPage.nextCursor, pendingMessages: (result.results ?? []).map(publicMessage) };
 }
 
 async function allocateAttachment(env: Env, auth: AuthContext, roomId: string, body: Record<string, unknown>): Promise<JsonObject> {
@@ -1045,16 +1290,28 @@ async function createAgentRequest(env: Env, auth: AuthContext, body: Record<stri
   return getAgentRequest(env, requestId);
 }
 
-async function listOwnAgentRequests(env: Env, auth: AuthContext): Promise<unknown[]> {
-  const result = await env.CONTROL_DB.prepare("SELECT * FROM agent_requests WHERE requester_account_id = ? ORDER BY created_at DESC")
-    .bind(auth.account.account_id)
+async function listOwnAgentRequests(env: Env, auth: AuthContext, url: URL): Promise<JsonObject> {
+  const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
+  const result = await env.CONTROL_DB.prepare("SELECT * FROM agent_requests WHERE requester_account_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    .bind(auth.account.account_id, page.limit, page.offset)
     .all<Record<string, unknown>>();
-  return (result.results ?? []).map(publicAgentRequest);
+  const requests = (result.results ?? []).map(publicAgentRequest);
+  return { requests, nextCursor: nextCursor(requests.length, page) };
 }
 
-async function listAdminAgentRequests(env: Env): Promise<unknown[]> {
-  const result = await env.CONTROL_DB.prepare("SELECT * FROM agent_requests ORDER BY created_at DESC LIMIT 200").all<Record<string, unknown>>();
-  return (result.results ?? []).map(publicAgentRequest);
+async function listAdminAgentRequests(env: Env, url: URL): Promise<JsonObject> {
+  const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
+  const status = url.searchParams.get("status");
+  if (status && !["submitted", "under_review", "approved", "rejected", "provisioning", "active", "closed"].includes(status)) {
+    throw new HttpError(400, "invalid_agent_request_status", "Unsupported agent request status");
+  }
+  const where = status ? "WHERE status = ?" : "";
+  const stmt = env.CONTROL_DB.prepare(`SELECT * FROM agent_requests ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`);
+  const result = status
+    ? await stmt.bind(status, page.limit, page.offset).all<Record<string, unknown>>()
+    : await stmt.bind(page.limit, page.offset).all<Record<string, unknown>>();
+  const requests = (result.results ?? []).map(publicAgentRequest);
+  return { requests, nextCursor: nextCursor(requests.length, page) };
 }
 
 async function reviewAgentRequest(env: Env, auth: AuthContext, requestId: string, body: Record<string, unknown>): Promise<JsonObject> {
@@ -1095,9 +1352,86 @@ async function createAgentPrincipal(env: Env, auth: AuthContext, body: Record<st
   return publicPrincipal(await getActivePrincipal(env, principalId));
 }
 
-async function listAdminRooms(env: Env): Promise<unknown[]> {
-  const result = await env.CONTROL_DB.prepare("SELECT * FROM rooms ORDER BY updated_at DESC LIMIT 200").all<RoomRow>();
-  return Promise.all((result.results ?? []).map((room) => publicRoomWithMembers(env, room)));
+async function listAdminRooms(env: Env, url: URL): Promise<JsonObject> {
+  const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
+  const status = url.searchParams.get("status");
+  if (status && !["active", "archived", "deleted"].includes(status)) {
+    throw new HttpError(400, "invalid_room_status", "Room status is invalid");
+  }
+  const type = url.searchParams.get("type");
+  if (type && !["direct", "group", "channel"].includes(type)) {
+    throw new HttpError(400, "invalid_room_type", "Room type is invalid");
+  }
+  const filters: string[] = [];
+  const binds: unknown[] = [];
+  if (status) {
+    filters.push("status = ?");
+    binds.push(status);
+  }
+  if (type) {
+    filters.push("type = ?");
+    binds.push(type);
+  }
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const result = await env.CONTROL_DB.prepare(`SELECT * FROM rooms ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
+    .bind(...binds, page.limit, page.offset)
+    .all<RoomRow>();
+  const rooms = await Promise.all((result.results ?? []).map((room) => publicRoomWithMembers(env, room)));
+  return { rooms, nextCursor: nextCursor(rooms.length, page) };
+}
+
+async function listMaintenanceRuns(env: Env, url: URL): Promise<JsonObject> {
+  const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
+  const result = await env.CONTROL_DB.prepare("SELECT * FROM maintenance_runs ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    .bind(page.limit, page.offset)
+    .all<Record<string, unknown>>();
+  const runs = (result.results ?? []).map(publicMaintenanceRun);
+  return { runs, nextCursor: nextCursor(runs.length, page) };
+}
+
+async function runCleanup(env: Env, auth: AuthContext): Promise<JsonObject> {
+  const expiredMessages = await runCounted(
+    env.CONTROL_DB.prepare(
+      "UPDATE message_envelopes SET state = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND state NOT IN ('expired', 'purged')"
+    )
+  );
+  const expiredAttachments = await runCounted(
+    env.CONTROL_DB.prepare(
+      "UPDATE attachments SET state = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND state IN ('allocated', 'uploaded', 'referenced')"
+    )
+  );
+  const expiredKeyPackages = await runCounted(
+    env.CONTROL_DB.prepare("UPDATE device_key_packages SET status = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND status = 'available'")
+  );
+  const expiredRoomInvitations = await runCounted(
+    env.CONTROL_DB.prepare("UPDATE room_invitations SET status = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND status = 'pending'")
+  );
+  const revokedCredentialResets = await runCounted(
+    env.CONTROL_DB.prepare(
+      "UPDATE credential_reset_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE expires_at <= CURRENT_TIMESTAMP AND used_at IS NULL AND revoked_at IS NULL"
+    )
+  );
+  const revokedExpiredSessions = await runCounted(
+    env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE expires_at <= CURRENT_TIMESTAMP AND revoked_at IS NULL")
+  );
+  const deletedRateLimits = await runCounted(env.CONTROL_DB.prepare("DELETE FROM rate_limits WHERE expires_at <= CURRENT_TIMESTAMP"));
+  const cleanup = {
+    maintenanceRunId: randomId("mrun"),
+    action: "cleanup",
+    expiredMessages,
+    expiredAttachments,
+    expiredKeyPackages,
+    expiredRoomInvitations,
+    revokedCredentialResets,
+    revokedExpiredSessions,
+    deletedRateLimits
+  };
+  await env.CONTROL_DB.prepare(
+    "INSERT INTO maintenance_runs (maintenance_run_id, action, actor_account_id, result, metadata_json) VALUES (?, 'cleanup', ?, 'success', ?)"
+  )
+    .bind(cleanup.maintenanceRunId, auth.account.account_id, JSON.stringify(cleanup))
+    .run();
+  return cleanup;
 }
 
 async function requireRoomMembership(env: Env, auth: AuthContext, roomId: string): Promise<MembershipRow> {
@@ -1214,6 +1548,37 @@ async function getMembership(env: Env, roomId: string, principalId: string): Pro
   return membership;
 }
 
+async function getRoomInvitation(env: Env, roomInvitationId: string): Promise<RoomInvitationRow> {
+  const invitation = await env.CONTROL_DB.prepare(
+    `SELECT ri.*, r.name AS room_name, r.type AS room_type, p.display_name AS invited_by_display_name
+     FROM room_invitations ri
+     JOIN rooms r ON r.room_id = ri.room_id
+     JOIN principals p ON p.principal_id = ri.invited_by_principal_id
+     WHERE ri.room_invitation_id = ?`
+  )
+    .bind(roomInvitationId)
+    .first<RoomInvitationRow>();
+  if (!invitation) throw new HttpError(404, "room_invitation_not_found", "Room invitation not found");
+  return invitation;
+}
+
+async function getPendingRoomInvitationForPrincipal(env: Env, roomInvitationId: string, principalId: string): Promise<RoomInvitationRow> {
+  const invitation = await env.CONTROL_DB.prepare(
+    `SELECT ri.*, r.name AS room_name, r.type AS room_type, p.display_name AS invited_by_display_name
+     FROM room_invitations ri
+     JOIN rooms r ON r.room_id = ri.room_id
+     JOIN principals p ON p.principal_id = ri.invited_by_principal_id
+     WHERE ri.room_invitation_id = ?
+       AND ri.invited_principal_id = ?
+       AND ri.status = 'pending'
+       AND ri.expires_at > CURRENT_TIMESTAMP`
+  )
+    .bind(roomInvitationId, principalId)
+    .first<RoomInvitationRow>();
+  if (!invitation) throw new HttpError(404, "room_invitation_not_found", "Pending room invitation not found");
+  return invitation;
+}
+
 async function publicRoomWithMembers(env: Env, room: RoomRow): Promise<JsonObject> {
   const members = await env.CONTROL_DB.prepare(
     `SELECT rm.*, p.principal_type, p.display_name
@@ -1249,12 +1614,21 @@ async function ensureAnotherHumanOwner(env: Env, roomId: string, excludedPrincip
   }
 }
 
-async function enforceMemberQuota(env: Env, auth: AuthContext, roomId: string): Promise<void> {
-  const policy = await getPolicy(env, auth.account.policy_id);
-  const row = await env.CONTROL_DB.prepare("SELECT COUNT(*) AS count FROM room_memberships WHERE room_id = ? AND status = 'active'")
+async function enforceMemberQuota(env: Env, roomId: string): Promise<void> {
+  const room = await getRoom(env, roomId);
+  const owner = await env.CONTROL_DB.prepare("SELECT policy_id FROM accounts WHERE account_id = ?")
+    .bind(room.created_by_account_id)
+    .first<{ policy_id: string }>();
+  const policy = await getPolicy(env, owner?.policy_id ?? "pol_default");
+  const active = await env.CONTROL_DB.prepare("SELECT COUNT(*) AS count FROM room_memberships WHERE room_id = ? AND status = 'active'")
     .bind(roomId)
     .first<{ count: number }>();
-  if ((row?.count ?? 0) >= policy.maximum_group_memberships) {
+  const pending = await env.CONTROL_DB.prepare(
+    "SELECT COUNT(*) AS count FROM room_invitations WHERE room_id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP"
+  )
+    .bind(roomId)
+    .first<{ count: number }>();
+  if ((active?.count ?? 0) + (pending?.count ?? 0) >= policy.maximum_group_memberships) {
     throw new HttpError(409, "room_member_quota_reached", "Maximum room member count reached");
   }
 }
@@ -1423,6 +1797,12 @@ function normalizedRole(role: string | undefined, principalType: PrincipalRow["p
   throw new HttpError(400, "invalid_room_role", "Room role is invalid");
 }
 
+function normalizedInvitationRole(role: string | undefined): RoomInvitationRow["role"] {
+  if (!role) return "member";
+  if (role === "admin" || role === "member") return role;
+  throw new HttpError(400, "invalid_room_invitation_role", "Room invitation role must be admin or member");
+}
+
 function publicRoom(room: RoomRow): JsonObject {
   return {
     roomId: room.room_id,
@@ -1452,6 +1832,25 @@ function publicMembership(membership: MembershipRow): JsonObject {
     createdAt: membership.created_at,
     updatedAt: membership.updated_at,
     removedAt: membership.removed_at
+  };
+}
+
+function publicRoomInvitation(invitation: RoomInvitationRow): JsonObject {
+  return {
+    roomInvitationId: invitation.room_invitation_id,
+    roomId: invitation.room_id,
+    roomName: invitation.room_name,
+    roomType: invitation.room_type,
+    invitedAccountId: invitation.invited_account_id,
+    invitedPrincipalId: invitation.invited_principal_id,
+    invitedByAccountId: invitation.invited_by_account_id,
+    invitedByPrincipalId: invitation.invited_by_principal_id,
+    invitedByDisplayName: invitation.invited_by_display_name,
+    role: invitation.role,
+    status: invitation.status,
+    expiresAt: invitation.expires_at,
+    respondedAt: invitation.responded_at,
+    createdAt: invitation.created_at
   };
 }
 
@@ -1577,6 +1976,17 @@ function publicAgentRequest(row: Record<string, unknown>): JsonObject {
   };
 }
 
+function publicMaintenanceRun(row: Record<string, unknown>): JsonObject {
+  return {
+    maintenanceRunId: row.maintenance_run_id,
+    action: row.action,
+    actorAccountId: row.actor_account_id,
+    result: row.result,
+    metadata: parseJson(row.metadata_json),
+    createdAt: row.created_at
+  };
+}
+
 function stringArrayField(body: Record<string, unknown>, key: string, options: { required?: boolean; maxItems?: number } = {}): string[] {
   const value = body[key];
   if (value === undefined || value === null) {
@@ -1644,6 +2054,27 @@ function numberParam(url: URL, key: string, min: number, max: number, fallback: 
     throw new HttpError(400, "invalid_query", `Query parameter must be an integer between ${min} and ${max}: ${key}`);
   }
   return parsed;
+}
+
+function pageParams(url: URL | undefined, options: { defaultLimit: number; maxLimit: number }): PageParams {
+  const limit = url ? numberParam(url, "limit", 1, options.maxLimit, options.defaultLimit) : options.defaultLimit;
+  const cursor = url?.searchParams.get("cursor");
+  if (!cursor) return { limit, offset: 0 };
+  const offset = Number(cursor);
+  if (!Number.isInteger(offset) || offset < 0 || offset > Number.MAX_SAFE_INTEGER) {
+    throw new HttpError(400, "invalid_cursor", "Cursor is invalid");
+  }
+  return { limit, offset };
+}
+
+function nextCursor(resultCount: number, page: PageParams): string | null {
+  return resultCount === page.limit ? String(page.offset + page.limit) : null;
+}
+
+async function runCounted(statement: D1PreparedStatement): Promise<number> {
+  const result = await statement.run();
+  const meta = result.meta as { changes?: number } | undefined;
+  return meta?.changes ?? 0;
 }
 
 function uniqueStrings(values: string[]): string[] {
