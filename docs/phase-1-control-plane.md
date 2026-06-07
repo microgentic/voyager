@@ -18,13 +18,13 @@ This PR implements the Phase 1 backend control plane:
 - Device listing, registration, login reuse, and own-device revocation.
 - Admin account suspend/restore/auth-reset actions.
 - Admin role grant/revoke.
-- Platform-owner hierarchy protection for privileged account and role actions.
+- Admin-account hierarchy protection for privileged account and role actions.
 - Policy listing and account policy assignment.
 - Audit event recording and listing.
 - Usage summary endpoint.
 - Principal directory and manually created agent principals.
 - Device key-package metadata APIs.
-- Direct and group rooms.
+- Direct rooms and owner-only group room creation.
 - Room membership, human room invitations, agent direct-add, roles, archiving, leaving, and ownership transfer.
 - Opaque encrypted message envelopes with idempotency, sequencing, sync, and acknowledgements.
 - Worker-mediated encrypted attachment allocation, upload, completion, download, and deletion.
@@ -152,10 +152,12 @@ The API can be exercised with curl or a plain fetch-based script:
 3. Login with password/passphrase and collect bearer tokens.
 4. Change passwords or complete admin credential reset tokens.
 5. Publish, list, claim, and revoke device key-package metadata.
-6. Create direct or group rooms.
-7. Send human room invitations or add manually created agent principals.
+6. Create direct rooms or owner-only group rooms.
+7. Send human room invitations or add manually created agent principals through the explicit member endpoint.
 8. Send opaque encrypted envelopes with idempotency keys.
 9. Sync pending messages and acknowledge them.
 10. Allocate, upload, complete, download, and delete opaque attachment blobs.
 11. Submit and review agent requests without contacting a live agent runtime.
 12. Run admin cleanup and inspect maintenance history.
+
+Pull requests must pass `npm run check` and `npm run smoke:backend:local`. The local smoke runner applies D1 migrations to a fresh Wrangler state directory, starts the Worker locally, and exercises the backend authorization and lifecycle paths end to end.

@@ -10,6 +10,7 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "smoke:backend": "node scripts/backend-first-smoke.mjs",
+    "smoke:backend:local": "node scripts/run-local-backend-smoke.mjs",
     "wrangler": "wrangler"
   },
   "devDependencies": {

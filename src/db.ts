@@ -169,8 +169,8 @@ export function isPlatformOwner(auth: AuthContext): boolean {
 }
 
 export async function assertCanAdministerAccount(env: Env, auth: AuthContext, targetAccountId: string): Promise<void> {
-  if ((await accountHasAdminRole(env, targetAccountId, "platform_owner")) && !isPlatformOwner(auth)) {
-    throw new HttpError(403, "platform_owner_required", "Platform owner authority is required for this account");
+  if ((await accountHasAnyAdminRole(env, targetAccountId)) && !isPlatformOwner(auth)) {
+    throw new HttpError(403, "platform_owner_required", "Platform owner authority is required for administrative accounts");
   }
 }
 
@@ -278,15 +278,44 @@ export async function acceptInvitation(
     throw new HttpError(500, "missing_principal", "Account is missing its default principal");
   }
 
-  await setPassword(env, account.account_id, input.password);
-  await env.CONTROL_DB.batch([
+  const acceptedAt = operationMarker();
+  const passwordVerifier = await hashPassword(input.password);
+  const authId = randomId("auth");
+  const [claim, authenticator, activation] = await env.CONTROL_DB.batch([
     env.CONTROL_DB.prepare(
-      "UPDATE accounts SET status = 'active', activated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?"
-    ).bind(account.account_id),
+      `UPDATE invitations
+       SET accepted_account_id = ?, accepted_at = ?
+       WHERE invitation_id = ?
+         AND token_hash = ?
+         AND account_id = ?
+         AND accepted_at IS NULL
+         AND revoked_at IS NULL
+         AND expires_at > CURRENT_TIMESTAMP
+         AND EXISTS (SELECT 1 FROM accounts WHERE account_id = ? AND status = 'invited')`
+    ).bind(account.account_id, acceptedAt, invitation.invitation_id, tokenHash, account.account_id, account.account_id),
     env.CONTROL_DB.prepare(
-      "UPDATE invitations SET accepted_account_id = ?, accepted_at = CURRENT_TIMESTAMP WHERE invitation_id = ?"
-    ).bind(account.account_id, invitation.invitation_id)
+      `INSERT INTO authenticators (authenticator_id, account_id, type, password_verifier)
+       SELECT ?, ?, 'password', ?
+       WHERE EXISTS (
+         SELECT 1 FROM invitations
+         WHERE invitation_id = ? AND account_id = ? AND accepted_account_id = ? AND accepted_at = ?
+       )
+       AND EXISTS (SELECT 1 FROM accounts WHERE account_id = ? AND status = 'invited')`
+    ).bind(authId, account.account_id, passwordVerifier, invitation.invitation_id, account.account_id, account.account_id, acceptedAt, account.account_id),
+    env.CONTROL_DB.prepare(
+      `UPDATE accounts
+       SET status = 'active', activated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE account_id = ?
+         AND status = 'invited'
+         AND EXISTS (
+           SELECT 1 FROM invitations
+           WHERE invitation_id = ? AND account_id = ? AND accepted_account_id = ? AND accepted_at = ?
+         )`
+    ).bind(account.account_id, invitation.invitation_id, account.account_id, account.account_id, acceptedAt)
   ]);
+  if (changesFrom(claim) !== 1 || changesFrom(authenticator) !== 1 || changesFrom(activation) !== 1) {
+    throw new HttpError(400, "invalid_invitation", "Invitation is invalid or expired");
+  }
 
   const activeAccount = await getAccount(env, account.account_id);
   const principal = await getPrincipal(env, account.default_principal_id);
@@ -421,32 +450,68 @@ export async function completeCredentialReset(
     throw new HttpError(500, "missing_principal", "Account is missing its default principal");
   }
 
-  const claim = await env.CONTROL_DB.prepare(
-    `UPDATE credential_reset_tokens
-     SET used_at = CURRENT_TIMESTAMP
-     WHERE reset_id = ?
-       AND used_at IS NULL
-       AND revoked_at IS NULL
-       AND expires_at > CURRENT_TIMESTAMP`
-  )
-    .bind(reset.reset_id)
-    .run();
-  if (changesFrom(claim) !== 1) {
+  const usedAt = operationMarker();
+  const passwordVerifier = await hashPassword(input.password);
+  const authId = randomId("auth");
+  const [claim, revokedAuthenticators, authenticator, revokedSessions, activation] = await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `UPDATE credential_reset_tokens
+       SET used_at = ?
+       WHERE reset_id = ?
+         AND account_id = ?
+         AND used_at IS NULL
+         AND revoked_at IS NULL
+         AND expires_at > CURRENT_TIMESTAMP
+         AND EXISTS (SELECT 1 FROM accounts WHERE account_id = ? AND status = 'locked')`
+    ).bind(usedAt, reset.reset_id, account.account_id, account.account_id),
+    env.CONTROL_DB.prepare(
+      `UPDATE authenticators
+       SET revoked_at = CURRENT_TIMESTAMP
+       WHERE account_id = ?
+         AND type = 'password'
+         AND revoked_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM credential_reset_tokens
+           WHERE reset_id = ? AND account_id = ? AND used_at = ?
+         )
+         AND EXISTS (SELECT 1 FROM accounts WHERE account_id = ? AND status = 'locked')`
+    ).bind(account.account_id, reset.reset_id, account.account_id, usedAt, account.account_id),
+    env.CONTROL_DB.prepare(
+      `INSERT INTO authenticators (authenticator_id, account_id, type, password_verifier)
+       SELECT ?, ?, 'password', ?
+       WHERE EXISTS (
+         SELECT 1 FROM credential_reset_tokens
+         WHERE reset_id = ? AND account_id = ? AND used_at = ?
+       )
+       AND EXISTS (SELECT 1 FROM accounts WHERE account_id = ? AND status = 'locked')`
+    ).bind(authId, account.account_id, passwordVerifier, reset.reset_id, account.account_id, usedAt, account.account_id),
+    env.CONTROL_DB.prepare(
+      `UPDATE sessions
+       SET revoked_at = CURRENT_TIMESTAMP
+       WHERE account_id = ?
+         AND revoked_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM credential_reset_tokens
+           WHERE reset_id = ? AND account_id = ? AND used_at = ?
+         )
+         AND EXISTS (SELECT 1 FROM accounts WHERE account_id = ? AND status = 'locked')`
+    ).bind(account.account_id, reset.reset_id, account.account_id, usedAt, account.account_id),
+    env.CONTROL_DB.prepare(
+      `UPDATE accounts
+       SET status = 'active', activated_at = COALESCE(activated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+       WHERE account_id = ?
+         AND status = 'locked'
+         AND EXISTS (
+           SELECT 1 FROM credential_reset_tokens
+           WHERE reset_id = ? AND account_id = ? AND used_at = ?
+         )`
+    ).bind(account.account_id, reset.reset_id, account.account_id, usedAt)
+  ]);
+  void revokedAuthenticators;
+  void revokedSessions;
+  if (changesFrom(claim) !== 1 || changesFrom(authenticator) !== 1 || changesFrom(activation) !== 1) {
     throw new HttpError(400, "invalid_credential_reset", "Credential reset token is invalid or expired");
   }
-
-  const activation = await env.CONTROL_DB.prepare(
-    "UPDATE accounts SET status = 'active', activated_at = COALESCE(activated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE account_id = ? AND status = 'locked'"
-  )
-    .bind(account.account_id)
-    .run();
-  if (changesFrom(activation) !== 1) {
-    throw new HttpError(409, "account_not_resettable", "Account is not locked for credential reset");
-  }
-  await replacePassword(env, account.account_id, input.password);
-  await env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL")
-    .bind(account.account_id)
-    .run();
 
   const activeAccount = await getAccount(env, account.account_id);
   const principal = await getPrincipal(env, account.default_principal_id);
@@ -818,6 +883,15 @@ async function accountHasAdminRole(env: Env, accountId: string, roleName: string
   return Boolean(row);
 }
 
+async function accountHasAnyAdminRole(env: Env, accountId: string): Promise<boolean> {
+  const row = await env.CONTROL_DB.prepare(
+    "SELECT account_id FROM account_admin_roles WHERE account_id = ? AND revoked_at IS NULL LIMIT 1"
+  )
+    .bind(accountId)
+    .first<{ account_id: string }>();
+  return Boolean(row);
+}
+
 async function countActiveAdminRoleAccounts(env: Env, roleName: string): Promise<number> {
   const row = await env.CONTROL_DB.prepare(
     `SELECT COUNT(DISTINCT aar.account_id) AS count
@@ -899,6 +973,10 @@ function optionalStringValue(value: unknown, max: number): string | null {
 
 function changesFrom(result: D1Result): number {
   return (result.meta as { changes?: number } | undefined)?.changes ?? 0;
+}
+
+function operationMarker(): string {
+  return new Date().toISOString();
 }
 
 function sqliteTimestamp(value: number | Date): string {

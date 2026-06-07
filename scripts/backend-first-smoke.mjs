@@ -1,6 +1,7 @@
 const baseUrl = process.env.BASE_URL ?? "http://localhost:8787";
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
 
 async function api(path, options = {}) {
   const { response, payload } = await apiRaw(path, options);
@@ -18,7 +19,11 @@ async function apiRaw(path, options = {}) {
     headers.set("content-type", "application/json");
     fetchOptions.body = JSON.stringify(options.json);
   }
-  const response = await fetch(`${baseUrl}${path}`, { ...fetchOptions, headers });
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...fetchOptions,
+    headers,
+    signal: fetchOptions.signal ?? AbortSignal.timeout(fetchTimeoutMs)
+  });
   const contentType = response.headers.get("content-type") ?? "";
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
   return { response, payload };
@@ -69,6 +74,15 @@ const accepted = await api("/v1/invitations/accept", {
     device: { platform: "smoke", label: "User smoke device", publicKeyPackage: "user-device-key" }
   }
 });
+
+await expectFailure("/v1/invitations/accept", {
+  method: "POST",
+  json: {
+    token: invite.activationToken,
+    password: "backend-user-passphrase-reuse",
+    device: { platform: "smoke", label: "Reused invitation smoke device" }
+  }
+}, 400);
 
 const adminInvite = await api("/v1/admin/invitations", {
   method: "POST",
@@ -130,6 +144,55 @@ await expectFailure(`/v1/admin/accounts/${owner.account.accountId}/credential-re
   headers: ownerHeaders,
   json: { reason: "self reset should use password change" }
 }, 409);
+
+const managedInvite = await api("/v1/admin/invitations", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    displayName: "Backend Managed User",
+    email: `managed-${suffix}@example.com`,
+    expiresInDays: 3
+  }
+});
+
+const managedAccepted = await api("/v1/invitations/accept", {
+  method: "POST",
+  json: {
+    token: managedInvite.activationToken,
+    password: "backend-managed-passphrase-very-long",
+    device: { platform: "smoke", label: "Managed user smoke device" }
+  }
+});
+
+await api(`/v1/admin/accounts/${managedAccepted.account.accountId}/suspend`, {
+  method: "POST",
+  headers: adminHeaders,
+  json: {}
+});
+
+await api(`/v1/admin/accounts/${managedAccepted.account.accountId}/restore`, {
+  method: "POST",
+  headers: adminHeaders,
+  json: {}
+});
+
+await api(`/v1/admin/accounts/${managedAccepted.account.accountId}/roles`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { roleName: "user_admin" }
+});
+
+await expectFailure(`/v1/admin/accounts/${managedAccepted.account.accountId}/suspend`, {
+  method: "POST",
+  headers: adminHeaders,
+  json: {}
+}, 403);
+
+await expectFailure(`/v1/admin/accounts/${managedAccepted.account.accountId}/credential-reset`, {
+  method: "POST",
+  headers: adminHeaders,
+  json: { reason: "lower admin cannot reset another admin" }
+}, 403);
 
 const login = await api("/v1/auth/password/login", {
   method: "POST",
@@ -352,13 +415,21 @@ await expectFailure("/v1/rooms/direct", {
   json: { principalIds: [accepted.principal.principalId, acceptedInvitee.principal.principalId], name: "Invalid direct" }
 }, 400);
 
+await expectFailure("/v1/rooms/groups", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    name: "Invalid group",
+    memberPrincipalIds: [accepted.principal.principalId]
+  }
+}, 400);
+
 const group = await api("/v1/rooms/groups", {
   method: "POST",
   headers: ownerHeaders,
   json: {
     name: "Smoke group",
-    description: "Backend-first smoke group",
-    memberPrincipalIds: [accepted.principal.principalId]
+    description: "Backend-first smoke group"
   }
 });
 
@@ -378,6 +449,16 @@ const roomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations`, {
   }
 });
 
+const userRoomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: accepted.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+});
+
 const pendingRoomInvitations = await api("/v1/room-invitations", {
   headers: inviteeHeaders
 });
@@ -388,6 +469,11 @@ if (!pendingRoomInvitations.invitations.some((invitation) => invitation.roomInvi
 await api(`/v1/room-invitations/${roomInvitation.invitation.roomInvitationId}/accept`, {
   method: "POST",
   headers: inviteeHeaders
+});
+
+await api(`/v1/room-invitations/${userRoomInvitation.invitation.roomInvitationId}/accept`, {
+  method: "POST",
+  headers: userHeaders
 });
 
 const roomsPage = await api("/v1/rooms?limit=1", { headers: ownerHeaders });

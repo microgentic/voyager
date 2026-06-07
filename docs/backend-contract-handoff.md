@@ -7,6 +7,7 @@ Related docs:
 - `docs/project-architecture-plan.md`
 - `docs/backend-first-deviation.md`
 - `docs/phase-1-control-plane.md`
+- `docs/pr4-final-hardening.md`
 
 ## 1. Project Backend Report
 
@@ -24,7 +25,7 @@ The backend is designed to let development proceed without app stores, push prov
 - Password/passphrase login, logout, password change, sessions, device enrollment/reuse, and own-device revocation.
 - Admin credential reset tokens that lock an account, revoke sessions, optionally revoke devices, and let the user set a new password.
 - Admin role grants/revocations and role-gated account, policy, audit, usage, room, agent, and maintenance endpoints.
-- Platform-owner protections for credential reset, account lifecycle, policy changes, and platform-owner role grants/revocations.
+- Admin-account hierarchy protections for credential reset, account lifecycle, policy changes, and role grants/revocations.
 - Human and agent principals, with agents created manually by admins after an agent request review.
 - Device key-package publication, listing, claiming, and revocation for later cryptographic clients.
 - Direct one-to-one rooms and group rooms with owners, admins, members, agents, leaving, removal, archiving, and ownership transfer.
@@ -42,7 +43,7 @@ The backend is designed to let development proceed without app stores, push prov
 - Durable Objects, Queues, KV, Cron triggers, and push provider integrations are still deferred from the active code path. Cleanup is exposed as an admin HTTP endpoint for now so it can be tested with curl before a scheduler is introduced.
 - Password/passphrase auth is active. Passkey/WebAuthn schema support remains future-ready, but live ceremonies are deferred with the external runtime dependency work.
 - Room invitations are human-only for now. Agent principals are added directly by room admins because agents do not have an interactive acceptance UX while live agent runtimes are deferred.
-- Direct member insertion is agent-only after initial room creation. Human group membership should use room invitations so the invited user accepts membership.
+- Group creation starts with the creator as owner only. Supplying `memberPrincipalIds` is rejected so human membership flows through invitations and agents are added through the explicit member endpoint.
 - Realtime delivery is represented by HTTP sync and pending delivery receipts. WebSockets and push can consume the same message/receipt tables later.
 - Attachments flow through the Worker for now. Direct-to-R2 signed upload URLs can be added later when browser/mobile CORS, upload progress, and client constraints are clearer.
 - The server stores encrypted envelopes and opaque blobs only. Credential reset cannot recover local or end-to-end encrypted content.
@@ -56,7 +57,8 @@ The backend is designed to let development proceed without app stores, push prov
 - Clients should treat `nextCursor: null` as the end of a list.
 - Password change requires the current password and does not log out the current session.
 - Admin credential reset returns a one-time `resetToken`; the user completes it through `POST /v1/auth/password/reset/complete`. Issuing a new reset revokes older unused reset tokens for that account.
-- Non-platform-owner administrators cannot act on platform-owner accounts, and only platform owners can grant or revoke `platform_owner`.
+- Non-platform-owner administrators cannot reset, suspend, restore, policy-change, role-manage, or otherwise administer accounts with any active admin role.
+- Only platform owners can grant or revoke `platform_owner`.
 - The last active platform owner cannot be revoked.
 - Device key packages are opaque JSON payloads to the backend. Clients own the cryptographic meaning.
 - Message `ciphertext`, attachment blobs, key-package `package`, and cryptographic key fields are opaque to the Worker.
@@ -123,7 +125,7 @@ Admin:
 ## 6. Backend Work Still Worth Doing Before UI
 
 - Add formal request/response schema validation and shared TypeScript contract exports.
-- Add a formal automated API test suite around authorization boundaries; the smoke script currently covers the most important backend-first regressions.
+- Promote the smoke coverage into narrower shared contract tests once request/response schemas are exported.
 - Add filtered pagination to more list endpoints, especially accounts, audit events, sessions, devices, and messages.
 - Add room invitation revocation for room owners/admins.
 - Add direct-room reuse or duplicate detection so repeated direct-room creation can be idempotent.
@@ -133,11 +135,11 @@ Admin:
 
 ## 7. Verification Path
 
-Use the backend smoke script after applying migrations and running the Worker against a fresh local database:
+Use the local backend smoke runner to apply migrations, start the Worker against a fresh local Wrangler state directory, and exercise the API end to end:
 
 ```bash
 npm run check
-npm run smoke:backend
+npm run smoke:backend:local
 ```
 
-The smoke script currently covers bootstrap, invitations, login with device reuse, password change, credential reset token revocation/reuse failure, suspended reset protection, key packages, direct-room cardinality, human invitation enforcement, room invitations, messages, sync, acknowledgements, attachments, sidebar collections, agent requests, admin hierarchy failures, cross-account device revoke failure, admin listing, permission failure, cleanup, and maintenance history.
+The smoke path runs in GitHub PR checks and covers bootstrap, invitation one-time use, login with device reuse, password change, credential reset token revocation/reuse failure, suspended reset protection, key packages, direct-room cardinality, group initial-member rejection, human invitation enforcement, room invitations, messages, sync, acknowledgements, attachments, sidebar collections, agent requests, lower-admin versus admin-account failures, lower-admin normal-account administration, cross-account device revoke failure, admin listing, permission failure, cleanup, and maintenance history.
