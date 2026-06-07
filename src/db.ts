@@ -4,29 +4,6 @@ import type { AccountRow, AuthContext, DeviceInput, DeviceRow, Env, PolicyRow, P
 
 const SESSION_DAYS = 30;
 const INVITATION_DAYS = 7;
-const WEBAUTHN_CHALLENGE_MINUTES = 10;
-
-export interface PasskeyAuthenticatorRow {
-  authenticator_id: string;
-  account_id: string;
-  webauthn_credential_id: string;
-  webauthn_public_key: string;
-  webauthn_counter: number;
-  public_credential_data: string | null;
-  created_at: string;
-  last_used_at: string | null;
-  revoked_at: string | null;
-}
-
-export interface WebAuthnChallengeRow {
-  challenge_id: string;
-  account_id: string;
-  challenge: string;
-  type: "registration" | "authentication";
-  expires_at: string;
-  created_at: string;
-  used_at: string | null;
-}
 
 export async function audit(
   env: Env,
@@ -344,147 +321,6 @@ export async function getActiveAccountByEmail(env: Env, email: string): Promise<
   return account;
 }
 
-export async function listPasskeyAuthenticators(env: Env, accountId: string): Promise<PasskeyAuthenticatorRow[]> {
-  const result = await env.CONTROL_DB.prepare(
-    `SELECT
-      authenticator_id, account_id, public_credential_data,
-      webauthn_credential_id, webauthn_public_key, webauthn_counter,
-      created_at, last_used_at, revoked_at
-     FROM authenticators
-     WHERE account_id = ? AND type = 'passkey' AND revoked_at IS NULL
-     ORDER BY created_at DESC`
-  )
-    .bind(accountId)
-    .all<PasskeyAuthenticatorRow>();
-  return result.results ?? [];
-}
-
-export async function createWebAuthnChallenge(
-  env: Env,
-  accountId: string,
-  type: "registration" | "authentication",
-  challenge: string
-): Promise<WebAuthnChallengeRow> {
-  const challengeId = randomId("wch");
-  const expiresAt = sqliteTimestamp(Date.now() + WEBAUTHN_CHALLENGE_MINUTES * 60 * 1000);
-  await env.CONTROL_DB.prepare(
-    "INSERT INTO webauthn_challenges (challenge_id, account_id, challenge, type, expires_at) VALUES (?, ?, ?, ?, ?)"
-  )
-    .bind(challengeId, accountId, challenge, type, expiresAt)
-    .run();
-  return {
-    challenge_id: challengeId,
-    account_id: accountId,
-    challenge,
-    type,
-    expires_at: expiresAt,
-    created_at: sqliteTimestamp(Date.now()),
-    used_at: null
-  };
-}
-
-export async function getLatestWebAuthnChallenge(
-  env: Env,
-  accountId: string,
-  type: "registration" | "authentication"
-): Promise<WebAuthnChallengeRow> {
-  const challenge = await env.CONTROL_DB.prepare(
-    `SELECT *
-     FROM webauthn_challenges
-     WHERE account_id = ?
-       AND type = ?
-       AND used_at IS NULL
-       AND expires_at > CURRENT_TIMESTAMP
-     ORDER BY created_at DESC
-     LIMIT 1`
-  )
-    .bind(accountId, type)
-    .first<WebAuthnChallengeRow>();
-  if (!challenge) {
-    throw new HttpError(400, "webauthn_challenge_missing", "Passkey challenge is missing or expired");
-  }
-  return challenge;
-}
-
-export async function markWebAuthnChallengeUsed(env: Env, challengeId: string): Promise<void> {
-  await env.CONTROL_DB.prepare("UPDATE webauthn_challenges SET used_at = CURRENT_TIMESTAMP WHERE challenge_id = ? AND used_at IS NULL")
-    .bind(challengeId)
-    .run();
-}
-
-export async function storePasskeyAuthenticator(
-  env: Env,
-  input: {
-    accountId: string;
-    credentialId: string;
-    publicKey: string;
-    counter: number;
-    publicCredentialData: Record<string, unknown>;
-  }
-): Promise<PasskeyAuthenticatorRow> {
-  const existing = await getPasskeyAuthenticatorByCredentialId(env, input.credentialId);
-  if (existing) {
-    throw new HttpError(409, "passkey_already_registered", "Passkey is already registered");
-  }
-
-  const authenticatorId = randomId("auth");
-  await env.CONTROL_DB.prepare(
-    `INSERT INTO authenticators (
-      authenticator_id, account_id, type, public_credential_data,
-      webauthn_credential_id, webauthn_public_key, webauthn_counter
-    ) VALUES (?, ?, 'passkey', ?, ?, ?, ?)`
-  )
-    .bind(
-      authenticatorId,
-      input.accountId,
-      JSON.stringify(input.publicCredentialData),
-      input.credentialId,
-      input.publicKey,
-      input.counter
-    )
-    .run();
-  const authenticator = await getPasskeyAuthenticatorByCredentialId(env, input.credentialId);
-  if (!authenticator) {
-    throw new HttpError(500, "passkey_create_failed", "Passkey authenticator could not be loaded after creation");
-  }
-  return authenticator;
-}
-
-export async function getPasskeyAuthenticatorByCredentialId(
-  env: Env,
-  credentialId: string
-): Promise<PasskeyAuthenticatorRow | null> {
-  const authenticator = await env.CONTROL_DB.prepare(
-    `SELECT
-      authenticator_id, account_id, public_credential_data,
-      webauthn_credential_id, webauthn_public_key, webauthn_counter,
-      created_at, last_used_at, revoked_at
-     FROM authenticators
-     WHERE webauthn_credential_id = ? AND type = 'passkey' AND revoked_at IS NULL
-     LIMIT 1`
-  )
-    .bind(credentialId)
-    .first<PasskeyAuthenticatorRow>();
-  return authenticator ?? null;
-}
-
-export async function updatePasskeyAuthenticatorAfterLogin(
-  env: Env,
-  input: {
-    authenticatorId: string;
-    counter: number;
-    publicCredentialData: Record<string, unknown>;
-  }
-): Promise<void> {
-  await env.CONTROL_DB.prepare(
-    `UPDATE authenticators
-     SET webauthn_counter = ?, last_used_at = CURRENT_TIMESTAMP, public_credential_data = ?
-     WHERE authenticator_id = ? AND revoked_at IS NULL`
-  )
-    .bind(input.counter, JSON.stringify(input.publicCredentialData), input.authenticatorId)
-    .run();
-}
-
 export async function createDeviceForPrincipal(
   env: Env,
   accountId: string,
@@ -627,14 +463,18 @@ export async function revokeAdminRoleFromAccount(env: Env, accountId: string, ro
 }
 
 export async function getUsage(env: Env): Promise<Record<string, number>> {
-  const [accounts, activeDevices, activeSessions, invitations, audits] = await Promise.all([
+  const [accounts, activeDevices, activeSessions, invitations, audits, rooms, messages, attachments, agentRequests] = await Promise.all([
     count(env, "accounts"),
     count(env, "devices", "revoked_at IS NULL"),
     count(env, "sessions", "revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"),
     count(env, "invitations", "accepted_at IS NULL AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"),
-    count(env, "audit_events")
+    count(env, "audit_events"),
+    count(env, "rooms", "status != 'deleted'"),
+    count(env, "message_envelopes", "state != 'purged'"),
+    count(env, "attachments", "state != 'deleted'"),
+    count(env, "agent_requests")
   ]);
-  return { accounts, activeDevices, activeSessions, openInvitations: invitations, auditEvents: audits };
+  return { accounts, activeDevices, activeSessions, openInvitations: invitations, auditEvents: audits, rooms, messages, attachments, agentRequests };
 }
 
 export async function getAuditEvents(env: Env): Promise<unknown[]> {

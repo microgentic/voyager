@@ -118,19 +118,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_authenticators_webauthn_credential_id
   ON authenticators(webauthn_credential_id)
   WHERE webauthn_credential_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS webauthn_challenges (
-  challenge_id TEXT PRIMARY KEY,
-  account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
-  challenge TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('registration', 'authentication')),
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  used_at TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_account_type
-  ON webauthn_challenges(account_id, type, expires_at);
-
 CREATE TABLE IF NOT EXISTS devices (
   device_id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
@@ -167,6 +154,180 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_device_id ON sessions(device_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS device_key_packages (
+  key_package_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+  principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
+  protocol TEXT NOT NULL DEFAULT 'opaque-test',
+  public_identity_key TEXT,
+  signed_prekey TEXT,
+  one_time_prekey TEXT,
+  package_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('available', 'claimed', 'revoked', 'expired')),
+  claimed_by_device_id TEXT REFERENCES devices(device_id),
+  claimed_at TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_key_packages_principal_id ON device_key_packages(principal_id);
+CREATE INDEX IF NOT EXISTS idx_device_key_packages_device_id ON device_key_packages(device_id);
+CREATE INDEX IF NOT EXISTS idx_device_key_packages_status ON device_key_packages(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS rooms (
+  room_id TEXT PRIMARY KEY,
+  type TEXT NOT NULL CHECK (type IN ('direct', 'group', 'channel')),
+  name TEXT,
+  description TEXT,
+  created_by_account_id TEXT NOT NULL REFERENCES accounts(account_id),
+  created_by_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+  status TEXT NOT NULL CHECK (status IN ('active', 'archived', 'deleted')),
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  archived_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
+CREATE INDEX IF NOT EXISTS idx_rooms_created_by_account_id ON rooms(created_by_account_id);
+
+CREATE TABLE IF NOT EXISTS room_memberships (
+  membership_id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+  principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'agent')),
+  status TEXT NOT NULL CHECK (status IN ('invited', 'active', 'leaving', 'removed', 'banned')),
+  invited_by_principal_id TEXT REFERENCES principals(principal_id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  removed_at TEXT,
+  UNIQUE(room_id, principal_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_memberships_room_id ON room_memberships(room_id);
+CREATE INDEX IF NOT EXISTS idx_room_memberships_account_id ON room_memberships(account_id);
+CREATE INDEX IF NOT EXISTS idx_room_memberships_principal_id ON room_memberships(principal_id);
+
+CREATE TABLE IF NOT EXISTS ownership_transfers (
+  transfer_id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+  from_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+  to_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+  status TEXT NOT NULL CHECK (status IN ('proposed', 'accepted', 'rejected', 'expired', 'cancelled', 'completed')),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  responded_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_room_id ON ownership_transfers(room_id);
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_to_principal_id ON ownership_transfers(to_principal_id);
+
+CREATE TABLE IF NOT EXISTS message_envelopes (
+  envelope_id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+  sender_account_id TEXT NOT NULL REFERENCES accounts(account_id),
+  sender_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+  sender_device_id TEXT NOT NULL REFERENCES devices(device_id),
+  idempotency_key TEXT NOT NULL,
+  protocol_type TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  ciphertext_bytes INTEGER NOT NULL,
+  client_created_at TEXT,
+  server_sequence INTEGER NOT NULL,
+  server_received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('accepted', 'available', 'partially_acknowledged', 'fully_acknowledged', 'expired', 'purged')),
+  UNIQUE(sender_device_id, idempotency_key),
+  UNIQUE(room_id, server_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_envelopes_room_sequence ON message_envelopes(room_id, server_sequence);
+CREATE INDEX IF NOT EXISTS idx_message_envelopes_expires_at ON message_envelopes(expires_at);
+
+CREATE TABLE IF NOT EXISTS delivery_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  envelope_id TEXT NOT NULL REFERENCES message_envelopes(envelope_id) ON DELETE CASCADE,
+  room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+  recipient_account_id TEXT NOT NULL REFERENCES accounts(account_id),
+  recipient_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+  recipient_device_id TEXT NOT NULL REFERENCES devices(device_id),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'stored', 'read')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  stored_at TEXT,
+  read_at TEXT,
+  UNIQUE(envelope_id, recipient_device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_receipts_device_id ON delivery_receipts(recipient_device_id, status);
+CREATE INDEX IF NOT EXISTS idx_delivery_receipts_room_id ON delivery_receipts(room_id);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  attachment_id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+  uploader_account_id TEXT NOT NULL REFERENCES accounts(account_id),
+  uploader_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+  uploader_device_id TEXT NOT NULL REFERENCES devices(device_id),
+  object_key TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK (state IN ('allocated', 'uploaded', 'referenced', 'expired', 'deleted', 'quarantined_metadata')),
+  expected_bytes INTEGER NOT NULL,
+  ciphertext_bytes INTEGER,
+  ciphertext_sha256 TEXT,
+  content_category TEXT,
+  retention_class TEXT NOT NULL DEFAULT 'default',
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  uploaded_at TEXT,
+  referenced_at TEXT,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_room_id ON attachments(room_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_uploader_account_id ON attachments(uploader_account_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_state ON attachments(state, expires_at);
+
+CREATE TABLE IF NOT EXISTS sidebar_collections (
+  collection_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  collapsed INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sidebar_collections_account_id ON sidebar_collections(account_id);
+
+CREATE TABLE IF NOT EXISTS sidebar_collection_items (
+  item_id TEXT PRIMARY KEY,
+  collection_id TEXT NOT NULL REFERENCES sidebar_collections(collection_id) ON DELETE CASCADE,
+  room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(collection_id, room_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sidebar_collection_items_collection_id ON sidebar_collection_items(collection_id);
+
+CREATE TABLE IF NOT EXISTS agent_requests (
+  request_id TEXT PRIMARY KEY,
+  requester_account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+  requester_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+  desired_agent_name TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('submitted', 'under_review', 'approved', 'rejected', 'provisioning', 'active', 'closed')),
+  metadata_json TEXT,
+  reviewed_by_account_id TEXT REFERENCES accounts(account_id),
+  reviewed_at TEXT,
+  created_agent_principal_id TEXT REFERENCES principals(principal_id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_requests_requester_account_id ON agent_requests(requester_account_id);
+CREATE INDEX IF NOT EXISTS idx_agent_requests_status ON agent_requests(status);
 
 CREATE TABLE IF NOT EXISTS admin_roles (
   role_id TEXT PRIMARY KEY,

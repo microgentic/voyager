@@ -9,14 +9,12 @@
     "db:migrate:remote": "wrangler d1 migrations apply voyager-dev-control --remote",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
+    "smoke:backend": "node scripts/backend-first-smoke.mjs",
     "wrangler": "wrangler"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250606.0",
     "typescript": "^5.8.3",
     "wrangler": "^4.95.0"
-  },
-  "dependencies": {
-    "@simplewebauthn/server": "^13.3.1"
   }
 }
