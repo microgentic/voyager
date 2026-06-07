@@ -674,11 +674,14 @@ async function claimKeyPackage(env: Env, auth: AuthContext, keyPackageId: string
   if (existing.device_id === auth.device.device_id) {
     throw new HttpError(400, "cannot_claim_own_key_package", "A device cannot claim its own key package");
   }
-  await env.CONTROL_DB.prepare(
-    "UPDATE device_key_packages SET status = 'claimed', claimed_by_device_id = ?, claimed_at = CURRENT_TIMESTAMP WHERE key_package_id = ? AND status = 'available'"
-  )
-    .bind(auth.device.device_id, keyPackageId)
-    .run();
+  const claimed = await runCounted(
+    env.CONTROL_DB.prepare(
+      "UPDATE device_key_packages SET status = 'claimed', claimed_by_device_id = ?, claimed_at = CURRENT_TIMESTAMP WHERE key_package_id = ? AND status = 'available' AND expires_at > CURRENT_TIMESTAMP"
+    ).bind(auth.device.device_id, keyPackageId)
+  );
+  if (claimed !== 1) {
+    throw new HttpError(409, "key_package_claim_failed", "Key package was already claimed or expired");
+  }
   return getKeyPackage(env, keyPackageId, true);
 }
 
@@ -712,10 +715,10 @@ async function listRooms(env: Env, auth: AuthContext, url?: URL): Promise<JsonOb
 }
 
 async function createDirectRoom(env: Env, auth: AuthContext, body: Record<string, unknown>): Promise<JsonObject> {
-  const targetPrincipalIds = stringArrayField(body, "principalIds", { required: true, maxItems: 7 });
+  const targetPrincipalIds = stringArrayField(body, "principalIds", { required: true, maxItems: 1 });
   const uniquePrincipalIds = uniqueStrings([auth.principal.principal_id, ...targetPrincipalIds]);
-  if (uniquePrincipalIds.length < 2) {
-    throw new HttpError(400, "invalid_direct_room", "Direct rooms need at least two principals");
+  if (uniquePrincipalIds.length !== 2) {
+    throw new HttpError(400, "invalid_direct_room", "Direct rooms require exactly two principals");
   }
   const principals = await getActivePrincipals(env, uniquePrincipalIds);
   const room = await createRoom(env, auth, {
@@ -797,6 +800,9 @@ async function addRoomMember(env: Env, auth: AuthContext, roomId: string, body: 
     throw new HttpError(409, "direct_room_members_locked", "Direct room members cannot be changed");
   }
   const principal = await getActivePrincipal(env, stringField(body, "principalId", { required: true, max: 80 })!);
+  if (principal.principal_type !== "agent") {
+    throw new HttpError(400, "human_invitation_required", "Human principals must accept a room invitation");
+  }
   const role = normalizedRole(stringField(body, "role", { max: 20 }), principal.principal_type);
   await enforceMemberQuota(env, roomId);
   await upsertMembership(env, roomId, principal, role, auth.principal.principal_id);
@@ -814,6 +820,11 @@ async function createRoomInvitation(env: Env, auth: AuthContext, roomId: string,
   if (principal.principal_type !== "human") {
     throw new HttpError(400, "agent_invitation_not_supported", "Agent principals should be added directly by a room admin");
   }
+  await env.CONTROL_DB.prepare(
+    "UPDATE room_invitations SET status = 'expired' WHERE room_id = ? AND invited_principal_id = ? AND status = 'pending' AND expires_at <= CURRENT_TIMESTAMP"
+  )
+    .bind(roomId, principal.principal_id)
+    .run();
   const activeMembership = await env.CONTROL_DB.prepare(
     "SELECT membership_id FROM room_memberships WHERE room_id = ? AND principal_id = ? AND status = 'active'"
   )

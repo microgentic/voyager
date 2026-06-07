@@ -21,12 +21,13 @@ The backend is designed to let development proceed without app stores, push prov
 - Health and metadata endpoints for Worker readiness checks.
 - Platform-owner bootstrap guarded by `BOOTSTRAP_TOKEN`.
 - Admin-created account invitations with activation tokens.
-- Password/passphrase login, logout, password change, sessions, devices, and device revocation.
+- Password/passphrase login, logout, password change, sessions, device enrollment/reuse, and own-device revocation.
 - Admin credential reset tokens that lock an account, revoke sessions, optionally revoke devices, and let the user set a new password.
 - Admin role grants/revocations and role-gated account, policy, audit, usage, room, agent, and maintenance endpoints.
+- Platform-owner protections for credential reset, account lifecycle, policy changes, and platform-owner role grants/revocations.
 - Human and agent principals, with agents created manually by admins after an agent request review.
 - Device key-package publication, listing, claiming, and revocation for later cryptographic clients.
-- Direct and group rooms with owners, admins, members, agents, leaving, removal, archiving, and ownership transfer.
+- Direct one-to-one rooms and group rooms with owners, admins, members, agents, leaving, removal, archiving, and ownership transfer.
 - Human room invitations for group membership acceptance/decline.
 - Opaque message envelopes with idempotency keys, server-side room sequencing, pending delivery receipts, sync, and acknowledgements.
 - R2-backed opaque attachment allocation, upload, completion, download, and deletion through the Worker.
@@ -41,6 +42,7 @@ The backend is designed to let development proceed without app stores, push prov
 - Durable Objects, Queues, KV, Cron triggers, and push provider integrations are still deferred from the active code path. Cleanup is exposed as an admin HTTP endpoint for now so it can be tested with curl before a scheduler is introduced.
 - Password/passphrase auth is active. Passkey/WebAuthn schema support remains future-ready, but live ceremonies are deferred with the external runtime dependency work.
 - Room invitations are human-only for now. Agent principals are added directly by room admins because agents do not have an interactive acceptance UX while live agent runtimes are deferred.
+- Direct member insertion is agent-only after initial room creation. Human group membership should use room invitations so the invited user accepts membership.
 - Realtime delivery is represented by HTTP sync and pending delivery receipts. WebSockets and push can consume the same message/receipt tables later.
 - Attachments flow through the Worker for now. Direct-to-R2 signed upload URLs can be added later when browser/mobile CORS, upload progress, and client constraints are clearer.
 - The server stores encrypted envelopes and opaque blobs only. Credential reset cannot recover local or end-to-end encrypted content.
@@ -49,10 +51,13 @@ The backend is designed to let development proceed without app stores, push prov
 
 - All protected routes use `Authorization: Bearer <sessionToken>`.
 - Public bootstrap and activation routes return a `sessionToken` immediately after successful account creation or activation.
+- Clients should persist the returned `device.deviceId`. Password login reuses that enrolled device when `device.deviceId` is supplied; omitting it intentionally enrolls a new device and consumes device quota.
 - List endpoints that can grow return an array plus `nextCursor`. Current cursors are opaque to clients even though they are implemented as offsets internally.
 - Clients should treat `nextCursor: null` as the end of a list.
 - Password change requires the current password and does not log out the current session.
-- Admin credential reset returns a one-time `resetToken`; the user completes it through `POST /v1/auth/password/reset/complete`.
+- Admin credential reset returns a one-time `resetToken`; the user completes it through `POST /v1/auth/password/reset/complete`. Issuing a new reset revokes older unused reset tokens for that account.
+- Non-platform-owner administrators cannot act on platform-owner accounts, and only platform owners can grant or revoke `platform_owner`.
+- The last active platform owner cannot be revoked.
 - Device key packages are opaque JSON payloads to the backend. Clients own the cryptographic meaning.
 - Message `ciphertext`, attachment blobs, key-package `package`, and cryptographic key fields are opaque to the Worker.
 - Room membership authorization is enforced server-side for room reads, messages, attachments, and membership actions.
@@ -80,7 +85,7 @@ Authenticated user:
 - `DELETE /v1/sessions/{session_id}`
 - `GET /v1/devices`
 - `POST /v1/devices`
-- `POST /v1/devices/{device_id}/revoke`
+- `POST /v1/devices/{device_id}/revoke` for devices owned by the authenticated account.
 - `GET /v1/principals`
 - `GET /v1/principals/{principal_id}/devices`
 - `GET /v1/devices/{device_id}/key-packages`
@@ -118,7 +123,7 @@ Admin:
 ## 6. Backend Work Still Worth Doing Before UI
 
 - Add formal request/response schema validation and shared TypeScript contract exports.
-- Add a small automated API test suite around authorization boundaries, not only the smoke script.
+- Add a formal automated API test suite around authorization boundaries; the smoke script currently covers the most important backend-first regressions.
 - Add filtered pagination to more list endpoints, especially accounts, audit events, sessions, devices, and messages.
 - Add room invitation revocation for room owners/admins.
 - Add direct-room reuse or duplicate detection so repeated direct-room creation can be idempotent.
@@ -128,11 +133,11 @@ Admin:
 
 ## 7. Verification Path
 
-Use the backend smoke script after applying migrations and running the Worker locally or remotely:
+Use the backend smoke script after applying migrations and running the Worker against a fresh local database:
 
 ```bash
 npm run check
 npm run smoke:backend
 ```
 
-The smoke script currently covers bootstrap, invitations, login, password change, credential reset, key packages, rooms, room invitations, messages, sync, acknowledgements, attachments, sidebar collections, agent requests, admin listing, permission failure, cleanup, and maintenance history.
+The smoke script currently covers bootstrap, invitations, login with device reuse, password change, credential reset token revocation/reuse failure, suspended reset protection, key packages, direct-room cardinality, human invitation enforcement, room invitations, messages, sync, acknowledgements, attachments, sidebar collections, agent requests, admin hierarchy failures, cross-account device revoke failure, admin listing, permission failure, cleanup, and maintenance history.

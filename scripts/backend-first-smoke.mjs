@@ -70,6 +70,67 @@ const accepted = await api("/v1/invitations/accept", {
   }
 });
 
+const adminInvite = await api("/v1/admin/invitations", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    displayName: "Backend Security Admin",
+    email: `security-admin-${suffix}@example.com`,
+    expiresInDays: 3
+  }
+});
+
+const acceptedAdmin = await api("/v1/invitations/accept", {
+  method: "POST",
+  json: {
+    token: adminInvite.activationToken,
+    password: "backend-security-admin-passphrase-very-long",
+    device: { platform: "smoke", label: "Security admin smoke device" }
+  }
+});
+const adminHeaders = auth(acceptedAdmin.sessionToken);
+
+await api(`/v1/admin/accounts/${acceptedAdmin.account.accountId}/roles`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { roleName: "security_admin" }
+});
+
+await api(`/v1/admin/accounts/${acceptedAdmin.account.accountId}/roles`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { roleName: "user_admin" }
+});
+
+await expectFailure(`/v1/admin/accounts/${acceptedAdmin.account.accountId}/roles`, {
+  method: "POST",
+  headers: adminHeaders,
+  json: { roleName: "platform_owner" }
+}, 403);
+
+await expectFailure(`/v1/admin/accounts/${owner.account.accountId}/suspend`, {
+  method: "POST",
+  headers: adminHeaders,
+  json: {}
+}, 403);
+
+await expectFailure(`/v1/admin/accounts/${owner.account.accountId}/credential-reset`, {
+  method: "POST",
+  headers: adminHeaders,
+  json: { reason: "should not reset platform owner" }
+}, 403);
+
+await expectFailure(`/v1/admin/accounts/${owner.account.accountId}/roles/platform_owner`, {
+  method: "DELETE",
+  headers: ownerHeaders
+}, 409);
+
+await expectFailure(`/v1/admin/accounts/${owner.account.accountId}/credential-reset`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { reason: "self reset should use password change" }
+}, 409);
+
 const login = await api("/v1/auth/password/login", {
   method: "POST",
   json: {
@@ -94,10 +155,17 @@ const relogin = await api("/v1/auth/password/login", {
   json: {
     email: invite.account.email,
     password: "backend-user-passphrase-very-long-updated",
-    device: { platform: "smoke", label: "User relogin smoke device" }
+    device: { deviceId: login.device.deviceId, platform: "smoke", label: "User relogin smoke device" }
   }
 });
+if (relogin.device.deviceId !== login.device.deviceId) throw new Error("login did not reuse the supplied device ID");
 userHeaders = auth(relogin.sessionToken);
+
+await expectFailure(`/v1/devices/${owner.device.deviceId}/revoke`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { reason: "cross-account revoke should fail" }
+}, 404);
 
 const invitee = await api("/v1/admin/invitations", {
   method: "POST",
@@ -142,21 +210,89 @@ const credentialReset = await api(`/v1/admin/accounts/${resetAccepted.account.ac
   method: "POST",
   headers: ownerHeaders,
   json: {
-    reason: "backend smoke reset",
+    reason: "backend smoke reset superseded token",
     expiresInDays: 2,
     revokeDevices: true
   }
 });
 
-const resetComplete = await api("/v1/auth/password/reset/complete", {
+const credentialResetReplacement = await api(`/v1/admin/accounts/${resetAccepted.account.accountId}/credential-reset`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    reason: "backend smoke reset replacement token",
+    expiresInDays: 2,
+    revokeDevices: true
+  }
+});
+
+await expectFailure("/v1/auth/password/reset/complete", {
   method: "POST",
   json: {
     token: credentialReset.resetToken,
+    password: "backend-reset-old-token-passphrase",
+    device: { platform: "smoke", label: "Old reset token device" }
+  }
+}, 400);
+
+const resetComplete = await api("/v1/auth/password/reset/complete", {
+  method: "POST",
+  json: {
+    token: credentialResetReplacement.resetToken,
     password: "backend-reset-passphrase-very-long-updated",
     device: { platform: "smoke", label: "Reset completion smoke device" }
   }
 });
 const resetHeaders = auth(resetComplete.sessionToken);
+
+await expectFailure("/v1/auth/password/reset/complete", {
+  method: "POST",
+  json: {
+    token: credentialResetReplacement.resetToken,
+    password: "backend-reset-reuse-passphrase",
+    device: { platform: "smoke", label: "Reused reset token device" }
+  }
+}, 400);
+
+const suspendedInvite = await api("/v1/admin/invitations", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    displayName: "Backend Suspended Reset User",
+    email: `suspended-reset-${suffix}@example.com`,
+    expiresInDays: 3
+  }
+});
+
+const suspendedAccepted = await api("/v1/invitations/accept", {
+  method: "POST",
+  json: {
+    token: suspendedInvite.activationToken,
+    password: "backend-suspended-reset-passphrase-very-long",
+    device: { platform: "smoke", label: "Suspended reset smoke device" }
+  }
+});
+
+const suspendedReset = await api(`/v1/admin/accounts/${suspendedAccepted.account.accountId}/credential-reset`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { reason: "will be suspended before completion" }
+});
+
+await api(`/v1/admin/accounts/${suspendedAccepted.account.accountId}/suspend`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {}
+});
+
+await expectFailure("/v1/auth/password/reset/complete", {
+  method: "POST",
+  json: {
+    token: suspendedReset.resetToken,
+    password: "backend-suspended-reset-updated-passphrase",
+    device: { platform: "smoke", label: "Suspended reset completion device" }
+  }
+}, 409);
 
 const ownerKeyPackage = await api(`/v1/devices/${owner.device.deviceId}/key-packages`, {
   method: "POST",
@@ -178,6 +314,11 @@ await api(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
   method: "POST",
   headers: userHeaders
 });
+
+await expectFailure(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
+  method: "POST",
+  headers: inviteeHeaders
+}, 404);
 
 const ownerRevokedKeyPackage = await api(`/v1/devices/${owner.device.deviceId}/key-packages`, {
   method: "POST",
@@ -205,6 +346,12 @@ const direct = await api("/v1/rooms/direct", {
   json: { principalIds: [accepted.principal.principalId], name: "Smoke direct" }
 });
 
+await expectFailure("/v1/rooms/direct", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { principalIds: [accepted.principal.principalId, acceptedInvitee.principal.principalId], name: "Invalid direct" }
+}, 400);
+
 const group = await api("/v1/rooms/groups", {
   method: "POST",
   headers: ownerHeaders,
@@ -214,6 +361,12 @@ const group = await api("/v1/rooms/groups", {
     memberPrincipalIds: [accepted.principal.principalId]
   }
 });
+
+await expectFailure(`/v1/rooms/${group.room.roomId}/members`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { principalId: resetComplete.principal.principalId }
+}, 400);
 
 const roomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations`, {
   method: "POST",
