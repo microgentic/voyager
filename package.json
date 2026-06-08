@@ -9,6 +9,11 @@
     "db:migrate:remote": "wrangler d1 migrations apply voyager-dev-control --remote",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
+    "dev:backend": "node scripts/dev-local-backend.mjs",
+    "seed": "node scripts/voyager-seed.mjs",
+    "client:dev": "npm --prefix apps/client run dev",
+    "client:build": "npm --prefix apps/client run build",
+    "client:check": "npm --prefix apps/client run check",
     "smoke:backend": "node scripts/backend-first-smoke.mjs",
     "smoke:backend:local": "node scripts/run-local-backend-smoke.mjs",
     "wrangler": "wrangler"
