@@ -40,13 +40,13 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204 });
+      return new Response(null, { status: 204, headers: corsHeaders(request, env) });
     }
 
     try {
-      return await handleRequest(request, env, url, requestId);
+      return applyCors(await handleRequest(request, env, url, requestId), request, env);
     } catch (error) {
-      return errorResponse(error, requestId);
+      return applyCors(errorResponse(error, requestId), request, env);
     }
   }
 };
@@ -543,4 +543,48 @@ function booleanField(body: Record<string, unknown>, key: string): boolean {
 
 function clientIp(request: Request): string {
   return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+// CORS. The app authenticates with Bearer tokens (no cookies), so credentialed
+// CORS is not needed and origins can be reflected safely. Dev hosts and the
+// Tauri app origins are always allowed; production web origins come from the
+// CORS_ALLOWED_ORIGINS env allowlist. Requests without an Origin (curl, the
+// smoke suite, same-origin) are unaffected.
+const DEV_ORIGIN_PATTERNS: RegExp[] = [
+  /^https?:\/\/localhost(:\d+)?$/i,
+  /^https?:\/\/127\.0\.0\.1(:\d+)?$/i,
+  /^https?:\/\/\d{1,3}(\.\d{1,3}){3}:1420$/i, // LAN dev server (TAURI_DEV_HOST)
+  /^tauri:\/\/localhost$/i,
+  /^https?:\/\/tauri\.localhost$/i
+];
+
+function isAllowedOrigin(origin: string, env: Env): boolean {
+  if (DEV_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin))) return true;
+  const allowList = env.CORS_ALLOWED_ORIGINS;
+  if (!allowList) return false;
+  return allowList
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(origin);
+}
+
+function corsHeaders(request: Request, env: Env): Record<string, string> {
+  const origin = request.headers.get("origin");
+  if (!origin || !isAllowedOrigin(origin, env)) return {};
+  return {
+    "access-control-allow-origin": origin,
+    vary: "Origin",
+    "access-control-allow-methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
+    "access-control-allow-headers": "authorization, content-type, x-bootstrap-token",
+    "access-control-max-age": "86400"
+  };
+}
+
+function applyCors(response: Response, request: Request, env: Env): Response {
+  const headers = corsHeaders(request, env);
+  for (const [key, value] of Object.entries(headers)) {
+    response.headers.set(key, value);
+  }
+  return response;
 }

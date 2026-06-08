@@ -109,7 +109,7 @@
 		<Archive class="h-4 w-4" /> This conversation is archived.
 	</div>
 {:else}
-	<div class="shrink-0 border-t border-border bg-surface px-2 pb-[calc(var(--sab)+0.5rem)] pt-2 sm:px-3">
+	<div class="shrink-0 border-t border-border bg-surface pb-[calc(var(--sab)+0.5rem)] pl-[calc(var(--sal)+0.5rem)] pr-[calc(var(--sar)+1.5rem)] pt-2 sm:px-3">
 		{#if pending.length > 0}
 			<div class="mb-2 flex flex-wrap gap-2 px-1">
 				{#each pending as item (item.id)}
@@ -132,7 +132,7 @@
 			</div>
 		{/if}
 
-		<div class="flex items-end gap-1.5">
+		<div class="flex min-w-0 items-end gap-1 sm:gap-1.5">
 			<input
 				bind:this={fileInput}
 				type="file"
@@ -142,7 +142,7 @@
 			/>
 			<button
 				onclick={() => fileInput?.click()}
-				class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground"
+				class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground sm:h-10 sm:w-10"
 				aria-label="Attach files"
 			>
 				<Paperclip class="h-5 w-5" />
@@ -152,7 +152,7 @@
 				aria-pressed={markdown}
 				title="Markdown formatting"
 				class={cn(
-					'grid h-10 w-10 shrink-0 place-items-center rounded-xl transition',
+					'hidden h-9 w-9 shrink-0 place-items-center rounded-xl transition sm:grid sm:h-10 sm:w-10',
 					markdown ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground'
 				)}
 				aria-label="Toggle Markdown"
@@ -160,12 +160,13 @@
 				<Sparkles class="h-5 w-5" />
 			</button>
 
-			<div class="flex-1">
+			<div class="min-w-0 flex-1">
 				<Textarea
 					bind:el={textareaEl}
 					bind:value={text}
 					onkeydown={onKeydown}
 					maxRows={6}
+					class="min-w-0"
 					placeholder={markdown ? 'Write with Markdown…' : 'Message…'}
 					aria-label="Message"
 				/>
@@ -174,7 +175,7 @@
 			<button
 				onclick={send}
 				disabled={!ready || sending || uploading}
-				class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground transition enabled:hover:bg-primary-hover disabled:opacity-40 enabled:active:scale-95"
+				class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground transition enabled:hover:bg-primary-hover disabled:opacity-40 enabled:active:scale-95 sm:h-10 sm:w-10"
 				aria-label="Send message"
 			>
 				<SendHorizontal class="h-5 w-5" />
