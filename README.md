@@ -71,8 +71,8 @@ npm run seed             # in another terminal — seeds demo data (idempotent)
 
 | Role  | Email             | Passphrase                |
 | ----- | ----------------- | ------------------------- |
-| Owner | `ada@example.com` | `voyager-demo-passphrase` |
-| User  | `grace@example.com` | `voyager-demo-passphrase` |
+| Owner | `ada@example.com` | `voyager-demo-pass` |
+| User  | `grace@example.com` | `voyager-demo-pass` |
 
 ### 2. Client — web
 

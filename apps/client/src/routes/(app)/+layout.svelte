@@ -22,7 +22,7 @@
 	const showTabBar = $derived(!ui.isWide && !inThread);
 </script>
 
-<div class="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+<div class="app-viewport-shell flex overflow-hidden bg-background text-foreground">
 	{#if ui.isWide}
 		<NavRail />
 	{/if}

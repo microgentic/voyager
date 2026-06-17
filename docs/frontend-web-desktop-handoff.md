@@ -160,4 +160,4 @@ These are intentional and tracked, not oversights:
 
 See the root `README.md` quickstart. In short: `npm run dev:backend` +
 `npm run seed`, then `apps/client → npm run dev` (web) or `npm run tauri dev`
-(desktop). Demo login: `ada@example.com` / `voyager-demo-passphrase`.
+(desktop). Demo login: `ada@example.com` / `voyager-demo-pass`.

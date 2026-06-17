@@ -25,6 +25,9 @@ Related docs:
 - Tauri dev clients now default to `http://127.0.0.1:8787` in development. The iOS Simulator path exposed that WebKit + Vite proxy can forward JSON POST requests with an empty body, so direct local Worker access is more reliable for native dev.
 - The composer was tightened for phone widths: primary attach/send controls remain visible, the markdown toggle is hidden on phone-width composer rows, and larger screens retain it.
 - Message bubbles and composer internals now use stricter narrow-width constraints to avoid horizontal overflow.
+- iOS WebView zoom guard: WebKit zoomed and panned the whole page when focused inputs computed below 16px. The symptom was a clipped right edge after sign-in or composer focus, temporarily corrected by double-tapping empty space. The global coarse-pointer input rule now uses `font-size: 16px !important` so Tailwind utilities cannot override it, and the document uses `touch-action: manipulation` to avoid double-tap zoom. Keep future mobile inputs/textareas at 16px or larger, or explicitly verify they do not trigger iOS focus zoom.
+- iOS composer focus-scroll guard: after the zoom fix, focusing the composer could still make the room header slide under the status bar because WebKit renders focused inputs against a shifted visual viewport. The root layout now binds VisualViewport measurements to CSS variables, and the authenticated app shell uses those variables for its fixed top/left/width/height. `html`/`body` remain height-locked with `overflow: hidden`; scrolling must stay inside app panes such as the message list and conversation list.
+- Simulator keyboard note: the small bar with up/down arrows and a checkmark is the default iOS/WKWebView input accessory, not Voyager UI. It wasted vertical space in the composer, so the Tauri window now sets `disableInputAccessoryView: true`. Use Simulator `I/O > Keyboard > Toggle Software Keyboard` or press `Cmd+K` when a full software keyboard is needed for manual testing.
 
 ## 3. Verified Commands
 
@@ -38,13 +41,18 @@ npm run seed
 From `apps/client`:
 
 ```bash
+npm run tauri -- ios dev "iPhone 17" --no-watch
 npm run dev
-npm run tauri ios dev -- --no-watch
 ```
+
+For the CLI `tauri ios dev` flow, keep port 1420 free until the install command finishes, then start `npm run dev` for hot reload.
 
 Additional checks performed:
 
 ```bash
+npm run check
+npm run build
+npm run tauri -- info
 xcrun simctl launch booted com.microgentic.voyager
 xcrun simctl io booted screenshot /tmp/voyager-ios/chats.png
 xcrun simctl io booted screenshot /tmp/voyager-ios/thread-sent.png
