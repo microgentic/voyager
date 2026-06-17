@@ -56,6 +56,10 @@
 	--sab: env(safe-area-inset-bottom, 0px);
 	--sal: env(safe-area-inset-left, 0px);
 	--sar: env(safe-area-inset-right, 0px);
+	--vv-top: 0px;
+	--vv-left: 0px;
+	--vv-width: 100vw;
+	--vv-height: 100dvh;
 }
 
 .dark {
@@ -173,19 +177,25 @@
 		-webkit-text-size-adjust: 100%;
 		text-size-adjust: 100%;
 		-webkit-tap-highlight-color: transparent;
+		touch-action: manipulation;
 		height: 100%;
+		width: 100%;
+		overflow: hidden;
 	}
 
 	body {
 		margin: 0;
+		height: 100%;
 		min-height: 100%;
+		width: 100%;
+		overflow: hidden;
 		background-color: var(--color-background);
 		color: var(--color-foreground);
 		font-family: var(--font-sans);
 		font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 		-webkit-font-smoothing: antialiased;
 		text-rendering: optimizeLegibility;
-		overscroll-behavior-y: none;
+		overscroll-behavior: none;
 	}
 
 	/* Keep native focus rings off mouse clicks but visible for keyboard users. */
@@ -209,13 +219,14 @@
 		color: var(--color-faint);
 	}
 
-	/* Prevent iOS focus-zoom by keeping touch inputs ≥16px — without disabling
-	   the user's ability to zoom the page (accessibility). */
+	/* Prevent iOS/WebKit focus zoom by keeping touch inputs >=16px.
+	   This needs !important because Tailwind utility classes such as text-sm
+	   and text-[15px] are emitted in a later layer and otherwise win. */
 	@media (pointer: coarse) {
 		input:not([type='checkbox']):not([type='radio']),
 		textarea,
 		select {
-			font-size: 16px;
+			font-size: 16px !important;
 		}
 	}
 }
@@ -264,6 +275,14 @@
 	.drag-none {
 		-webkit-user-drag: none;
 		user-select: none;
+	}
+
+	.app-viewport-shell {
+		position: fixed;
+		top: var(--vv-top);
+		left: var(--vv-left);
+		width: var(--vv-width);
+		height: var(--vv-height);
 	}
 }
 

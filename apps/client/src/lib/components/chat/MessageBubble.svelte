@@ -41,7 +41,7 @@
 </script>
 
 <div
-	class={cn('flex w-full gap-2 px-3 sm:px-4', mine ? 'justify-end' : 'justify-start', isLastOfGroup ? 'mb-2' : 'mb-0.5')}
+	class={cn('flex w-full min-w-0 gap-2 px-3 sm:px-4', mine ? 'justify-end' : 'justify-start', isLastOfGroup ? 'mb-2' : 'mb-0.5')}
 >
 	{#if !mine}
 		<div class="w-8 shrink-0 self-end">
@@ -51,10 +51,10 @@
 		</div>
 	{/if}
 
-	<div class={cn('flex max-w-[78%] flex-col sm:max-w-[68%]', mine ? 'items-end' : 'items-start')}>
+	<div class={cn('flex min-w-0 max-w-[78%] flex-col sm:max-w-[68%]', mine ? 'items-end' : 'items-start')}>
 		<div
 			class={cn(
-				'relative px-3 py-2 text-[15px] leading-relaxed shadow-xs',
+				'relative max-w-full overflow-hidden px-3 py-2 text-[15px] leading-relaxed shadow-xs',
 				mine
 					? 'rounded-2xl bg-bubble-out text-bubble-out-foreground'
 					: isAgentSender
@@ -120,6 +120,7 @@
 <style>
 	.msg-prose :global(p) {
 		margin: 0;
+		overflow-wrap: anywhere;
 	}
 	.msg-prose :global(p + p) {
 		margin-top: 0.5rem;

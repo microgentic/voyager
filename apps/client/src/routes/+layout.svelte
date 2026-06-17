@@ -6,6 +6,7 @@
 	import { auth } from '$lib/stores';
 	import Toaster from '$lib/components/ui/Toaster.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import { bindVisualViewportVars } from '$lib/visual-viewport';
 
 	let { children } = $props();
 
@@ -13,6 +14,7 @@
 
 	onMount(() => {
 		void auth.init();
+		return bindVisualViewportVars();
 	});
 
 	$effect(() => {

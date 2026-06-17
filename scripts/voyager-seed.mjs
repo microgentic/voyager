@@ -14,7 +14,7 @@
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:8787';
 const BOOTSTRAP_TOKEN = process.env.BOOTSTRAP_TOKEN ?? 'local-bootstrap-secret';
-const PW = 'voyager-demo-passphrase';
+const PW = 'voyager-demo-pass';
 
 const CREDS = {
 	owner: { email: 'ada@example.com', password: PW },

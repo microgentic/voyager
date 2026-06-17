@@ -2,6 +2,9 @@ export interface Env {
   CONTROL_DB: D1Database;
   ATTACHMENTS_BUCKET: R2Bucket;
   BOOTSTRAP_TOKEN?: string;
+  // Comma-separated extra origins allowed by CORS (e.g. the production web host).
+  // Dev/localhost and Tauri app origins are always allowed.
+  CORS_ALLOWED_ORIGINS?: string;
 }
 
 export interface AccountRow {

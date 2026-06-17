@@ -1,9 +1,10 @@
 # Mobile App Requirements (iOS + Android)
 
-Status: planning note for the mobile build
+Status: planning note for the mobile build; iOS simulator P0 is complete
 Date: 2026-06-07
 Related: `docs/frontend-web-desktop-handoff.md`, the master plan, and the
-backend contract handoff.
+backend contract handoff. See `docs/mobile-ios-handoff.md` for the completed
+iOS simulator handoff.
 
 The mobile apps are the **same** SvelteKit client packaged with **Tauri 2**
 (`apps/client` + `apps/client/src-tauri`). This documents what carries over
