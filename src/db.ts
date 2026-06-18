@@ -195,17 +195,32 @@ export async function bootstrapAdmin(
 
   const accountId = randomId("acct");
   const principalId = randomId("prn");
-  const account = await createAccount(env, {
-    accountId,
-    principalId,
-    displayName: input.displayName,
-    email: input.email,
-    status: "active",
-    activated: true
-  });
+  const authenticatorId = randomId("auth");
+  const passwordVerifier = await hashPassword(input.password);
+  const role = await env.CONTROL_DB.prepare("SELECT role_id FROM admin_roles WHERE name = 'platform_owner'")
+    .first<{ role_id: string }>();
+  if (!role) throw new HttpError(400, "invalid_role", "Unknown admin role");
+
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `INSERT INTO accounts (
+        account_id, status, display_name, email, phone, policy_id,
+        default_principal_id, activated_at
+      ) VALUES (?, 'active', ?, ?, NULL, 'pol_default', ?, CURRENT_TIMESTAMP)`
+    ).bind(accountId, input.displayName, input.email.toLowerCase(), principalId),
+    env.CONTROL_DB.prepare(
+      "INSERT INTO principals (principal_id, account_id, principal_type, display_name, status) VALUES (?, ?, 'human', ?, 'active')"
+    ).bind(principalId, accountId, input.displayName),
+    env.CONTROL_DB.prepare(
+      "INSERT INTO authenticators (authenticator_id, account_id, type, password_verifier) VALUES (?, ?, 'password', ?)"
+    ).bind(authenticatorId, accountId, passwordVerifier),
+    env.CONTROL_DB.prepare(
+      "INSERT INTO account_admin_roles (account_id, role_id, granted_by_account_id) VALUES (?, ?, NULL)"
+    ).bind(accountId, role.role_id)
+  ]);
+
+  const account = await getAccount(env, accountId);
   const principal = await getPrincipal(env, principalId);
-  await setPassword(env, accountId, input.password);
-  await grantAdminRole(env, accountId, "platform_owner", null);
   const device = await createDeviceForPrincipal(env, accountId, principalId, input.device);
   const sessionToken = await createSession(env, accountId, device.device_id);
   return { account, principal, device, sessionToken };
