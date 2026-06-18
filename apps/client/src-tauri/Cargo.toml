@@ -26,3 +26,8 @@ serde_json = "1"
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+
+# Strip debuginfo from debug builds so sideloadable mobile debug APKs/IPAs stay
+# small (the Rust shell carries no shippable debug value). Release stays default.
+[profile.dev]
+strip = "debuginfo"

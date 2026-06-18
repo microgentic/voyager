@@ -67,12 +67,21 @@ npm run dev:backend      # applies D1 migrations + runs the Worker on :8787
 npm run seed             # in another terminal — seeds demo data (idempotent)
 ```
 
-`npm run seed` prints the demo credentials:
+`npm run seed` prints the demo credentials. All seeded human accounts use
+`voyager-demo-pass`:
 
-| Role  | Email             | Passphrase                |
-| ----- | ----------------- | ------------------------- |
-| Owner | `ada@example.com` | `voyager-demo-pass` |
-| User  | `grace@example.com` | `voyager-demo-pass` |
+| Account type | Email |
+| --- | --- |
+| Platform owner | `ada@example.com` |
+| Regular user | `grace@example.com` |
+| Regular user | `alan@example.com` |
+| User admin | `katherine@example.com` |
+| Security admin | `margaret@example.com` |
+| Agent provisioner | `hedy@example.com` |
+| Quota operator | `dorothy@example.com` |
+| Auditor | `donald@example.com` |
+
+Seeded agents are app principals, not password-login accounts.
 
 ### 2. Client — web
 
