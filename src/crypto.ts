@@ -1,4 +1,5 @@
-const PASSWORD_ITERATIONS = 210_000;
+// Keep this aligned with the verifier floor and within Cloudflare Workers runtime limits.
+const PASSWORD_ITERATIONS = 100_000;
 const PASSWORD_KEY_BITS = 256;
 const PASSWORD_SALT_BYTES = 16;
 const TOKEN_BYTES = 32;
