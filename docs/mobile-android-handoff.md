@@ -73,7 +73,7 @@ It is a **debug** APK (debug-signed, installs without a keystore). A Play Store 
 
 ## 5. Giving the phone an account to sign into
 
-The default APK talks to the deployed Worker `https://voyager-api-dev.microgentic-voyager.workers.dev`, which is currently **empty** (no accounts, no bootstrap token). Pick one:
+The default APK talks to the deployed Worker `https://voyager-api-dev.microgentic-voyager.workers.dev`. To sign in from a physical phone, seed that deployed Worker once with demo accounts, or build a LAN-specific APK that points at a local Worker.
 
 **A. Seed the deployed Worker (works anywhere, recommended).** You have `wrangler` authenticated:
 
@@ -84,7 +84,11 @@ BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
   BOOTSTRAP_TOKEN=<the value you just set> npm run seed
 ```
 
-Then sign in on the phone with `ada@example.com` / `voyager-demo-pass`.
+Then sign in on the phone with any seeded human account, for example
+`ada@example.com` / `voyager-demo-pass` or `grace@example.com` /
+`voyager-demo-pass`. Agents are seeded as app principals, not password-login
+accounts. The expanded seed also includes admin-role accounts listed in the
+root `README.md`.
 
 **B. Same-Wi-Fi LAN testing (quick, no deploy).** Run the local seeded Worker and build an APK pointed at this Mac's LAN IP (currently `172.20.22.123`), allowing that origin in the CSP:
 
