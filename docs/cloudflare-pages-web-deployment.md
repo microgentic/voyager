@@ -32,4 +32,6 @@ The workflow expects these repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-The token must include Cloudflare Pages edit access for the account. The existing Worker/D1 token may need to be updated if it was created before Pages deployment was added.
+`CLOUDFLARE_ACCOUNT_ID` should be `673a41a654ed01f9bf90d253ae426a18` for the current Voyager Cloudflare account.
+
+`CLOUDFLARE_API_TOKEN` must include account-level Cloudflare Pages edit access for that account. The existing Worker/D1 token may need to be updated or replaced if it was created before Pages deployment was added. A Pages permission failure appears in CI as a successful build followed by a `wrangler pages deploy` authentication error.
