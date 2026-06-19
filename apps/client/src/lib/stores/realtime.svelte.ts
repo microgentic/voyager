@@ -18,7 +18,16 @@ class RealtimeStore {
 	state = $state<RealtimeState>('idle');
 	connected = $state(false);
 	lastEventAt = $state<Date | null>(null);
+	lastReadyAt = $state<Date | null>(null);
+	lastPongAt = $state<Date | null>(null);
+	lastConnectedAt = $state<Date | null>(null);
+	lastClosedAt = $state<Date | null>(null);
+	lastRoomMessageAt = $state<Date | null>(null);
+	lastRoomId = $state<string | null>(null);
+	lastEnvelopeId = $state<string | null>(null);
+	lastServerSequence = $state<number | null>(null);
 	lastError = $state<string | null>(null);
+	reconnectCount = $state(0);
 
 	private socket: WebSocket | null = null;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -67,6 +76,7 @@ class RealtimeStore {
 			this.connected = true;
 			this.state = 'connected';
 			this.attempts = 0;
+			this.lastConnectedAt = new Date();
 			this.startHeartbeat();
 		};
 
@@ -82,6 +92,7 @@ class RealtimeStore {
 			this.clearHeartbeat();
 			this.socket = null;
 			this.connected = false;
+			this.lastClosedAt = new Date();
 			if (!this.active) return;
 			this.scheduleReconnect();
 		};
@@ -95,16 +106,27 @@ class RealtimeStore {
 		} catch {
 			return;
 		}
-		if (event.type === 'ready' || event.type === 'pong') {
+		if (event.type === 'ready') {
+			this.lastReadyAt = new Date();
+			return;
+		}
+		if (event.type === 'pong') {
+			this.lastPongAt = new Date();
 			return;
 		}
 		if (event.type === 'room.message' && event.roomId) {
 			this.lastEventAt = new Date();
+			this.lastRoomMessageAt = this.lastEventAt;
+			this.lastRoomId = event.roomId;
+			this.lastEnvelopeId = event.envelopeId ?? null;
+			this.lastServerSequence = event.serverSequence ?? null;
 			sync.pokeRoomNow(event.roomId, event.serverSequence);
 			return;
 		}
 		if (event.type === 'room.sync') {
 			this.lastEventAt = new Date();
+			this.lastRoomId = event.roomId ?? null;
+			this.lastServerSequence = event.serverSequence ?? null;
 			if (event.roomId) sync.pokeRoomNow(event.roomId, event.serverSequence);
 			else sync.pokeNow();
 		}
@@ -113,6 +135,7 @@ class RealtimeStore {
 	private scheduleReconnect(): void {
 		this.clearReconnect();
 		this.state = 'retrying';
+		this.reconnectCount += 1;
 		const delay = Math.min(30_000, 500 * 2 ** Math.min(this.attempts, 6)) + Math.floor(Math.random() * 250);
 		this.attempts += 1;
 		this.reconnectTimer = setTimeout(() => {

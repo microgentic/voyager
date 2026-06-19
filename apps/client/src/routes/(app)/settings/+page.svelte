@@ -3,11 +3,11 @@
 	import { goto } from '$app/navigation';
 	import {
 		Sun, Moon, KeyRound, Smartphone, Monitor, Globe, LogOut, ShieldAlert,
-		Trash2, Laptop, Info, ChevronRight
+		Trash2, Laptop, Info, ChevronRight, Activity, Radio
 	} from '@lucide/svelte';
 	import type { Device, Session } from '$lib/api/types';
 	import { api, isApiError } from '$lib/api';
-	import { auth, ui, toasts } from '$lib/stores';
+	import { auth, ui, toasts, realtime, sync } from '$lib/stores';
 	import { APP_VERSION, getApiBase, setApiBase, defaultApiBase } from '$lib/config';
 	import { isTauri } from '$lib/platform';
 	import { messageCodec } from '$lib/protocol/codec';
@@ -116,6 +116,14 @@
 		if (/web|browser/i.test(platform)) return Globe;
 		if (/ios|android|mobile|phone/i.test(platform)) return Smartphone;
 		return Monitor;
+	}
+
+	function diagnosticTime(value: Date | null) {
+		return value ? formatRelativeShort(value.toISOString()) : 'never';
+	}
+
+	function diagnosticDuration(value: number | null) {
+		return value === null ? '—' : `${value}ms`;
 	}
 </script>
 
@@ -269,6 +277,55 @@
 								</div>
 							</Field>
 						{/if}
+						<div class="rounded-xl border border-border bg-surface-2 p-3">
+							<div class="mb-3 flex items-center justify-between gap-3">
+								<div class="flex items-center gap-2">
+									<Radio class="h-4 w-4 text-muted" />
+									<span class="text-sm font-medium text-foreground">Realtime diagnostics</span>
+								</div>
+								<Badge tone={realtime.connected ? 'success' : 'neutral'}>{realtime.state}</Badge>
+							</div>
+							<div class="grid gap-2 text-xs text-muted sm:grid-cols-2">
+								<div class="flex justify-between gap-3">
+									<span>Connected</span>
+									<span class="font-medium text-foreground">{realtime.connected ? 'yes' : 'no'}</span>
+								</div>
+								<div class="flex justify-between gap-3">
+									<span>Reconnects</span>
+									<span class="font-medium text-foreground">{realtime.reconnectCount}</span>
+								</div>
+								<div class="flex justify-between gap-3">
+									<span>Ready</span>
+									<span class="font-medium text-foreground">{diagnosticTime(realtime.lastReadyAt)}</span>
+								</div>
+								<div class="flex justify-between gap-3">
+									<span>Last event</span>
+									<span class="font-medium text-foreground">{diagnosticTime(realtime.lastEventAt)}</span>
+								</div>
+								<div class="flex justify-between gap-3">
+									<span>Last room</span>
+									<span class="truncate font-medium text-foreground">{realtime.lastRoomId ?? '—'}</span>
+								</div>
+								<div class="flex justify-between gap-3">
+									<span>Sequence</span>
+									<span class="font-medium text-foreground">{realtime.lastServerSequence ?? '—'}</span>
+								</div>
+								<div class="flex justify-between gap-3">
+									<span>Full sync</span>
+									<span class="font-medium text-foreground">{diagnosticDuration(sync.lastSyncDurationMs)}</span>
+								</div>
+								<div class="flex justify-between gap-3">
+									<span>Room sync</span>
+									<span class="font-medium text-foreground">{diagnosticDuration(sync.lastRoomSyncDurationMs)}</span>
+								</div>
+							</div>
+							{#if realtime.lastError}
+								<div class="mt-3 flex items-start gap-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">
+									<Activity class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+									<span>{realtime.lastError}</span>
+								</div>
+							{/if}
+						</div>
 					{/if}
 					<p class="text-xs text-faint">Voyager · v{APP_VERSION}</p>
 				</div>

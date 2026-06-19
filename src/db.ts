@@ -13,6 +13,36 @@ export interface CredentialResetResult {
   expiresAt: string;
 }
 
+export interface CleanupTestDevicesInput {
+  dryRun: boolean;
+  accountEmails: string[];
+  labelMatchers: string[];
+  platformMatchers: string[];
+  includeKnownAppDevices: boolean;
+  includeCurrentDevice: boolean;
+  keepNewestPerAccount: number;
+  reason: string;
+}
+
+export interface CleanupTestDeviceResult {
+  dryRun: boolean;
+  scanned: number;
+  matched: number;
+  revoked: number;
+  devices: Array<{
+    deviceId: string;
+    accountId: string;
+    accountEmail: string | null;
+    accountDisplayName: string;
+    principalId: string;
+    platform: string;
+    label: string;
+    createdAt: string;
+    lastSeenAt: string | null;
+    reason: string;
+  }>;
+}
+
 export async function audit(
   env: Env,
   input: {
@@ -677,6 +707,97 @@ export async function listDevices(env: Env, accountId: string): Promise<DeviceRo
     .bind(accountId)
     .all<DeviceRow>();
   return result.results ?? [];
+}
+
+export async function cleanupTestDevices(
+  env: Env,
+  auth: AuthContext,
+  input: CleanupTestDevicesInput
+): Promise<CleanupTestDeviceResult> {
+  const result = await env.CONTROL_DB.prepare(
+    `SELECT
+       d.device_id, d.account_id, d.principal_id, d.platform, d.device_label,
+       d.created_at, d.last_seen_at, a.email AS account_email, a.display_name AS account_display_name
+     FROM devices d
+     JOIN accounts a ON a.account_id = d.account_id
+     WHERE d.revoked_at IS NULL
+     ORDER BY d.account_id, d.created_at DESC
+     LIMIT 1000`
+  ).all<{
+    device_id: string;
+    account_id: string;
+    principal_id: string;
+    platform: string;
+    device_label: string;
+    created_at: string;
+    last_seen_at: string | null;
+    account_email: string | null;
+    account_display_name: string;
+  }>();
+
+  const accountEmails = new Set(input.accountEmails.map((email) => email.toLowerCase()));
+  const labelMatchers = input.labelMatchers.map((value) => value.toLowerCase());
+  const platformMatchers = input.platformMatchers.map((value) => value.toLowerCase());
+  const appPlatforms = new Set(["web", "desktop", "ios", "android", "mobile"]);
+  const keepByAccount = new Map<string, number>();
+  const candidates: CleanupTestDeviceResult["devices"] = [];
+
+  for (const device of result.results ?? []) {
+    if (input.accountEmails.length > 0 && (!device.account_email || !accountEmails.has(device.account_email.toLowerCase()))) {
+      continue;
+    }
+    if (!input.includeCurrentDevice && device.device_id === auth.device.device_id) {
+      continue;
+    }
+
+    const seen = keepByAccount.get(device.account_id) ?? 0;
+    keepByAccount.set(device.account_id, seen + 1);
+    if (seen < input.keepNewestPerAccount) {
+      continue;
+    }
+
+    const label = device.device_label.toLowerCase();
+    const platform = device.platform.toLowerCase();
+    const labelMatched = labelMatchers.some((matcher) => label.includes(matcher));
+    const platformMatched = platformMatchers.includes(platform);
+    const appMatched = input.includeKnownAppDevices && appPlatforms.has(platform) && input.accountEmails.length > 0;
+    if (!labelMatched && !platformMatched && !appMatched) {
+      continue;
+    }
+
+    candidates.push({
+      deviceId: device.device_id,
+      accountId: device.account_id,
+      accountEmail: device.account_email,
+      accountDisplayName: device.account_display_name,
+      principalId: device.principal_id,
+      platform: device.platform,
+      label: device.device_label,
+      createdAt: device.created_at,
+      lastSeenAt: device.last_seen_at,
+      reason: labelMatched ? "label_match" : platformMatched ? "platform_match" : "known_app_device"
+    });
+  }
+
+  if (!input.dryRun && candidates.length > 0) {
+    const statements = candidates.flatMap((device) => [
+      env.CONTROL_DB.prepare(
+        "UPDATE devices SET revoked_at = CURRENT_TIMESTAMP, revocation_reason = ? WHERE device_id = ? AND revoked_at IS NULL"
+      ).bind(input.reason, device.deviceId),
+      env.CONTROL_DB.prepare(
+        "UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE device_id = ? AND revoked_at IS NULL"
+      ).bind(device.deviceId)
+    ]);
+    await env.CONTROL_DB.batch(statements);
+  }
+
+  return {
+    dryRun: input.dryRun,
+    scanned: result.results?.length ?? 0,
+    matched: candidates.length,
+    revoked: input.dryRun ? 0 : candidates.length,
+    devices: candidates
+  };
 }
 
 export async function listSessions(env: Env, accountId: string): Promise<SessionRow[]> {

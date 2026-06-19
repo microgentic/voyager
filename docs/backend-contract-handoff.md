@@ -92,6 +92,7 @@ Authenticated user:
 - `GET /v1/devices`
 - `POST /v1/devices`
 - `POST /v1/devices/{device_id}/revoke` for devices owned by the authenticated account.
+- `POST /v1/admin/devices/test-cleanup` for platform-owner dry-run/apply cleanup of stale test devices.
 - `GET /v1/principals`
 - `GET /v1/principals/{principal_id}/devices`
 - `GET /v1/devices/{device_id}/key-packages`
