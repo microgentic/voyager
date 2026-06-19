@@ -11,6 +11,10 @@
 	let { children } = $props();
 
 	const AUTH_ROUTES = ['/login', '/activate', '/reset'];
+	function isRootRoute(path: string): boolean {
+		const normalized = path.replace(/\/+$/, '') || '/';
+		return normalized === '/' || normalized.endsWith('/index.html');
+	}
 
 	onMount(() => {
 		void auth.init();
@@ -21,9 +25,10 @@
 		if (auth.status === 'loading') return;
 		const path = page.url.pathname;
 		const onAuthRoute = AUTH_ROUTES.includes(path);
+		const onRootRoute = isRootRoute(path);
 		if (auth.status === 'anon' && !onAuthRoute) {
 			void goto('/login', { replaceState: true });
-		} else if (auth.status === 'authed' && (onAuthRoute || path === '/')) {
+		} else if (auth.status === 'authed' && (onAuthRoute || onRootRoute)) {
 			void goto('/app', { replaceState: true });
 		}
 	});
