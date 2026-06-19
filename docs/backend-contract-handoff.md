@@ -67,6 +67,8 @@ The backend is designed to let development proceed without app stores, push prov
 - Room membership authorization is enforced server-side for room reads, messages, attachments, and membership actions.
 - Admin endpoints are role-gated; `platform_owner` satisfies all admin role checks.
 - The UI may open `GET /v1/realtime` for foreground near-realtime events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
+- `GET /v1/realtime` currently authenticates browser/WebView clients with the session token as a WebSocket subprotocol. A short-lived realtime token endpoint remains future production hardening.
+- Conversation-level Durable Objects for sequencing, idempotency, membership mutation serialization, and D1/DO reconciliation are not implemented yet. The current Durable Object layer is foreground mailbox/session fanout.
 
 ## 5. Important Endpoint Groups
 

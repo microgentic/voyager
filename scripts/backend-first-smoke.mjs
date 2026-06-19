@@ -629,7 +629,9 @@ await api(`/v1/attachments/${attachment.attachment.attachmentId}/complete`, {
   json: { ciphertextBytes: attachmentBody.byteLength, ciphertextSha256: "smoke-sha256-placeholder" }
 });
 
-await api(`/v1/rooms/${group.room.roomId}/messages`, {
+const groupRealtimeWatcher = await openRealtimeMessageWatcher(relogin.sessionToken, group.room.roomId);
+
+const groupMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",
   headers: ownerHeaders,
   json: {
@@ -639,6 +641,14 @@ await api(`/v1/rooms/${group.room.roomId}/messages`, {
     attachmentIds: [attachment.attachment.attachmentId]
   }
 });
+
+const groupRealtimeEvent = await groupRealtimeWatcher.wait;
+if (groupRealtimeEvent.envelopeId !== groupMessage.message.envelopeId) {
+  throw new Error("group realtime event did not reference the sent message envelope");
+}
+if (groupRealtimeEvent.serverSequence !== groupMessage.message.serverSequence) {
+  throw new Error("group realtime event did not reference the sent message sequence");
+}
 
 await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",
@@ -701,6 +711,8 @@ console.log(JSON.stringify({
   agentPrincipalId: agent.agent.principalId,
   messageId: directMessage.message.envelopeId,
   realtimeEventId: realtimeEvent.eventId,
+  groupMessageId: groupMessage.message.envelopeId,
+  groupRealtimeEventId: groupRealtimeEvent.eventId,
   attachmentId: attachment.attachment.attachmentId,
   maintenanceRunId: cleanup.cleanup.maintenanceRunId,
   usage: usage.usage

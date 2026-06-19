@@ -42,7 +42,7 @@ export async function notifyRoomRealtime(
   event: Omit<RealtimeEvent, "eventId" | "createdAt" | "type" | "roomId"> & { type?: RealtimeEventType }
 ): Promise<void> {
   const result = await env.CONTROL_DB.prepare(
-    "SELECT DISTINCT account_id FROM room_memberships WHERE room_id = ? AND status = 'active'"
+    "SELECT DISTINCT account_id FROM room_memberships WHERE room_id = ? AND status = 'active' AND account_id IS NOT NULL"
   )
     .bind(roomId)
     .all<{ account_id: string }>();

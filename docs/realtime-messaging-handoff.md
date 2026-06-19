@@ -1,6 +1,6 @@
 # Realtime Messaging Handoff
 
-Status: Durable Object realtime event hints implemented
+Status: foreground Durable Object realtime event hints implemented
 Date: 2026-06-19
 Related docs:
 
@@ -16,13 +16,15 @@ The important boundary is that realtime is **not** a second message store and do
 
 This follows the master-plan direction: WebSockets provide the foreground realtime experience, while HTTP sync remains the recovery and source-of-truth path. Push notifications remain future wake-up infrastructure only.
 
+This is intentionally the **foreground mailbox/session layer**, not the full master-plan Conversation Durable Object architecture. Conversation-level Durable Objects for message sequencing, idempotency, membership mutation serialization, and D1/DO reconciliation remain future architecture work. Current sequencing and idempotency still happen through the existing D1-backed message path.
+
 ## 2. Backend Implementation
 
 - `wrangler.jsonc` binds `REALTIME_MAILBOX` to `RealtimeMailbox` and declares the Durable Object migration `v1-realtime-mailbox`.
 - `src/realtime.ts` owns the realtime layer:
   - `RealtimeMailbox` accepts hibernating WebSockets per account.
   - `handleRealtimeConnect()` routes an authenticated account to its mailbox.
-  - `notifyRoomRealtime()` resolves active room account memberships and fan-outs an event to each account mailbox.
+  - `notifyRoomRealtime()` resolves active room account memberships and fan-outs an event to each non-null account mailbox.
 - `src/index.ts` exposes `GET /v1/realtime` as a WebSocket upgrade endpoint.
 - `src/backend.ts` emits a `room.message` realtime event only after message insert, delivery receipt creation, attachment reference updates, and room bump succeed.
 - Idempotent duplicate message sends return the existing message and do not emit duplicate realtime events.
@@ -43,6 +45,8 @@ Authentication:
 ```ts
 new WebSocket(url, ["voyager.realtime.v1", sessionToken])
 ```
+
+This is acceptable for the current development contract, but production hardening should replace long-lived session-token socket auth with a short-lived realtime token, for example `POST /v1/realtime/token` followed by a one-use or renewable WebSocket token.
 
 Server-selected protocol:
 
@@ -94,6 +98,7 @@ This means a foreground client should see new messages quickly, while clients th
 - Browser origins are checked against the same CORS allowlist before the WebSocket upgrade is routed to the Durable Object.
 - Durable Objects do not store message content, ciphertext, attachment metadata, or long-lived room state.
 - Events only reveal room/message identifiers already available to active room members through normal sync authorization.
+- `room_memberships.account_id` is currently non-null for both human and agent principals, and realtime fanout also filters null account IDs defensively for future system-principal changes.
 
 ## 6. Verification
 
@@ -108,11 +113,12 @@ npx wrangler deploy --dry-run
 npm run smoke:backend:local
 ```
 
-The local backend smoke now opens an authenticated WebSocket, waits for the `ready` frame, sends a direct-room message from another account, verifies the `room.message` event references the same `envelopeId` and `serverSequence`, then verifies `/v1/sync` still returns the pending message.
+The local backend smoke now opens authenticated WebSockets, waits for the `ready` frame, sends a direct-room message from another account, verifies the `room.message` event references the same `envelopeId` and `serverSequence`, then verifies `/v1/sync` still returns the pending message. It also sends a message in a group containing an agent member and verifies a human member receives the matching realtime event.
 
 ## 7. Remaining Work
 
 - Add more event types as backend workflows need them, for example `room.membership`, `room.invitation`, `delivery.receipt`, or `typing` if those features become product requirements.
-- Add per-room Durable Object sequencing only if the project needs server-mediated live collaboration semantics beyond D1 message ordering.
+- Add Conversation Durable Objects when the project is ready to move message sequencing, idempotency, membership mutation serialization, and D1/DO reconciliation into the full master-plan architecture.
+- Add short-lived realtime socket tokens so long-lived session tokens do not need to travel in WebSocket subprotocol headers.
 - Keep APNs/FCM push deferred. When implemented, push should wake sleeping devices to run sync; it should not become the source of truth.
 - Keep local encrypted history, MLS state, and device private-key proof as future security-layer work.

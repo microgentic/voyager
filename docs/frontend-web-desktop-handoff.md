@@ -120,8 +120,9 @@ a room acks others' messages as read.
 
 4. **Realtime as hints, not state.** Foreground clients use Durable Object
    WebSockets for near-immediate awareness, but message bodies and durable
-   state still come from HTTP sync/list endpoints. Polling remains the fallback
-   for missed events, sleep, reloads, and offline recovery.
+   state still come from HTTP sync/list endpoints. This is the mailbox/session
+   realtime layer, not Conversation Durable Object sequencing. Polling remains
+   the fallback for missed events, sleep, reloads, and offline recovery.
 
 ## 6. Known gaps / backend follow-ups
 
