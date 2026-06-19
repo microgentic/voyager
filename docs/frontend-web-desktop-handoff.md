@@ -6,6 +6,7 @@ Related docs:
 
 - `docs/secure-client-agent-communications-master-plan.md` (authoritative plan)
 - `docs/backend-contract-handoff.md` (the API this client targets)
+- `docs/realtime-messaging-handoff.md` (foreground realtime event hints)
 - `docs/mobile-app-requirements.md` (what the mobile build still needs)
 
 ## 1. What this is
@@ -75,9 +76,10 @@ One layout adapts by viewport (`ui.isWide`, ≥ 900px):
 
 ### State + sync
 
-Runes-based class stores. `sync.svelte.ts` polls `GET /v1/sync` (cadence backs
-off when the tab is hidden) and pulls new messages for the open room a little
-faster, feeding the same `messages`/`rooms` stores a future WebSocket would.
+Runes-based class stores. `realtime.svelte.ts` opens `GET /v1/realtime` as a
+Durable Object WebSocket and receives lightweight `room.message` hints. Those
+hints call `sync.pokeNow()`; `sync.svelte.ts` still polls `GET /v1/sync` as the
+source-of-truth and recovery path, then pulls new messages for the open room.
 Sends are optimistic (`sending → sent/failed`, with retry) and reconciled by
 `idempotencyKey`. Unread is derived from a per-room last-read sequence; opening
 a room acks others' messages as read.
@@ -116,16 +118,15 @@ a room acks others' messages as read.
    same-origin (empty) API base in dev. Production cross-origin hosting needs
    CORS on the Worker — see §6.
 
-4. **Polling, not realtime.** Per the contract, no realtime/push is assumed.
+4. **Realtime as hints, not state.** Foreground clients use Durable Object
+   WebSockets for near-immediate awareness, but message bodies and durable
+   state still come from HTTP sync/list endpoints. Polling remains the fallback
+   for missed events, sleep, reloads, and offline recovery.
 
 ## 6. Known gaps / backend follow-ups
 
 These are intentional and tracked, not oversights:
 
-- **CORS / hosting.** For a cross-origin web or production desktop build, the
-  Worker must send CORS headers (or the web bundle must be hosted same-origin,
-  e.g. Cloudflare Pages in front of the Worker, or the Tauri HTTP plugin used to
-  bypass CORS in the desktop shell).
 - **MLS E2EE + Rust security core** (`src-tauri`) — the real encryption, local
   encrypted history DB, and secure-storage unlock.
 - **Backward pagination.** `GET /v1/rooms/{id}/messages` only supports an

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { ui, rooms, principals, invitations, collections, sync } from '$lib/stores';
+	import { ui, rooms, principals, invitations, collections, sync, realtime } from '$lib/stores';
 	import NavRail from '$lib/components/nav/NavRail.svelte';
 	import TabBar from '$lib/components/nav/TabBar.svelte';
 	import NewConversation from '$lib/components/rooms/NewConversation.svelte';
@@ -14,7 +14,11 @@
 		void invitations.load();
 		void collections.load();
 		sync.start();
-		return () => sync.stop();
+		realtime.start();
+		return () => {
+			realtime.stop();
+			sync.stop();
+		};
 	});
 
 	// On mobile, a conversation thread takes the full screen (no tab bar).

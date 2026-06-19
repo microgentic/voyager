@@ -1,6 +1,7 @@
 import { audit, requireAdmin } from "./db";
 import { randomId } from "./crypto";
 import { HttpError, json, readJsonObject, requireMethod, routeParams, stringField } from "./http";
+import { notifyRoomRealtime } from "./realtime";
 import type { AccountRow, AuthContext, DeviceRow, Env, PrincipalRow, PolicyRow } from "./types";
 
 const MAX_MESSAGE_BYTES = 262_144;
@@ -1055,7 +1056,14 @@ async function sendMessageEnvelope(env: Env, auth: AuthContext, roomId: string, 
   await createDeliveryReceipts(env, roomId, envelopeId, auth.device.device_id);
   await markAttachmentsReferenced(env, auth, roomId, stringArrayField(body, "attachmentIds", { maxItems: 20 }));
   await bumpRoom(env, roomId);
-  return publicMessage((await getMessage(env, envelopeId)) as Record<string, unknown>);
+  const message = publicMessage((await getMessage(env, envelopeId)) as Record<string, unknown>);
+  await notifyRoomRealtime(env, roomId, {
+    type: "room.message",
+    envelopeId,
+    serverSequence: next?.sequence ?? 1,
+    senderDeviceId: auth.device.device_id
+  }).catch((error) => console.warn("realtime notification failed", error));
+  return message;
 }
 
 async function listRoomMessages(env: Env, auth: AuthContext, roomId: string, url: URL): Promise<unknown[]> {
