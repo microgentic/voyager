@@ -14,6 +14,20 @@ const ROOM_INVITATION_DAYS = 7;
 type RouteResult = Response | null;
 type JsonObject = Record<string, unknown>;
 
+interface SendMessageMetrics {
+  duplicate: boolean;
+  totalMs: number;
+  contextMs: number;
+  insertMs: number;
+  postWriteMs: number;
+  realtimeMs: number;
+}
+
+interface SendMessageResult {
+  message: JsonObject;
+  metrics: SendMessageMetrics;
+}
+
 interface PageParams {
   limit: number;
   offset: number;
@@ -50,6 +64,11 @@ interface MembershipRow {
   removed_at: string | null;
   principal_type?: PrincipalRow["principal_type"];
   display_name?: string;
+}
+
+interface SendRoomContext extends MembershipRow {
+  room_status: RoomRow["status"];
+  message_retention_days: number;
 }
 
 interface AttachmentRow {
@@ -369,7 +388,7 @@ export async function handleBackendFirstRoutes(
       return json({ ok: true, messages: await listRoomMessages(env, auth, messagesMatch[1], url) });
     }
     if (request.method === "POST") {
-      const message = await sendMessageEnvelope(env, auth, messagesMatch[1], await readJsonObject(request));
+      const { message, metrics } = await sendMessageEnvelope(env, auth, messagesMatch[1], await readJsonObject(request), requestId);
       await audit(env, {
         actorAccountId: auth.account.account_id,
         action: "message.send",
@@ -379,7 +398,7 @@ export async function handleBackendFirstRoutes(
         result: "success",
         metadata: { envelopeId: message.envelopeId, sequence: message.serverSequence }
       });
-      return json({ ok: true, message }, { status: 201 });
+      return json({ ok: true, message }, { status: 201, headers: sendMessageTimingHeaders(metrics) });
     }
   }
 
@@ -1004,18 +1023,20 @@ async function acceptOwnershipTransfer(env: Env, auth: AuthContext, roomId: stri
   return getOwnershipTransfer(env, transferId);
 }
 
-async function sendMessageEnvelope(env: Env, auth: AuthContext, roomId: string, body: Record<string, unknown>): Promise<JsonObject> {
-  await requireRoomMembership(env, auth, roomId);
-  const room = await getRoom(env, roomId);
-  if (room.status !== "active") {
+async function sendMessageEnvelope(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  body: Record<string, unknown>,
+  requestId: string
+): Promise<SendMessageResult> {
+  const startedAt = performance.now();
+  const context = await getSendRoomContext(env, auth, roomId);
+  if (context.room_status !== "active") {
     throw new HttpError(409, "room_not_active", "Room is not active");
   }
+  const contextMs = durationSince(startedAt);
   const idempotencyKey = stringField(body, "idempotencyKey", { required: true, min: 8, max: 160 })!;
-  const existing = await env.CONTROL_DB.prepare("SELECT * FROM message_envelopes WHERE sender_device_id = ? AND idempotency_key = ?")
-    .bind(auth.device.device_id, idempotencyKey)
-    .first<Record<string, unknown>>();
-  if (existing) return publicMessage(existing);
-
   const ciphertext = stringField(body, "ciphertext", { required: true, min: 1, max: MAX_MESSAGE_BYTES })!;
   const ciphertextBytes = byteLength(ciphertext);
   if (ciphertextBytes > MAX_MESSAGE_BYTES) {
@@ -1025,18 +1046,23 @@ async function sendMessageEnvelope(env: Env, auth: AuthContext, roomId: string, 
   if (!["opaque-test", "mls_application", "mls_commit", "mls_proposal", "mls_welcome"].includes(protocolType)) {
     throw new HttpError(400, "invalid_protocol_type", "Protocol type is not allowed");
   }
-  const next = await env.CONTROL_DB.prepare("SELECT COALESCE(MAX(server_sequence), 0) + 1 AS sequence FROM message_envelopes WHERE room_id = ?")
-    .bind(roomId)
-    .first<{ sequence: number }>();
   const envelopeId = randomId("msg");
-  const policy = await getPolicy(env, auth.account.policy_id);
-  const expiresAt = sqliteTimestamp(Date.now() + policy.message_retention_days * 24 * 60 * 60 * 1000);
-  await env.CONTROL_DB.prepare(
+  const expiresAt = sqliteTimestamp(Date.now() + Number(context.message_retention_days) * 24 * 60 * 60 * 1000);
+  const clientCreatedAt = stringField(body, "clientCreatedAt", { max: 80 }) ?? null;
+  const attachmentIds = stringArrayField(body, "attachmentIds", { maxItems: 20 });
+  const insertStartedAt = performance.now();
+  const inserted = await env.CONTROL_DB.prepare(
     `INSERT INTO message_envelopes (
       envelope_id, room_id, sender_account_id, sender_principal_id, sender_device_id,
       idempotency_key, protocol_type, ciphertext, ciphertext_bytes, client_created_at,
       server_sequence, expires_at, state
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available')`
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      (SELECT COALESCE(MAX(server_sequence), 0) + 1 FROM message_envelopes WHERE room_id = ?),
+      ?, 'available'
+    )
+    ON CONFLICT(sender_device_id, idempotency_key) DO NOTHING
+    RETURNING *`
   )
     .bind(
       envelopeId,
@@ -1048,22 +1074,54 @@ async function sendMessageEnvelope(env: Env, auth: AuthContext, roomId: string, 
       protocolType,
       ciphertext,
       ciphertextBytes,
-      stringField(body, "clientCreatedAt", { max: 80 }) ?? null,
-      next?.sequence ?? 1,
+      clientCreatedAt,
+      roomId,
       expiresAt
     )
-    .run();
-  await createDeliveryReceipts(env, roomId, envelopeId, auth.device.device_id);
-  await markAttachmentsReferenced(env, auth, roomId, stringArrayField(body, "attachmentIds", { maxItems: 20 }));
-  await bumpRoom(env, roomId);
-  const message = publicMessage((await getMessage(env, envelopeId)) as Record<string, unknown>);
+    .first<Record<string, unknown>>();
+  const insertMs = durationSince(insertStartedAt);
+
+  if (!inserted) {
+    const existing = await env.CONTROL_DB.prepare("SELECT * FROM message_envelopes WHERE sender_device_id = ? AND idempotency_key = ?")
+      .bind(auth.device.device_id, idempotencyKey)
+      .first<Record<string, unknown>>();
+    if (!existing) throw new HttpError(409, "message_idempotency_conflict", "Message idempotency key could not be resolved");
+    let realtimeMs = 0;
+    if (String(existing.room_id) === roomId) {
+      const realtimeStartedAt = performance.now();
+      await notifyRoomRealtime(env, roomId, {
+        type: "room.message",
+        envelopeId: String(existing.envelope_id),
+        serverSequence: Number(existing.server_sequence),
+        senderDeviceId: auth.device.device_id
+      }).catch((error) => console.warn("realtime notification failed", error));
+      realtimeMs = durationSince(realtimeStartedAt);
+    }
+    const metrics = finalizeSendMetrics({ duplicate: true, startedAt, contextMs, insertMs, postWriteMs: 0, realtimeMs });
+    logSendMessagePerformance(requestId, roomId, existing, metrics);
+    return { message: publicMessage(existing), metrics };
+  }
+
+  const postWriteStartedAt = performance.now();
+  await env.CONTROL_DB.batch([
+    createDeliveryReceiptStatement(env, roomId, envelopeId, auth.device.device_id),
+    ...markAttachmentsReferencedStatements(env, auth, roomId, attachmentIds),
+    env.CONTROL_DB.prepare("UPDATE rooms SET version = version + 1, updated_at = CURRENT_TIMESTAMP WHERE room_id = ?").bind(roomId)
+  ]);
+  const postWriteMs = durationSince(postWriteStartedAt);
+
+  const message = publicMessage(inserted);
+  const realtimeStartedAt = performance.now();
   await notifyRoomRealtime(env, roomId, {
     type: "room.message",
     envelopeId,
-    serverSequence: next?.sequence ?? 1,
+    serverSequence: Number(inserted.server_sequence),
     senderDeviceId: auth.device.device_id
   }).catch((error) => console.warn("realtime notification failed", error));
-  return message;
+  const realtimeMs = durationSince(realtimeStartedAt);
+  const metrics = finalizeSendMetrics({ duplicate: false, startedAt, contextMs, insertMs, postWriteMs, realtimeMs });
+  logSendMessagePerformance(requestId, roomId, inserted, metrics);
+  return { message, metrics };
 }
 
 async function listRoomMessages(env: Env, auth: AuthContext, roomId: string, url: URL): Promise<unknown[]> {
@@ -1474,6 +1532,31 @@ async function requireRoomMembership(env: Env, auth: AuthContext, roomId: string
   return membership;
 }
 
+async function getSendRoomContext(env: Env, auth: AuthContext, roomId: string): Promise<SendRoomContext> {
+  const context = await env.CONTROL_DB.prepare(
+    `SELECT
+       rm.*,
+       p.principal_type,
+       p.display_name,
+       r.status AS room_status,
+       policy.message_retention_days
+     FROM room_memberships rm
+     JOIN rooms r ON r.room_id = rm.room_id
+     JOIN principals p ON p.principal_id = rm.principal_id
+     JOIN policies policy ON policy.policy_id = ?
+     WHERE rm.room_id = ?
+       AND rm.principal_id = ?
+       AND rm.status = 'active'
+       AND r.status != 'deleted'`
+  )
+    .bind(auth.account.policy_id, roomId, auth.principal.principal_id)
+    .first<SendRoomContext>();
+  if (!context) {
+    throw new HttpError(403, "room_membership_required", "Active room membership required");
+  }
+  return context;
+}
+
 async function requireRoomManager(env: Env, auth: AuthContext, roomId: string): Promise<MembershipRow> {
   const membership = await requireRoomMembership(env, auth, roomId);
   if (!["owner", "admin"].includes(membership.role)) {
@@ -1694,8 +1777,22 @@ async function getOwnershipTransfer(env: Env, transferId: string): Promise<JsonO
 }
 
 async function createDeliveryReceipts(env: Env, roomId: string, envelopeId: string, senderDeviceId: string): Promise<void> {
-  const result = await env.CONTROL_DB.prepare(
-    `SELECT rm.account_id, rm.principal_id, d.device_id
+  await createDeliveryReceiptStatement(env, roomId, envelopeId, senderDeviceId).run();
+}
+
+function createDeliveryReceiptStatement(env: Env, roomId: string, envelopeId: string, senderDeviceId: string): D1PreparedStatement {
+  return env.CONTROL_DB.prepare(
+    `INSERT OR IGNORE INTO delivery_receipts (
+       receipt_id, envelope_id, room_id, recipient_account_id, recipient_principal_id, recipient_device_id, status
+     )
+     SELECT
+       'rcp_' || lower(hex(randomblob(18))),
+       ?,
+       ?,
+       rm.account_id,
+       rm.principal_id,
+       d.device_id,
+       'pending'
      FROM room_memberships rm
      JOIN accounts a ON a.account_id = rm.account_id
      JOIN devices d ON d.principal_id = rm.principal_id
@@ -1704,33 +1801,27 @@ async function createDeliveryReceipts(env: Env, roomId: string, envelopeId: stri
        AND a.status = 'active'
        AND d.revoked_at IS NULL
        AND d.device_id != ?`
-  )
-    .bind(roomId, senderDeviceId)
-    .all<{ account_id: string; principal_id: string; device_id: string }>();
-  for (const recipient of result.results ?? []) {
-    await env.CONTROL_DB.prepare(
-      `INSERT OR IGNORE INTO delivery_receipts (
-        receipt_id, envelope_id, room_id, recipient_account_id, recipient_principal_id, recipient_device_id, status
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending')`
-    )
-      .bind(randomId("rcp"), envelopeId, roomId, recipient.account_id, recipient.principal_id, recipient.device_id)
-      .run();
-  }
+  ).bind(envelopeId, roomId, roomId, senderDeviceId);
 }
 
 async function markAttachmentsReferenced(env: Env, auth: AuthContext, roomId: string, attachmentIds: string[]): Promise<void> {
-  for (const attachmentId of attachmentIds) {
-    await env.CONTROL_DB.prepare(
+  await Promise.all(markAttachmentsReferencedStatements(env, auth, roomId, attachmentIds).map((statement) => statement.run()));
+}
+
+function markAttachmentsReferencedStatements(env: Env, auth: AuthContext, roomId: string, attachmentIds: string[]): D1PreparedStatement[] {
+  const ids = uniqueStrings(attachmentIds);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  return [
+    env.CONTROL_DB.prepare(
       `UPDATE attachments
        SET state = 'referenced', referenced_at = CURRENT_TIMESTAMP
-       WHERE attachment_id = ?
+       WHERE attachment_id IN (${placeholders})
          AND room_id = ?
          AND uploader_account_id = ?
          AND state = 'uploaded'`
-    )
-      .bind(attachmentId, roomId, auth.account.account_id)
-      .run();
-  }
+    ).bind(...ids, roomId, auth.account.account_id)
+  ];
 }
 
 async function getMessage(env: Env, envelopeId: string): Promise<Record<string, unknown> | null> {
@@ -2090,6 +2181,55 @@ function pageParams(url: URL | undefined, options: { defaultLimit: number; maxLi
 
 function nextCursor(resultCount: number, page: PageParams): string | null {
   return resultCount === page.limit ? String(page.offset + page.limit) : null;
+}
+
+function sendMessageTimingHeaders(metrics: SendMessageMetrics): Record<string, string> {
+  return {
+    "server-timing": [
+      `message;dur=${metrics.totalMs}`,
+      `context;dur=${metrics.contextMs}`,
+      `insert;dur=${metrics.insertMs}`,
+      `postwrite;dur=${metrics.postWriteMs}`,
+      `realtime;dur=${metrics.realtimeMs}`
+    ].join(", ")
+  };
+}
+
+function finalizeSendMetrics(input: {
+  duplicate: boolean;
+  startedAt: number;
+  contextMs: number;
+  insertMs: number;
+  postWriteMs: number;
+  realtimeMs: number;
+}): SendMessageMetrics {
+  return {
+    duplicate: input.duplicate,
+    totalMs: durationSince(input.startedAt),
+    contextMs: input.contextMs,
+    insertMs: input.insertMs,
+    postWriteMs: input.postWriteMs,
+    realtimeMs: input.realtimeMs
+  };
+}
+
+function logSendMessagePerformance(
+  requestId: string,
+  roomId: string,
+  message: Record<string, unknown>,
+  metrics: SendMessageMetrics
+): void {
+  console.info("message.send.performance", {
+    requestId,
+    roomId,
+    envelopeId: message.envelope_id,
+    serverSequence: message.server_sequence,
+    ...metrics
+  });
+}
+
+function durationSince(startedAt: number): number {
+  return Math.round((performance.now() - startedAt) * 100) / 100;
 }
 
 async function runCounted(statement: D1PreparedStatement): Promise<number> {

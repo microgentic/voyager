@@ -582,7 +582,7 @@ await api(`/v1/rooms/${group.room.roomId}/members`, {
 
 const realtimeWatcher = await openRealtimeMessageWatcher(relogin.sessionToken, direct.room.roomId);
 
-const directMessage = await api(`/v1/rooms/${direct.room.roomId}/messages`, {
+const directMessageResult = await apiRaw(`/v1/rooms/${direct.room.roomId}/messages`, {
   method: "POST",
   headers: ownerHeaders,
   json: {
@@ -591,6 +591,14 @@ const directMessage = await api(`/v1/rooms/${direct.room.roomId}/messages`, {
     ciphertext: "encrypted-direct-smoke-payload"
   }
 });
+if (!directMessageResult.response.ok) {
+  throw new Error(`POST direct message failed ${directMessageResult.response.status}: ${JSON.stringify(directMessageResult.payload)}`);
+}
+const directTiming = directMessageResult.response.headers.get("server-timing") ?? "";
+if (!directTiming.includes("message;dur=") || !directTiming.includes("realtime;dur=")) {
+  throw new Error(`message send did not include server timing metrics: ${directTiming}`);
+}
+const directMessage = directMessageResult.payload;
 
 const realtimeEvent = await realtimeWatcher.wait;
 if (realtimeEvent.envelopeId !== directMessage.message.envelopeId) {
