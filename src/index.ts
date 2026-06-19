@@ -5,6 +5,7 @@ import {
   bootstrapAdmin,
   changePassword,
   checkRateLimit,
+  cleanupTestDevices,
   completeCredentialReset,
   createDeviceForPrincipal,
   createCredentialReset,
@@ -36,6 +37,17 @@ import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow
 export { RealtimeMailbox };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DEFAULT_TEST_DEVICE_LABEL_MATCHERS = [
+  "codex",
+  "probe",
+  "smoke",
+  "simulator",
+  "emulator",
+  "seed check",
+  "cleanup cli",
+  "dev test"
+];
+const DEFAULT_TEST_DEVICE_PLATFORM_MATCHERS = ["probe", "smoke", "test"];
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -357,6 +369,43 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return json({ ok: true, accounts: (await listAccounts(env)).map(publicAccount) });
   }
 
+  if (url.pathname === "/v1/admin/devices/test-cleanup") {
+    requireMethod(request, "POST");
+    const adminRole = requireAdmin(auth, ["platform_owner"]);
+    const body = await readJsonObject(request);
+    const dryRun = body.dryRun === undefined ? true : booleanField(body, "dryRun");
+    const labelMatchers = stringArrayField(body, "labelMatchers", { maxItems: 20, maxLength: 80 });
+    const platformMatchers = stringArrayField(body, "platformMatchers", { maxItems: 20, maxLength: 32 });
+    const cleanup = await cleanupTestDevices(env, auth, {
+      dryRun,
+      accountEmails: stringArrayField(body, "accountEmails", { maxItems: 50, maxLength: 254, pattern: EMAIL_PATTERN }).map((email) =>
+        email.toLowerCase()
+      ),
+      labelMatchers: labelMatchers.length > 0 ? labelMatchers : DEFAULT_TEST_DEVICE_LABEL_MATCHERS,
+      platformMatchers: platformMatchers.length > 0 ? platformMatchers : DEFAULT_TEST_DEVICE_PLATFORM_MATCHERS,
+      includeKnownAppDevices: body.includeKnownAppDevices === undefined ? false : booleanField(body, "includeKnownAppDevices"),
+      includeCurrentDevice: body.includeCurrentDevice === undefined ? false : booleanField(body, "includeCurrentDevice"),
+      keepNewestPerAccount: numberField(body, "keepNewestPerAccount", 0, 20) ?? 1,
+      reason: stringField(body, "reason", { max: 120 }) ?? "test_device_cleanup"
+    });
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      actorAdminRole: adminRole,
+      action: dryRun ? "admin.device.test_cleanup.dry_run" : "admin.device.test_cleanup.apply",
+      targetType: "device",
+      targetId: null,
+      requestId,
+      result: "success",
+      metadata: {
+        scanned: cleanup.scanned,
+        matched: cleanup.matched,
+        revoked: cleanup.revoked,
+        includeKnownAppDevices: body.includeKnownAppDevices === true
+      }
+    });
+    return json({ ok: true, cleanup });
+  }
+
   const adminAccountAction = routeParams(/^\/v1\/admin\/accounts\/([^/]+)\/(suspend|restore|require-auth-reset)$/, url.pathname);
   if (adminAccountAction) {
     requireMethod(request, "POST");
@@ -552,6 +601,31 @@ function booleanField(body: Record<string, unknown>, key: string): boolean {
     throw new HttpError(400, "invalid_field", `Field must be a boolean: ${key}`);
   }
   return value;
+}
+
+function stringArrayField(
+  body: Record<string, unknown>,
+  key: string,
+  options: { maxItems: number; maxLength: number; pattern?: RegExp }
+): string[] {
+  const value = body[key];
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > options.maxItems) {
+    throw new HttpError(400, "invalid_field", `Field must be an array with at most ${options.maxItems} items: ${key}`);
+  }
+  return value.map((item, index) => {
+    if (typeof item !== "string") {
+      throw new HttpError(400, "invalid_field", `Field item must be a string: ${key}[${index}]`);
+    }
+    const trimmed = item.trim();
+    if (trimmed.length === 0 || trimmed.length > options.maxLength) {
+      throw new HttpError(400, "invalid_field", `Field item is invalid: ${key}[${index}]`);
+    }
+    if (options.pattern && !options.pattern.test(trimmed)) {
+      throw new HttpError(400, "invalid_field", `Field item is invalid: ${key}[${index}]`);
+    }
+    return trimmed;
+  });
 }
 
 function clientIp(request: Request): string {

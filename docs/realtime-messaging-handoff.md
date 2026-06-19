@@ -28,7 +28,7 @@ This is intentionally the **foreground mailbox/session layer**, not the full mas
   - `notifyRoomRealtime()` resolves active room account memberships and fan-outs an event to each non-null account mailbox.
 - `src/index.ts` exposes `GET /v1/realtime` as a WebSocket upgrade endpoint.
 - `src/backend.ts` emits a `room.message` realtime event only after message insert, delivery receipt creation, attachment reference updates, and room bump succeed.
-- Idempotent duplicate message sends return the existing message and do not emit duplicate realtime events.
+- Idempotent duplicate message sends return the existing message. Same-room duplicates also re-emit a lightweight realtime hint so a sender retry can recover if the first hint failed after the durable write.
 
 ## 3. Realtime Contract
 
@@ -88,7 +88,7 @@ Server response:
 - `apps/client/src/lib/api/client.ts` opens realtime sockets against the same configured API base as HTTP.
 - `apps/client/src/lib/stores/realtime.svelte.ts` manages socket lifecycle, reconnection backoff, heartbeat pings, and event handling.
 - `apps/client/src/routes/(app)/+layout.svelte` starts realtime beside the existing sync engine after the authenticated app shell mounts.
-- `sync.svelte.ts` remains active as both fallback polling and the durable recovery path. Realtime events call `sync.pokeNow()` rather than mutating message state directly.
+- `sync.svelte.ts` remains active as both fallback polling and the durable recovery path. Realtime room events queue an immediate room fetch rather than mutating message state directly.
 
 This means a foreground client should see new messages quickly, while clients that miss a WebSocket event because of sleep, navigation, reload, or network changes still recover on the next sync.
 

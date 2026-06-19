@@ -10,6 +10,7 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "dev:backend": "node scripts/dev-local-backend.mjs",
+    "dev:cleanup-devices": "node scripts/cleanup-test-devices.mjs",
     "seed": "node scripts/voyager-seed.mjs",
     "client:dev": "npm --prefix apps/client run dev",
     "client:build": "npm --prefix apps/client run build",

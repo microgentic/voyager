@@ -299,6 +299,58 @@ await expectFailure(`/v1/devices/${owner.device.deviceId}/revoke`, {
   json: { reason: "cross-account revoke should fail" }
 }, 404);
 
+await expectFailure("/v1/admin/devices/test-cleanup", {
+  method: "POST",
+  headers: userHeaders,
+  json: { dryRun: true }
+}, 403);
+
+const cleanupDeviceA = await api("/v1/devices", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { platform: "probe", label: "Cleanup smoke marker A" }
+});
+const cleanupDeviceB = await api("/v1/devices", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { platform: "probe", label: "Cleanup smoke marker B" }
+});
+const cleanupDryRun = await api("/v1/admin/devices/test-cleanup", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    dryRun: true,
+    accountEmails: [owner.account.email],
+    labelMatchers: ["cleanup smoke marker"],
+    keepNewestPerAccount: 0
+  }
+});
+if (cleanupDryRun.cleanup.matched !== 2 || cleanupDryRun.cleanup.revoked !== 0) {
+  throw new Error(`cleanup dry-run did not match the expected devices: ${JSON.stringify(cleanupDryRun.cleanup)}`);
+}
+const cleanupApply = await api("/v1/admin/devices/test-cleanup", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    dryRun: false,
+    accountEmails: [owner.account.email],
+    labelMatchers: ["cleanup smoke marker"],
+    keepNewestPerAccount: 0
+  }
+});
+if (cleanupApply.cleanup.revoked !== 2) {
+  throw new Error(`cleanup apply did not revoke the expected devices: ${JSON.stringify(cleanupApply.cleanup)}`);
+}
+const ownerDevicesAfterCleanup = await api("/v1/devices", { headers: ownerHeaders });
+const revokedCleanupIds = new Set(
+  ownerDevicesAfterCleanup.devices
+    .filter((device) => [cleanupDeviceA.device.deviceId, cleanupDeviceB.device.deviceId].includes(device.deviceId) && device.revokedAt)
+    .map((device) => device.deviceId)
+);
+if (revokedCleanupIds.size !== 2) {
+  throw new Error("cleanup apply did not mark both probe devices revoked");
+}
+
 const invitee = await api("/v1/admin/invitations", {
   method: "POST",
   headers: ownerHeaders,

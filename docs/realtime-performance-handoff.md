@@ -5,6 +5,7 @@ Date: 2026-06-19
 Related docs:
 
 - `docs/realtime-messaging-handoff.md`
+- `docs/dev-test-operations.md`
 - `docs/backend-contract-handoff.md`
 - `docs/frontend-web-desktop-handoff.md`
 
@@ -84,3 +85,5 @@ After deployment, use browser Network tools to inspect:
 - `POST /v1/rooms/{roomId}/messages` includes `Server-Timing`.
 - `wss://.../v1/realtime` receives `room.message`.
 - The receiver immediately follows with room-specific `GET /v1/rooms/{roomId}` and `GET /v1/rooms/{roomId}/messages?...` calls.
+
+The app also exposes a compact diagnostics panel under Settings -> About -> Advanced. Use it during manual multi-client testing to confirm socket state, last realtime event, and recent sync durations.
