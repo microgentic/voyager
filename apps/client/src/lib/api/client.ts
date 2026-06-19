@@ -27,6 +27,7 @@ import type {
 } from './types';
 
 type Json = Record<string, unknown>;
+export const REALTIME_PROTOCOL = 'voyager.realtime.v1';
 
 interface RequestOptions {
 	json?: Json;
@@ -46,6 +47,14 @@ export class VoyagerClient {
 
 	setToken(token: string | null): void {
 		this.token = token;
+	}
+
+	openRealtimeSocket(): WebSocket | null {
+		if (!this.token || typeof WebSocket === 'undefined') return null;
+		const origin = getApiBase() || (typeof location !== 'undefined' ? location.origin : 'http://localhost');
+		const url = new URL('/v1/realtime', origin);
+		url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+		return new WebSocket(url, [REALTIME_PROTOCOL, this.token]);
 	}
 
 	private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {

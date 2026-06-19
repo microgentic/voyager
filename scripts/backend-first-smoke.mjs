@@ -41,6 +41,75 @@ function auth(token) {
   return { authorization: `Bearer ${token}` };
 }
 
+function realtimeUrl() {
+  return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/realtime`;
+}
+
+async function openRealtimeMessageWatcher(token, expectedRoomId, timeoutMs = 5_000) {
+  if (typeof WebSocket === "undefined") {
+    throw new Error("Node WebSocket global is required for realtime smoke coverage");
+  }
+  return await new Promise((resolveReady, rejectReady) => {
+    const socket = new WebSocket(realtimeUrl(), ["voyager.realtime.v1", token]);
+    let ready = false;
+    let settled = false;
+    let messageTimeout;
+    let waitResolve;
+    let waitReject;
+    const readyTimeout = setTimeout(() => failReady(new Error("timed out waiting for realtime ready event")), timeoutMs);
+    const wait = new Promise((resolve, reject) => {
+      waitResolve = resolve;
+      waitReject = reject;
+    });
+
+    function close() {
+      socket.close(1000, "smoke_done");
+    }
+
+    function failReady(error) {
+      if (ready) return;
+      clearTimeout(readyTimeout);
+      close();
+      rejectReady(error);
+    }
+
+    function finishMessage(result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(messageTimeout);
+      close();
+      if (result instanceof Error) waitReject(result);
+      else waitResolve(result);
+    }
+
+    socket.addEventListener("message", (event) => {
+      try {
+        const payload = JSON.parse(String(event.data));
+        if (payload.type === "ready" && !ready) {
+          ready = true;
+          clearTimeout(readyTimeout);
+          messageTimeout = setTimeout(() => finishMessage(new Error("timed out waiting for realtime room.message event")), timeoutMs);
+          resolveReady({ wait, close });
+          return;
+        }
+        if (payload.type === "room.message" && payload.roomId === expectedRoomId) {
+          finishMessage(payload);
+        }
+      } catch (error) {
+        finishMessage(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (ready) finishMessage(new Error("realtime websocket error"));
+      else failReady(new Error("realtime websocket error before ready"));
+    });
+    socket.addEventListener("close", () => {
+      if (!ready) failReady(new Error("realtime websocket closed before ready"));
+      else if (!settled) finishMessage(new Error("realtime websocket closed before room.message event"));
+    });
+  });
+}
+
 const health = await api("/health");
 if (!health.ok) throw new Error("health check failed");
 
@@ -511,6 +580,8 @@ await api(`/v1/rooms/${group.room.roomId}/members`, {
   json: { principalId: agent.agent.principalId }
 });
 
+const realtimeWatcher = await openRealtimeMessageWatcher(relogin.sessionToken, direct.room.roomId);
+
 const directMessage = await api(`/v1/rooms/${direct.room.roomId}/messages`, {
   method: "POST",
   headers: ownerHeaders,
@@ -520,6 +591,14 @@ const directMessage = await api(`/v1/rooms/${direct.room.roomId}/messages`, {
     ciphertext: "encrypted-direct-smoke-payload"
   }
 });
+
+const realtimeEvent = await realtimeWatcher.wait;
+if (realtimeEvent.envelopeId !== directMessage.message.envelopeId) {
+  throw new Error("realtime event did not reference the sent message envelope");
+}
+if (realtimeEvent.serverSequence !== directMessage.message.serverSequence) {
+  throw new Error("realtime event did not reference the sent message sequence");
+}
 
 const synced = await api("/v1/sync", { headers: userHeaders });
 if (synced.sync.pendingMessages.length < 1) throw new Error("sync did not return pending messages");
@@ -550,7 +629,9 @@ await api(`/v1/attachments/${attachment.attachment.attachmentId}/complete`, {
   json: { ciphertextBytes: attachmentBody.byteLength, ciphertextSha256: "smoke-sha256-placeholder" }
 });
 
-await api(`/v1/rooms/${group.room.roomId}/messages`, {
+const groupRealtimeWatcher = await openRealtimeMessageWatcher(relogin.sessionToken, group.room.roomId);
+
+const groupMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",
   headers: ownerHeaders,
   json: {
@@ -560,6 +641,14 @@ await api(`/v1/rooms/${group.room.roomId}/messages`, {
     attachmentIds: [attachment.attachment.attachmentId]
   }
 });
+
+const groupRealtimeEvent = await groupRealtimeWatcher.wait;
+if (groupRealtimeEvent.envelopeId !== groupMessage.message.envelopeId) {
+  throw new Error("group realtime event did not reference the sent message envelope");
+}
+if (groupRealtimeEvent.serverSequence !== groupMessage.message.serverSequence) {
+  throw new Error("group realtime event did not reference the sent message sequence");
+}
 
 await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",
@@ -621,6 +710,9 @@ console.log(JSON.stringify({
   roomInvitationId: roomInvitation.invitation.roomInvitationId,
   agentPrincipalId: agent.agent.principalId,
   messageId: directMessage.message.envelopeId,
+  realtimeEventId: realtimeEvent.eventId,
+  groupMessageId: groupMessage.message.envelopeId,
+  groupRealtimeEventId: groupRealtimeEvent.eventId,
   attachmentId: attachment.attachment.attachmentId,
   maintenanceRunId: cleanup.cleanup.maintenanceRunId,
   usage: usage.usage

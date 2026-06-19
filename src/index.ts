@@ -30,7 +30,10 @@ import {
 import { handleBackendFirstRoutes } from "./backend";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, stringField } from "./http";
+import { handleRealtimeConnect, REALTIME_PROTOCOL, RealtimeMailbox } from "./realtime";
 import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow } from "./types";
+
+export { RealtimeMailbox };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -203,6 +206,16 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       },
       { status: 201 }
     );
+  }
+
+  if (url.pathname === "/v1/realtime") {
+    requireMethod(request, "GET");
+    const origin = request.headers.get("origin");
+    if (origin && !isAllowedOrigin(origin, env)) {
+      throw new HttpError(403, "origin_not_allowed", "Realtime origin is not allowed");
+    }
+    const auth = await getRealtimeAuthContext(env, request);
+    return handleRealtimeConnect(request, env, auth);
   }
 
   const auth = await getAuthContext(env, request);
@@ -543,6 +556,28 @@ function booleanField(body: Record<string, unknown>, key: string): boolean {
 
 function clientIp(request: Request): string {
   return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+async function getRealtimeAuthContext(env: Env, request: Request): Promise<AuthContext> {
+  const token = realtimeToken(request);
+  if (!token) {
+    throw new HttpError(401, "unauthorized", "Missing realtime token");
+  }
+  const headers = new Headers(request.headers);
+  headers.set("authorization", `Bearer ${token}`);
+  return getAuthContext(env, new Request(request.url, { method: "GET", headers }));
+}
+
+function realtimeToken(request: Request): string | null {
+  const authorization = request.headers.get("authorization");
+  if (authorization?.startsWith("Bearer ")) {
+    return authorization.slice("Bearer ".length).trim();
+  }
+  const protocols = (request.headers.get("sec-websocket-protocol") ?? "")
+    .split(",")
+    .map((protocol) => protocol.trim())
+    .filter(Boolean);
+  return protocols.find((protocol) => protocol !== REALTIME_PROTOCOL && protocol.startsWith("vgr_")) ?? null;
 }
 
 // CORS. The app authenticates with Bearer tokens (no cookies), so credentialed

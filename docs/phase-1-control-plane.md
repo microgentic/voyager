@@ -32,7 +32,7 @@ This PR implements the Phase 1 backend control plane:
 - Agent request submission and admin review.
 - CI type check, D1 migration, and Worker deployment workflow.
 
-Password/passphrase authentication is active. Clients should persist `device.deviceId` and send it on password login to reuse an enrolled device; omitting it enrolls a new device. Passkeys/WebAuthn, push providers, app-store packaging, code signing, live agent runtimes, Durable Object realtime coordination, Queues, external identity providers, and provider webhooks are intentionally deferred for the backend-first path.
+Password/passphrase authentication is active. Clients should persist `device.deviceId` and send it on password login to reuse an enrolled device; omitting it enrolls a new device. Passkeys/WebAuthn, push providers, app-store packaging, code signing, live agent runtimes, Queues, external identity providers, and provider webhooks are intentionally deferred for the backend-first path. Foreground Durable Object WebSocket event hints were added after the original backend-first pass; Conversation Durable Object sequencing remains future work.
 
 ## Bootstrap
 

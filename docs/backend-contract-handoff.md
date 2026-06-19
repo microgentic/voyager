@@ -8,6 +8,7 @@ Related docs:
 - `docs/backend-first-deviation.md`
 - `docs/phase-1-control-plane.md`
 - `docs/pr4-final-hardening.md`
+- `docs/realtime-messaging-handoff.md`
 
 ## 1. Project Backend Report
 
@@ -31,6 +32,7 @@ The backend is designed to let development proceed without app stores, push prov
 - Direct one-to-one rooms and group rooms with owners, admins, members, agents, leaving, removal, archiving, and ownership transfer.
 - Human room invitations for group membership acceptance/decline.
 - Opaque message envelopes with idempotency keys, server-side room sequencing, pending delivery receipts, sync, and acknowledgements.
+- Durable Object WebSocket event hints for near-immediate foreground message awareness, with HTTP sync still serving as the source of truth.
 - R2-backed opaque attachment allocation, upload, completion, download, and deletion through the Worker.
 - Sidebar collections for user-owned room organization metadata.
 - Maintenance cleanup endpoint and maintenance run history.
@@ -40,11 +42,11 @@ The backend is designed to let development proceed without app stores, push prov
 
 - External blockers remain deferred: iOS/Android builds, app stores, APNs/FCM, mobile background execution, production signing, notarization, billing, paid plans, production updater, hosted AI runtimes, encrypted cloud backups, public custom domain, and production assurance claims.
 - Cloudflare Worker, D1, and R2 are active dependencies because they are the chosen backend substrate, not deferred third-party blockers.
-- Durable Objects, Queues, KV, Cron triggers, and push provider integrations are still deferred from the active code path. Cleanup is exposed as an admin HTTP endpoint for now so it can be tested with curl before a scheduler is introduced.
+- Durable Objects are active for foreground realtime message event hints. Queues, KV, Cron triggers, and push provider integrations are still deferred from the active code path. Cleanup is exposed as an admin HTTP endpoint for now so it can be tested with curl before a scheduler is introduced.
 - Password/passphrase auth is active. Passkey/WebAuthn schema support remains future-ready, but live ceremonies are deferred with the external runtime dependency work.
 - Room invitations are human-only for now. Agent principals are added directly by room admins because agents do not have an interactive acceptance UX while live agent runtimes are deferred.
 - Group creation starts with the creator as owner only. Supplying `memberPrincipalIds` is rejected so human membership flows through invitations and agents are added through the explicit member endpoint.
-- Realtime delivery is represented by HTTP sync and pending delivery receipts. WebSockets and push can consume the same message/receipt tables later.
+- Realtime delivery uses Durable Object WebSockets for lightweight event hints. HTTP sync and pending delivery receipts remain authoritative, and push can consume the same message/receipt tables later as wake-up infrastructure.
 - Attachments flow through the Worker for now. Direct-to-R2 signed upload URLs can be added later when browser/mobile CORS, upload progress, and client constraints are clearer.
 - The server stores encrypted envelopes and opaque blobs only. Credential reset cannot recover local or end-to-end encrypted content.
 
@@ -64,7 +66,9 @@ The backend is designed to let development proceed without app stores, push prov
 - Message `ciphertext`, attachment blobs, key-package `package`, and cryptographic key fields are opaque to the Worker.
 - Room membership authorization is enforced server-side for room reads, messages, attachments, and membership actions.
 - Admin endpoints are role-gated; `platform_owner` satisfies all admin role checks.
-- The UI should avoid assuming realtime or push. For now, poll `GET /v1/sync` and room/message list endpoints.
+- The UI may open `GET /v1/realtime` for foreground near-realtime events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
+- `GET /v1/realtime` currently authenticates browser/WebView clients with the session token as a WebSocket subprotocol. A short-lived realtime token endpoint remains future production hardening.
+- Conversation-level Durable Objects for sequencing, idempotency, membership mutation serialization, and D1/DO reconciliation are not implemented yet. The current Durable Object layer is foreground mailbox/session fanout.
 
 ## 5. Important Endpoint Groups
 
@@ -115,6 +119,7 @@ Authenticated user:
 - `POST /v1/rooms/{room_id}/messages`
 - `POST /v1/rooms/{room_id}/messages/{envelope_id}/ack`
 - `GET /v1/sync`
+- `GET /v1/realtime` WebSocket upgrade for lightweight `room.message` event hints.
 - Attachment, sidebar collection, and agent request endpoints documented in `docs/phase-1-control-plane.md`.
 
 Admin:
@@ -142,4 +147,4 @@ npm run check
 npm run smoke:backend:local
 ```
 
-The smoke path runs in GitHub PR checks and covers bootstrap, invitation one-time use, login with device reuse, password change, credential reset token revocation/reuse failure, suspended reset protection, key packages, direct-room cardinality, group initial-member rejection, human invitation enforcement, room invitations, messages, sync, acknowledgements, attachments, sidebar collections, agent requests, lower-admin versus admin-account failures, lower-admin normal-account administration, cross-account device revoke failure, admin listing, permission failure, cleanup, and maintenance history.
+The smoke path runs in GitHub PR checks and covers bootstrap, invitation one-time use, login with device reuse, password change, credential reset token revocation/reuse failure, suspended reset protection, key packages, direct-room cardinality, group initial-member rejection, human invitation enforcement, room invitations, messages, Durable Object realtime event hints, sync, acknowledgements, attachments, sidebar collections, agent requests, lower-admin versus admin-account failures, lower-admin normal-account administration, cross-account device revoke failure, admin listing, permission failure, cleanup, and maintenance history.

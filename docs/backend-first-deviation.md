@@ -16,7 +16,7 @@ The following are intentionally deferred and are not implemented in this backend
 - Mobile and desktop code signing.
 - Live agent runtimes, runtime SDKs, daemon processes, and tool execution.
 - WebAuthn/passkey ceremony implementation and related third-party runtime dependency.
-- Durable Object realtime/WebSocket coordination.
+- Durable Object realtime/WebSocket coordination was deferred for the original backend-first pass. Foreground WebSocket event hints are now implemented; push providers and Conversation Durable Object sequencing remain deferred.
 - Queue-based async jobs and provider-specific webhook dispatch.
 - External identity providers, email/SMS verification, SSO, billing, or marketplace flows.
 
@@ -37,7 +37,7 @@ The active implementation focuses on curlable, provider-light backend contracts:
 ## Practical Consequences
 
 - Password/passphrase authentication is the only active login method for now. The schema remains future-ready for passkeys, but the active WebAuthn dependency and endpoints are removed.
-- Realtime delivery is represented by HTTP sync and pending-message mailboxes. Durable Objects and WebSockets can be added later without changing the core room/message data model.
+- Realtime delivery now uses Durable Object WebSocket event hints to wake the HTTP sync path. The core room/message data model is unchanged, and Conversation Durable Object sequencing remains a later architecture step.
 - Agent support is metadata-first. Agents can exist as principals and room members, but no runtime is contacted or executed.
 - Attachments are uploaded through the Worker for curlability. Direct-to-R2 upload authorization can be added later when frontend and CORS details matter.
 - The backend continues to treat message and attachment content as opaque encrypted data. It stores routing metadata, ciphertext, ciphertext size, and lifecycle state only.

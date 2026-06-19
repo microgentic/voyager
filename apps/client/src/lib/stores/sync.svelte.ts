@@ -4,14 +4,11 @@ import { messages } from './messages.svelte';
 import { rooms } from './rooms.svelte';
 
 /*
- * Polling sync engine.
+ * Sync engine.
  *
- * The backend exposes no realtime/WebSocket layer yet (deferred), so the client
- * polls GET /v1/sync for changed rooms + pending messages, and pulls new
- * messages for the open room a little faster. When Durable Object realtime
- * lands, this loop is replaced by a socket feeding the same stores — nothing
- * downstream changes. Cadence backs off when the tab is hidden to respect the
- * pilot cost budget.
+ * Durable Object realtime wakes this path with lightweight room events, while
+ * polling remains the recovery path for missed socket events, cold starts and
+ * hidden tabs. The source of truth stays GET /v1/sync plus room message pulls.
  */
 class SyncStore {
 	active = $state(false);
