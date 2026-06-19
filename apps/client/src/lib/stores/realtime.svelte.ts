@@ -98,9 +98,15 @@ class RealtimeStore {
 		if (event.type === 'ready' || event.type === 'pong') {
 			return;
 		}
-		if (event.type === 'room.message' || event.type === 'room.sync') {
+		if (event.type === 'room.message' && event.roomId) {
 			this.lastEventAt = new Date();
-			sync.pokeNow();
+			sync.pokeRoomNow(event.roomId, event.serverSequence);
+			return;
+		}
+		if (event.type === 'room.sync') {
+			this.lastEventAt = new Date();
+			if (event.roomId) sync.pokeRoomNow(event.roomId, event.serverSequence);
+			else sync.pokeNow();
 		}
 	}
 

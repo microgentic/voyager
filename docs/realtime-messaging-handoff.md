@@ -7,6 +7,7 @@ Related docs:
 - `docs/secure-client-agent-communications-master-plan.md`
 - `docs/backend-contract-handoff.md`
 - `docs/frontend-web-desktop-handoff.md`
+- `docs/realtime-performance-handoff.md`
 
 ## 1. What Changed
 

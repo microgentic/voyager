@@ -13,10 +13,15 @@ import { rooms } from './rooms.svelte';
 class SyncStore {
 	active = $state(false);
 	lastSyncedAt = $state<Date | null>(null);
+	lastRoomSyncedAt = $state<Date | null>(null);
+	lastSyncDurationMs = $state<number | null>(null);
+	lastRoomSyncDurationMs = $state<number | null>(null);
 	activeRoomId = $state<string | null>(null);
 
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private inFlight = false;
+	private fullQueued = false;
+	private queuedRoomIds = new Set<string>();
 	private visibilityBound = false;
 
 	constructor() {
@@ -27,7 +32,7 @@ class SyncStore {
 		if (this.active) return;
 		this.active = true;
 		this.bindVisibility();
-		void this.tick();
+		this.pokeNow();
 		this.schedule();
 	}
 
@@ -36,6 +41,8 @@ class SyncStore {
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = null;
 		this.activeRoomId = null;
+		this.fullQueued = false;
+		this.queuedRoomIds.clear();
 	}
 
 	setActiveRoom(roomId: string | null): void {
@@ -44,7 +51,15 @@ class SyncStore {
 
 	/** Force an immediate sync (e.g. right after sending or a membership change). */
 	pokeNow(): void {
-		void this.tick();
+		this.fullQueued = true;
+		void this.drain();
+	}
+
+	/** Fetch one room immediately after a realtime event without waiting for the polling cadence. */
+	pokeRoomNow(roomId: string, serverSequence?: number): void {
+		if (serverSequence !== undefined && messages.maxSeq(roomId) >= serverSequence) return;
+		this.queuedRoomIds.add(roomId);
+		void this.drain();
 	}
 
 	private delay(): number {
@@ -55,27 +70,50 @@ class SyncStore {
 	private schedule(): void {
 		if (!this.active) return;
 		this.timer = setTimeout(async () => {
-			await this.tick();
+			this.fullQueued = true;
+			await this.drain();
 			this.schedule();
 		}, this.delay());
 	}
 
-	private async tick(): Promise<void> {
+	private async drain(): Promise<void> {
 		if (this.inFlight || auth.status !== 'authed') return;
 		this.inFlight = true;
 		try {
-			const result = await api.sync({ limit: 100 });
-			rooms.merge(result.rooms);
-			await messages.ingest(result.pendingMessages);
-			if (this.activeRoomId) {
-				await messages.fetchNew(this.activeRoomId).catch(() => undefined);
+			while (this.fullQueued || this.queuedRoomIds.size > 0) {
+				const runFull = this.fullQueued;
+				const roomIds = [...this.queuedRoomIds];
+				this.fullQueued = false;
+				this.queuedRoomIds.clear();
+				if (runFull) await this.runFullSync().catch(() => undefined);
+				for (const roomId of roomIds) {
+					await this.runRoomSync(roomId).catch(() => undefined);
+				}
 			}
-			this.lastSyncedAt = new Date();
 		} catch {
-			/* transient; next tick retries */
+			/* transient; next queued run or poll retries */
 		} finally {
 			this.inFlight = false;
 		}
+	}
+
+	private async runFullSync(): Promise<void> {
+		const startedAt = performance.now();
+		const result = await api.sync({ limit: 100 });
+		rooms.merge(result.rooms);
+		await messages.ingest(result.pendingMessages);
+		if (this.activeRoomId) {
+			await this.runRoomSync(this.activeRoomId).catch(() => undefined);
+		}
+		this.lastSyncedAt = new Date();
+		this.lastSyncDurationMs = Math.round(performance.now() - startedAt);
+	}
+
+	private async runRoomSync(roomId: string): Promise<void> {
+		const startedAt = performance.now();
+		await Promise.all([rooms.refresh(roomId), messages.fetchNew(roomId)]);
+		this.lastRoomSyncedAt = new Date();
+		this.lastRoomSyncDurationMs = Math.round(performance.now() - startedAt);
 	}
 
 	private bindVisibility(): void {
