@@ -154,8 +154,9 @@ Desktop realtime also needs the Worker WebSocket origin in the Tauri CSP
 `connect-src`; allowing only the HTTPS API origin is not enough for
 `wss://.../v1/realtime`.
 
-The macOS overlay title bar still needs a dedicated drag region that does not
-steal clicks from top-row app controls.
+The macOS app uses a desktop-only Tauri drag strip above the web shell. Keep it
+out of web and mobile layouts so mobile safe-area behavior and browser spacing
+do not regress.
 
 ## 7. Recommended Next Sequence
 
