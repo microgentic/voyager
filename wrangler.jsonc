@@ -5,6 +5,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-01-01",
   "workers_dev": true,
+  "vars": {
+    "CORS_ALLOWED_ORIGINS": "https://voyager-web.pages.dev"
+  },
   "d1_databases": [
     {
       "binding": "CONTROL_DB",

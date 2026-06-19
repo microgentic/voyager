@@ -8,6 +8,7 @@ This project deploys the Voyager web client to Cloudflare Pages through GitHub A
 - Production branch: `main`
 - Production URL after the first successful deployment: `https://voyager-web.pages.dev/`
 - API target baked into the web build: `https://voyager-api-dev.microgentic-voyager.workers.dev`
+- Required API CORS origin: `https://voyager-web.pages.dev`
 
 ## CI/CD Flow
 
@@ -24,6 +25,7 @@ The `.github/workflows/deploy-pages.yml` workflow:
 
 - `apps/client/static/_redirects` routes all browser paths to `index.html` so SvelteKit client-side routing works on refresh and direct links.
 - `apps/client/static/_headers` adds baseline browser hardening headers.
+- `wrangler.jsonc` includes the Pages origin in `CORS_ALLOWED_ORIGINS` so browser requests from Pages can call the Worker API.
 
 ## Required GitHub Secrets
 
