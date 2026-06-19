@@ -143,7 +143,25 @@ After this PR is deployed, manually verify:
 - Settings diagnostics show `connected` and recent room events after messages arrive.
 - Device cleanup dry-run lists only expected stale test devices.
 
-## 6. Recommended Next Sequence
+## 6. Desktop Packaged Startup Note
+
+The packaged Tauri desktop app can start from `tauri://localhost/index.html`
+instead of `/`. The auth route guard must treat both paths as the root splash.
+If it only redirects authenticated users from `/`, a signed-in desktop launch can
+resolve auth successfully but remain on the root spinner forever.
+
+Desktop realtime also needs the Worker WebSocket origin in the Tauri CSP
+`connect-src`; allowing only the HTTPS API origin is not enough for
+`wss://.../v1/realtime`.
+
+The macOS app uses a desktop-only Tauri drag strip above the web shell. Keep it
+out of web and mobile layouts so mobile safe-area behavior and browser spacing
+do not regress. Active-window dragging depends on the Tauri v2
+`core:window:allow-start-dragging` capability plus the explicit
+`startDragging()` handler; `data-tauri-drag-region` alone may only behave
+reliably for inactive-window activation drags.
+
+## 7. Recommended Next Sequence
 
 1. Merge this dev/test operations PR.
 2. Run the manual cross-client checklist above.
