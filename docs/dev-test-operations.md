@@ -156,7 +156,10 @@ Desktop realtime also needs the Worker WebSocket origin in the Tauri CSP
 
 The macOS app uses a desktop-only Tauri drag strip above the web shell. Keep it
 out of web and mobile layouts so mobile safe-area behavior and browser spacing
-do not regress.
+do not regress. Active-window dragging depends on the Tauri v2
+`core:window:allow-start-dragging` capability plus the explicit
+`startDragging()` handler; `data-tauri-drag-region` alone may only behave
+reliably for inactive-window activation drags.
 
 ## 7. Recommended Next Sequence
 
