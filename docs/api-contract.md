@@ -418,6 +418,16 @@ apps/client/src/lib/api/types.ts
 
 It mirrors the Worker public serializers and exports common API envelopes, paginated response aliases, entity types, request payloads, bootstrap/sync types, and realtime event unions. A separate package can be introduced later if the repo adopts workspaces, but this PR keeps the contract in the existing client code path.
 
+## Executable Contract Checks
+
+The local backend smoke test validates the most important stable response shapes with `scripts/api-contract-assertions.mjs`:
+
+```bash
+npm run smoke:backend:local
+```
+
+Those assertions cover common error payloads, auth results, bootstrap, sync, rooms, room invitations, messages, realtime `room.message` events, key packages, attachments, sidebar collections, and agent request surfaces. They are intentionally additive-friendly: new fields are allowed, but missing or renamed contract fields fail the smoke run.
+
 ## Future-Sensitive Work
 
 The following are deliberately outside this freeze:

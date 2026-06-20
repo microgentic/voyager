@@ -1,3 +1,25 @@
+import {
+  assertAgentRequestResponse,
+  assertAgentResponse,
+  assertApiErrorShape,
+  assertAttachmentResponse,
+  assertAuthResult,
+  assertBootstrapResponse,
+  assertEndpointCatalog,
+  assertKeyPackageResponse,
+  assertKeyPackagesResponse,
+  assertMessageResponse,
+  assertPaginatedAgentRequestsResponse,
+  assertPaginatedKeyPackagesResponse,
+  assertPaginatedRoomInvitationsResponse,
+  assertPaginatedRoomsResponse,
+  assertRealtimeRoomMessageEvent,
+  assertRoomInvitationResponse,
+  assertRoomResponse,
+  assertSidebarCollectionResponse,
+  assertSyncResponse
+} from "./api-contract-assertions.mjs";
+
 const baseUrl = process.env.BASE_URL ?? "http://localhost:8787";
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -35,20 +57,6 @@ async function expectFailure(path, options, status) {
     throw new Error(`${options.method ?? "GET"} ${path} expected ${status} but got ${response.status}: ${JSON.stringify(payload)}`);
   }
   return payload;
-}
-
-function assertApiErrorShape(payload, context) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error(`${context} did not return a JSON error object: ${JSON.stringify(payload)}`);
-  }
-  if (payload.ok !== false) {
-    throw new Error(`${context} error payload did not set ok=false: ${JSON.stringify(payload)}`);
-  }
-  for (const field of ["error", "message", "requestId"]) {
-    if (typeof payload[field] !== "string" || payload[field].length === 0) {
-      throw new Error(`${context} error payload missing string ${field}: ${JSON.stringify(payload)}`);
-    }
-  }
 }
 
 function auth(token) {
@@ -124,6 +132,8 @@ async function openRealtimeMessageWatcher(token, expectedRoomId, timeoutMs = 5_0
   });
 }
 
+assertEndpointCatalog();
+
 const health = await api("/health");
 if (!health.ok) throw new Error("health check failed");
 
@@ -137,6 +147,7 @@ const owner = await api("/v1/admin/bootstrap", {
     device: { platform: "smoke", label: "Owner smoke device", publicKeyPackage: "owner-device-key" }
   }
 });
+assertAuthResult(owner, "POST /v1/admin/bootstrap");
 const ownerHeaders = auth(owner.sessionToken);
 
 const invite = await api("/v1/admin/invitations", {
@@ -157,6 +168,7 @@ const accepted = await api("/v1/invitations/accept", {
     device: { platform: "smoke", label: "User smoke device", publicKeyPackage: "user-device-key" }
   }
 });
+assertAuthResult(accepted, "POST /v1/invitations/accept");
 
 await expectFailure("/v1/invitations/accept", {
   method: "POST",
@@ -185,6 +197,7 @@ const acceptedAdmin = await api("/v1/invitations/accept", {
     device: { platform: "smoke", label: "Security admin smoke device" }
   }
 });
+assertAuthResult(acceptedAdmin, "POST /v1/invitations/accept admin");
 const adminHeaders = auth(acceptedAdmin.sessionToken);
 
 await api(`/v1/admin/accounts/${acceptedAdmin.account.accountId}/roles`, {
@@ -285,6 +298,7 @@ const login = await api("/v1/auth/password/login", {
     device: { platform: "smoke", label: "User browser smoke device" }
   }
 });
+assertAuthResult(login, "POST /v1/auth/password/login");
 let userHeaders = auth(login.sessionToken);
 
 await api("/v1/auth/password/change", {
@@ -304,6 +318,7 @@ const relogin = await api("/v1/auth/password/login", {
     device: { deviceId: login.device.deviceId, platform: "smoke", label: "User relogin smoke device" }
   }
 });
+assertAuthResult(relogin, "POST /v1/auth/password/login relogin");
 if (relogin.device.deviceId !== login.device.deviceId) throw new Error("login did not reuse the supplied device ID");
 userHeaders = auth(relogin.sessionToken);
 
@@ -443,6 +458,7 @@ const resetComplete = await api("/v1/auth/password/reset/complete", {
     device: { platform: "smoke", label: "Reset completion smoke device" }
   }
 });
+assertAuthResult(resetComplete, "POST /v1/auth/password/reset/complete");
 const resetHeaders = auth(resetComplete.sessionToken);
 
 await expectFailure("/v1/auth/password/reset/complete", {
@@ -504,16 +520,19 @@ const ownerKeyPackage = await api(`/v1/devices/${owner.device.deviceId}/key-pack
     expiresInDays: 5
   }
 });
+assertKeyPackageResponse(ownerKeyPackage, "POST /v1/devices/{deviceId}/key-packages");
 
 const listedKeys = await api(`/v1/principals/${owner.principal.principalId}/key-packages`, {
   headers: userHeaders
 });
+assertKeyPackagesResponse(listedKeys, "GET /v1/principals/{principalId}/key-packages");
 if (listedKeys.keyPackages.length < 1) throw new Error("key package listing failed");
 
-await api(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
+const claimedKeyPackage = await api(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
   method: "POST",
   headers: userHeaders
 });
+assertKeyPackageResponse(claimedKeyPackage, "POST /v1/key-packages/{keyPackageId}/claim");
 
 await expectFailure(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
   method: "POST",
@@ -529,10 +548,12 @@ const ownerRevokedKeyPackage = await api(`/v1/devices/${owner.device.deviceId}/k
     expiresInDays: 5
   }
 });
+assertKeyPackageResponse(ownerRevokedKeyPackage, "POST /v1/devices/{deviceId}/key-packages revoked");
 
 const ownKeyPackages = await api(`/v1/devices/${owner.device.deviceId}/key-packages?limit=1`, {
   headers: ownerHeaders
 });
+assertPaginatedKeyPackagesResponse(ownKeyPackages, "GET /v1/devices/{deviceId}/key-packages");
 if (ownKeyPackages.keyPackages.length !== 1 || ownKeyPackages.nextCursor === null) throw new Error("own key package pagination failed");
 
 await api(`/v1/key-packages/${ownerRevokedKeyPackage.keyPackage.keyPackageId}/revoke`, {
@@ -545,6 +566,7 @@ const direct = await api("/v1/rooms/direct", {
   headers: ownerHeaders,
   json: { principalIds: [accepted.principal.principalId], name: "Smoke direct" }
 });
+assertRoomResponse(direct, "POST /v1/rooms/direct");
 
 await expectFailure("/v1/rooms/direct", {
   method: "POST",
@@ -569,6 +591,7 @@ const group = await api("/v1/rooms/groups", {
     description: "Backend-first smoke group"
   }
 });
+assertRoomResponse(group, "POST /v1/rooms/groups");
 
 await expectFailure(`/v1/rooms/${group.room.roomId}/members`, {
   method: "POST",
@@ -585,6 +608,7 @@ const roomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations`, {
     expiresInDays: 3
   }
 });
+assertRoomInvitationResponse(roomInvitation, "POST /v1/rooms/{roomId}/invitations");
 
 const userRoomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations`, {
   method: "POST",
@@ -595,25 +619,30 @@ const userRoomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations
     expiresInDays: 3
   }
 });
+assertRoomInvitationResponse(userRoomInvitation, "POST /v1/rooms/{roomId}/invitations user");
 
 const pendingRoomInvitations = await api("/v1/room-invitations", {
   headers: inviteeHeaders
 });
+assertPaginatedRoomInvitationsResponse(pendingRoomInvitations, "GET /v1/room-invitations");
 if (!pendingRoomInvitations.invitations.some((invitation) => invitation.roomInvitationId === roomInvitation.invitation.roomInvitationId)) {
   throw new Error("pending room invitation was not listed for invitee");
 }
 
-await api(`/v1/room-invitations/${roomInvitation.invitation.roomInvitationId}/accept`, {
+const acceptedRoomInvitation = await api(`/v1/room-invitations/${roomInvitation.invitation.roomInvitationId}/accept`, {
   method: "POST",
   headers: inviteeHeaders
 });
+assertRoomInvitationResponse(acceptedRoomInvitation, "POST /v1/room-invitations/{roomInvitationId}/accept");
 
-await api(`/v1/room-invitations/${userRoomInvitation.invitation.roomInvitationId}/accept`, {
+const acceptedUserRoomInvitation = await api(`/v1/room-invitations/${userRoomInvitation.invitation.roomInvitationId}/accept`, {
   method: "POST",
   headers: userHeaders
 });
+assertRoomInvitationResponse(acceptedUserRoomInvitation, "POST /v1/room-invitations/{roomInvitationId}/accept user");
 
 const roomsPage = await api("/v1/rooms?limit=1", { headers: ownerHeaders });
+assertPaginatedRoomsResponse(roomsPage, "GET /v1/rooms");
 if (roomsPage.rooms.length !== 1 || roomsPage.nextCursor === null) throw new Error("room pagination failed");
 
 const agentRequest = await api("/v1/agent-requests", {
@@ -625,6 +654,7 @@ const agentRequest = await api("/v1/agent-requests", {
     metadata: { department: "testing" }
   }
 });
+assertAgentRequestResponse(agentRequest, "POST /v1/agent-requests");
 
 await api(`/v1/admin/agent-requests/${agentRequest.request.requestId}`, {
   method: "PATCH",
@@ -641,6 +671,7 @@ const agent = await api("/v1/admin/agents", {
     requestId: agentRequest.request.requestId
   }
 });
+assertAgentResponse(agent, "POST /v1/admin/agents");
 
 await api(`/v1/rooms/${group.room.roomId}/members`, {
   method: "POST",
@@ -667,8 +698,10 @@ if (!directTiming.includes("message;dur=") || !directTiming.includes("realtime;d
   throw new Error(`message send did not include server timing metrics: ${directTiming}`);
 }
 const directMessage = directMessageResult.payload;
+assertMessageResponse(directMessage, "POST /v1/rooms/{roomId}/messages");
 
 const realtimeEvent = await realtimeWatcher.wait;
+assertRealtimeRoomMessageEvent(realtimeEvent, "GET /v1/realtime room.message");
 if (realtimeEvent.roomId !== direct.room.roomId) {
   throw new Error("realtime event did not reference the sent room");
 }
@@ -689,6 +722,7 @@ if (realtimeEvent.senderDeviceId !== owner.device.deviceId) {
 }
 
 const synced = await api("/v1/sync", { headers: userHeaders });
+assertSyncResponse(synced, "GET /v1/sync");
 if (synced.sync.pendingMessages.length < 1) throw new Error("sync did not return pending messages");
 
 const bootstrapResult = await apiRaw("/v1/app/bootstrap?limit=100", { headers: userHeaders });
@@ -700,6 +734,7 @@ for (const metric of ["bootstrap;dur=", "auth;dur=", "read;dur=", "rooms;dur=", 
   if (!bootstrapTiming.includes(metric)) throw new Error(`bootstrap missing server timing metric ${metric}: ${bootstrapTiming}`);
 }
 const bootstrap = bootstrapResult.payload.bootstrap;
+assertBootstrapResponse(bootstrapResult.payload, "GET /v1/app/bootstrap");
 if (bootstrap.account.accountId !== login.account.accountId) throw new Error("bootstrap identity did not match logged-in account");
 if (!Array.isArray(bootstrap.roles) || !Array.isArray(bootstrap.rooms) || !Array.isArray(bootstrap.pendingMessages)) {
   throw new Error("bootstrap response shape is invalid");
@@ -729,6 +764,7 @@ const attachment = await api(`/v1/rooms/${group.room.roomId}/attachments`, {
   headers: ownerHeaders,
   json: { expectedBytes: attachmentBody.byteLength, contentCategory: "opaque-test" }
 });
+assertAttachmentResponse(attachment, "POST /v1/rooms/{roomId}/attachments");
 
 await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob`, {
   method: "PUT",
@@ -736,11 +772,12 @@ await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob`, {
   body: attachmentBody
 });
 
-await api(`/v1/attachments/${attachment.attachment.attachmentId}/complete`, {
+const completedAttachment = await api(`/v1/attachments/${attachment.attachment.attachmentId}/complete`, {
   method: "POST",
   headers: ownerHeaders,
   json: { ciphertextBytes: attachmentBody.byteLength, ciphertextSha256: "smoke-sha256-placeholder" }
 });
+assertAttachmentResponse(completedAttachment, "POST /v1/attachments/{attachmentId}/complete");
 
 const groupRealtimeWatcher = await openRealtimeMessageWatcher(relogin.sessionToken, group.room.roomId);
 
@@ -754,8 +791,10 @@ const groupMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
     attachmentIds: [attachment.attachment.attachmentId]
   }
 });
+assertMessageResponse(groupMessage, "POST /v1/rooms/{roomId}/messages group");
 
 const groupRealtimeEvent = await groupRealtimeWatcher.wait;
+assertRealtimeRoomMessageEvent(groupRealtimeEvent, "GET /v1/realtime group room.message");
 if (groupRealtimeEvent.roomId !== group.room.roomId) {
   throw new Error("group realtime event did not reference the sent room");
 }
@@ -789,6 +828,7 @@ const collection = await api("/v1/sidebar-collections", {
   headers: userHeaders,
   json: { name: "Smoke collection", sortOrder: 1 }
 });
+assertSidebarCollectionResponse(collection, "POST /v1/sidebar-collections");
 
 await api(`/v1/sidebar-collections/${collection.collection.collectionId}/items`, {
   method: "POST",
@@ -799,12 +839,15 @@ await api(`/v1/sidebar-collections/${collection.collection.collectionId}/items`,
 const usage = await api("/v1/admin/usage", { headers: ownerHeaders });
 
 const adminRooms = await api("/v1/admin/rooms?limit=1&type=group", { headers: ownerHeaders });
+assertPaginatedRoomsResponse(adminRooms, "GET /v1/admin/rooms");
 if (adminRooms.rooms.length !== 1) throw new Error("admin room listing failed");
 
 const ownAgentRequests = await api("/v1/agent-requests?limit=1", { headers: userHeaders });
+assertPaginatedAgentRequestsResponse(ownAgentRequests, "GET /v1/agent-requests");
 if (ownAgentRequests.requests.length !== 1) throw new Error("own agent request listing failed");
 
 const adminAgentRequests = await api("/v1/admin/agent-requests?limit=1&status=active", { headers: ownerHeaders });
+assertPaginatedAgentRequestsResponse(adminAgentRequests, "GET /v1/admin/agent-requests");
 if (adminAgentRequests.requests.length !== 1) throw new Error("admin agent request listing failed");
 
 const cleanup = await api("/v1/admin/maintenance/cleanup", {
