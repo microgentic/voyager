@@ -1,5 +1,5 @@
 import { api, isApiError } from '$lib/api';
-import type { Account, AuthResult, Device, Principal } from '$lib/api/types';
+import type { Account, AuthResult, BootstrapResult, Device, Principal } from '$lib/api/types';
 import { APP_VERSION, CLIENT_PROTOCOL_VERSION } from '$lib/config';
 import { deviceLabel, devicePlatform } from '$lib/platform';
 import {
@@ -31,6 +31,7 @@ class AuthStore {
 	principal = $state<Principal | null>(null);
 	device = $state<Device | null>(null);
 	roles = $state<string[]>([]);
+	private pendingBootstrap: BootstrapResult | null = null;
 
 	private resetHandlers: Array<() => void> = [];
 
@@ -56,7 +57,7 @@ class AuthStore {
 		};
 	}
 
-	/** Restore a persisted session on boot, then confirm it with /v1/me. */
+	/** Restore a persisted session and hydrate first-load app data with /v1/app/bootstrap. */
 	async init(): Promise<void> {
 		const token = loadToken();
 		if (!token) {
@@ -65,28 +66,31 @@ class AuthStore {
 		}
 		api.setToken(token);
 		const cached = loadIdentity();
-		if (cached) {
-			this.apply(cached);
-			this.status = 'authed';
-		}
 		try {
-			const me = await api.me();
+			const bootstrap = await api.bootstrap({ limit: 100 });
 			this.apply({
-				account: me.account,
-				principal: me.principal,
-				device: me.device,
-				roles: me.roles
+				account: bootstrap.account,
+				principal: bootstrap.principal,
+				device: bootstrap.device,
+				roles: bootstrap.roles
 			});
-			saveIdentity({ ...me });
+			this.pendingBootstrap = bootstrap;
+			saveIdentity({
+				account: bootstrap.account,
+				principal: bootstrap.principal,
+				device: bootstrap.device,
+				roles: bootstrap.roles
+			});
 			this.status = 'authed';
 		} catch (error) {
 			if (isApiError(error) && error.isUnauthorized) {
 				this.signOutLocal();
-			} else if (!cached) {
-				// Network failure with no cached identity: treat as signed out.
+			} else if (cached) {
+				this.apply(cached);
+				this.status = 'authed';
+			} else {
 				this.signOutLocal();
 			}
-			// Network failure WITH a cache: stay optimistically authed (offline-friendly).
 		}
 	}
 
@@ -137,13 +141,13 @@ class AuthStore {
 		this.principal = result.principal;
 		this.device = result.device;
 		this.roles = [];
-		// Roles are only on /v1/me, not the auth result.
 		try {
-			const me = await api.me();
-			this.account = me.account;
-			this.principal = me.principal;
-			this.device = me.device;
-			this.roles = me.roles;
+			const bootstrap = await api.bootstrap({ limit: 100 });
+			this.account = bootstrap.account;
+			this.principal = bootstrap.principal;
+			this.device = bootstrap.device;
+			this.roles = bootstrap.roles;
+			this.pendingBootstrap = bootstrap;
 		} catch {
 			/* keep auth-result identity */
 		}
@@ -154,6 +158,12 @@ class AuthStore {
 			roles: this.roles
 		});
 		this.status = 'authed';
+	}
+
+	consumeBootstrap(): BootstrapResult | null {
+		const bootstrap = this.pendingBootstrap;
+		this.pendingBootstrap = null;
+		return bootstrap;
 	}
 
 	private apply(identity: PersistedIdentity): void {
@@ -170,6 +180,7 @@ class AuthStore {
 		this.principal = null;
 		this.device = null;
 		this.roles = [];
+		this.pendingBootstrap = null;
 		this.status = 'anon';
 		for (const handler of this.resetHandlers) handler();
 	}

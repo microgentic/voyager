@@ -315,6 +315,14 @@ export interface MeResult {
 	roles: string[];
 }
 
+export interface BootstrapResult extends MeResult {
+	rooms: Room[];
+	roomsNextCursor: string | null;
+	pendingMessages: MessageEnvelope[];
+	serverTime: string;
+	requestId: string;
+}
+
 export interface SyncResult {
 	rooms: Room[];
 	roomsNextCursor: string | null;

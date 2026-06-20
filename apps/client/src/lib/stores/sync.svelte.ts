@@ -28,11 +28,11 @@ class SyncStore {
 		auth.onSignOut(() => this.stop());
 	}
 
-	start(): void {
+	start(options: { immediate?: boolean } = {}): void {
 		if (this.active) return;
 		this.active = true;
 		this.bindVisibility();
-		this.pokeNow();
+		if (options.immediate !== false) this.pokeNow();
 		this.schedule();
 	}
 

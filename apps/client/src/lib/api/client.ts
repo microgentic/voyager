@@ -5,6 +5,7 @@ import type {
 	AgentRequest,
 	Attachment,
 	AuthResult,
+	BootstrapResult,
 	BootstrapStatus,
 	DeliveryReceipt,
 	Device,
@@ -160,6 +161,13 @@ export class VoyagerClient {
 
 	me(): Promise<MeResult> {
 		return this.request('GET', '/v1/me');
+	}
+
+	async bootstrap(opts: { limit?: number } = {}): Promise<BootstrapResult> {
+		const res = await this.request<{ bootstrap: BootstrapResult }>('GET', '/v1/app/bootstrap', {
+			query: { limit: opts.limit }
+		});
+		return res.bootstrap;
 	}
 
 	logout(): Promise<{ ok: true }> {

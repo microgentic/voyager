@@ -1,6 +1,6 @@
 import { audit, requireAdmin } from "./db";
 import { randomId } from "./crypto";
-import { HttpError, json, readJsonObject, requireMethod, routeParams, stringField } from "./http";
+import { HttpError, json, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import { notifyRoomRealtime } from "./realtime";
 import type { AccountRow, AuthContext, DeviceRow, Env, PrincipalRow, PolicyRow } from "./types";
 
@@ -26,6 +26,14 @@ interface SendMessageMetrics {
 interface SendMessageResult {
   message: JsonObject;
   metrics: SendMessageMetrics;
+}
+
+interface AppBootstrapResult {
+  bootstrap: JsonObject;
+  metrics: {
+    roomsMs: number;
+    messagesMs: number;
+  };
 }
 
 interface PageParams {
@@ -113,11 +121,28 @@ export async function handleBackendFirstRoutes(
   env: Env,
   url: URL,
   requestId: string,
-  auth: AuthContext
+  auth: AuthContext,
+  authTimingMs = 0
 ): Promise<RouteResult> {
   if (url.pathname === "/v1/principals") {
     requireMethod(request, "GET");
-    return json({ ok: true, principals: await listPrincipals(env) });
+    const startedAt = performance.now();
+    return json({ ok: true, principals: await listPrincipals(env) }, { headers: readTimingHeaders("principals", authTimingMs, startedAt) });
+  }
+
+  if (url.pathname === "/v1/app/bootstrap") {
+    requireMethod(request, "GET");
+    const startedAt = performance.now();
+    const result = await appBootstrap(env, auth, url, requestId);
+    return json(
+      { ok: true, bootstrap: result.bootstrap },
+      {
+        headers: readTimingHeaders("bootstrap", authTimingMs, startedAt, [
+          ["rooms", result.metrics.roomsMs],
+          ["messages", result.metrics.messagesMs]
+        ])
+      }
+    );
   }
 
   const principalDevicesMatch = routeParams(/^\/v1\/principals\/([^/]+)\/devices$/, url.pathname);
@@ -184,7 +209,8 @@ export async function handleBackendFirstRoutes(
 
   if (url.pathname === "/v1/rooms") {
     requireMethod(request, "GET");
-    return json({ ok: true, ...(await listRooms(env, auth, url)) });
+    const startedAt = performance.now();
+    return json({ ok: true, ...(await listRooms(env, auth, url)) }, { headers: readTimingHeaders("rooms", authTimingMs, startedAt) });
   }
 
   if (url.pathname === "/v1/rooms/direct") {
@@ -283,7 +309,8 @@ export async function handleBackendFirstRoutes(
 
   if (url.pathname === "/v1/room-invitations") {
     requireMethod(request, "GET");
-    return json({ ok: true, ...(await listRoomInvitations(env, auth, url)) });
+    const startedAt = performance.now();
+    return json({ ok: true, ...(await listRoomInvitations(env, auth, url)) }, { headers: readTimingHeaders("roomInvitations", authTimingMs, startedAt) });
   }
 
   const roomInvitationActionMatch = routeParams(/^\/v1\/room-invitations\/([^/]+)\/(accept|decline)$/, url.pathname);
@@ -411,7 +438,8 @@ export async function handleBackendFirstRoutes(
 
   if (url.pathname === "/v1/sync") {
     requireMethod(request, "GET");
-    return json({ ok: true, sync: await syncAccount(env, auth, url) });
+    const startedAt = performance.now();
+    return json({ ok: true, sync: await syncAccount(env, auth, url) }, { headers: readTimingHeaders("sync", authTimingMs, startedAt) });
   }
 
   const allocateAttachmentMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/attachments$/, url.pathname);
@@ -472,7 +500,8 @@ export async function handleBackendFirstRoutes(
 
   if (url.pathname === "/v1/sidebar-collections") {
     if (request.method === "GET") {
-      return json({ ok: true, collections: await listSidebarCollections(env, auth) });
+      const startedAt = performance.now();
+      return json({ ok: true, collections: await listSidebarCollections(env, auth) }, { headers: readTimingHeaders("sidebarCollections", authTimingMs, startedAt) });
     }
     if (request.method === "POST") {
       return json({ ok: true, collection: await createSidebarCollection(env, auth, await readJsonObject(request)) }, { status: 201 });
@@ -730,7 +759,7 @@ async function listRooms(env: Env, auth: AuthContext, url?: URL): Promise<JsonOb
   )
     .bind(auth.principal.principal_id, page.limit, page.offset)
     .all<RoomRow>();
-  const rooms = await Promise.all((result.results ?? []).map((room) => publicRoomWithMembers(env, room)));
+  const rooms = await publicRoomsWithMembers(env, result.results ?? []);
   return { rooms, nextCursor: nextCursor(rooms.length, page) };
 }
 
@@ -1167,6 +1196,35 @@ async function acknowledgeMessage(env: Env, auth: AuthContext, roomId: string, e
 async function syncAccount(env: Env, auth: AuthContext, url: URL): Promise<JsonObject> {
   const limit = numberParam(url, "limit", 1, 200, 50);
   const roomPage = await listRooms(env, auth, url);
+  const pendingMessages = await listPendingMessages(env, auth, limit);
+  return { rooms: roomPage.rooms, roomsNextCursor: roomPage.nextCursor, pendingMessages };
+}
+
+async function appBootstrap(env: Env, auth: AuthContext, url: URL, requestId: string): Promise<AppBootstrapResult> {
+  const limit = numberParam(url, "limit", 1, 200, 100);
+  const roomsStartedAt = performance.now();
+  const roomPage = await listRooms(env, auth, url);
+  const roomsMs = durationSince(roomsStartedAt);
+  const messagesStartedAt = performance.now();
+  const pendingMessages = await listPendingMessages(env, auth, limit);
+  const messagesMs = durationSince(messagesStartedAt);
+  return {
+    bootstrap: {
+      account: publicAccount(auth.account),
+      principal: publicPrincipal(auth.principal),
+      device: publicDevice(auth.device),
+      roles: auth.roles,
+      rooms: roomPage.rooms,
+      roomsNextCursor: roomPage.nextCursor,
+      pendingMessages,
+      serverTime: new Date().toISOString(),
+      requestId
+    },
+    metrics: { roomsMs, messagesMs }
+  };
+}
+
+async function listPendingMessages(env: Env, auth: AuthContext, limit: number): Promise<JsonObject[]> {
   const result = await env.CONTROL_DB.prepare(
     `SELECT me.*
      FROM delivery_receipts dr
@@ -1180,7 +1238,7 @@ async function syncAccount(env: Env, auth: AuthContext, url: URL): Promise<JsonO
   )
     .bind(auth.device.device_id, limit)
     .all<Record<string, unknown>>();
-  return { rooms: roomPage.rooms, roomsNextCursor: roomPage.nextCursor, pendingMessages: (result.results ?? []).map(publicMessage) };
+  return (result.results ?? []).map(publicMessage);
 }
 
 async function allocateAttachment(env: Env, auth: AuthContext, roomId: string, body: Record<string, unknown>): Promise<JsonObject> {
@@ -1285,7 +1343,7 @@ async function listSidebarCollections(env: Env, auth: AuthContext): Promise<unkn
   )
     .bind(auth.account.account_id)
     .all<Record<string, unknown>>();
-  return Promise.all((collections.results ?? []).map((collection) => publicSidebarCollection(env, collection)));
+  return publicSidebarCollections(env, collections.results ?? []);
 }
 
 async function createSidebarCollection(env: Env, auth: AuthContext, body: Record<string, unknown>): Promise<JsonObject> {
@@ -1693,7 +1751,32 @@ async function publicRoomWithMembers(env: Env, room: RoomRow): Promise<JsonObjec
   )
     .bind(room.room_id)
     .all<MembershipRow>();
-  return { ...publicRoom(room), members: (members.results ?? []).map(publicMembership) };
+  return publicRoomFromMembers(room, members.results ?? []);
+}
+
+async function publicRoomsWithMembers(env: Env, rooms: RoomRow[]): Promise<JsonObject[]> {
+  if (!rooms.length) return [];
+  const placeholders = rooms.map(() => "?").join(", ");
+  const members = await env.CONTROL_DB.prepare(
+    `SELECT rm.*, p.principal_type, p.display_name
+     FROM room_memberships rm
+     JOIN principals p ON p.principal_id = rm.principal_id
+     WHERE rm.room_id IN (${placeholders})
+     ORDER BY rm.room_id ASC, rm.created_at ASC`
+  )
+    .bind(...rooms.map((room) => room.room_id))
+    .all<MembershipRow>();
+  const grouped = new Map<string, MembershipRow[]>();
+  for (const member of members.results ?? []) {
+    const group = grouped.get(member.room_id) ?? [];
+    group.push(member);
+    grouped.set(member.room_id, group);
+  }
+  return rooms.map((room) => publicRoomFromMembers(room, grouped.get(room.room_id) ?? []));
+}
+
+function publicRoomFromMembers(room: RoomRow, members: MembershipRow[]): JsonObject {
+  return { ...publicRoom(room), members: members.map(publicMembership) };
 }
 
 async function bumpRoom(env: Env, roomId: string): Promise<void> {
@@ -1879,6 +1962,30 @@ async function publicSidebarCollection(env: Env, collection: Record<string, unkn
   const items = await env.CONTROL_DB.prepare("SELECT * FROM sidebar_collection_items WHERE collection_id = ? ORDER BY sort_order ASC, created_at ASC")
     .bind(collection.collection_id)
     .all<Record<string, unknown>>();
+  return publicSidebarCollectionFromItems(collection, items.results ?? []);
+}
+
+async function publicSidebarCollections(env: Env, collections: Record<string, unknown>[]): Promise<JsonObject[]> {
+  if (!collections.length) return [];
+  const placeholders = collections.map(() => "?").join(", ");
+  const items = await env.CONTROL_DB.prepare(
+    `SELECT * FROM sidebar_collection_items
+     WHERE collection_id IN (${placeholders})
+     ORDER BY collection_id ASC, sort_order ASC, created_at ASC`
+  )
+    .bind(...collections.map((collection) => collection.collection_id))
+    .all<Record<string, unknown>>();
+  const grouped = new Map<string, Record<string, unknown>[]>();
+  for (const item of items.results ?? []) {
+    const collectionId = String(item.collection_id);
+    const group = grouped.get(collectionId) ?? [];
+    group.push(item);
+    grouped.set(collectionId, group);
+  }
+  return collections.map((collection) => publicSidebarCollectionFromItems(collection, grouped.get(String(collection.collection_id)) ?? []));
+}
+
+function publicSidebarCollectionFromItems(collection: Record<string, unknown>, items: Record<string, unknown>[]): JsonObject {
   return {
     collectionId: collection.collection_id,
     accountId: collection.account_id,
@@ -1887,7 +1994,7 @@ async function publicSidebarCollection(env: Env, collection: Record<string, unkn
     collapsed: Boolean(collection.collapsed),
     createdAt: collection.created_at,
     updatedAt: collection.updated_at,
-    items: (items.results ?? []).map((item) => ({
+    items: items.map((item) => ({
       itemId: item.item_id,
       roomId: item.room_id,
       sortOrder: item.sort_order,
@@ -2192,6 +2299,18 @@ function sendMessageTimingHeaders(metrics: SendMessageMetrics): Record<string, s
       `postwrite;dur=${metrics.postWriteMs}`,
       `realtime;dur=${metrics.realtimeMs}`
     ].join(", ")
+  };
+}
+
+function readTimingHeaders(routeName: string, authMs: number, startedAt: number, extra: Array<[string, number]> = []): Record<string, string> {
+  const readMs = durationSince(startedAt);
+  return {
+    "server-timing": serverTimingHeader([
+      [routeName, authMs + readMs],
+      ["auth", authMs],
+      ["read", readMs],
+      ...extra
+    ])
   };
 }
 

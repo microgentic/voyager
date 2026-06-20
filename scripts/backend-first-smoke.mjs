@@ -293,6 +293,8 @@ const relogin = await api("/v1/auth/password/login", {
 if (relogin.device.deviceId !== login.device.deviceId) throw new Error("login did not reuse the supplied device ID");
 userHeaders = auth(relogin.sessionToken);
 
+await expectFailure("/v1/app/bootstrap", {}, 401);
+
 await expectFailure(`/v1/devices/${owner.device.deviceId}/revoke`, {
   method: "POST",
   headers: userHeaders,
@@ -662,6 +664,31 @@ if (realtimeEvent.serverSequence !== directMessage.message.serverSequence) {
 
 const synced = await api("/v1/sync", { headers: userHeaders });
 if (synced.sync.pendingMessages.length < 1) throw new Error("sync did not return pending messages");
+
+const bootstrapResult = await apiRaw("/v1/app/bootstrap?limit=100", { headers: userHeaders });
+if (!bootstrapResult.response.ok) {
+  throw new Error(`GET bootstrap failed ${bootstrapResult.response.status}: ${JSON.stringify(bootstrapResult.payload)}`);
+}
+const bootstrapTiming = bootstrapResult.response.headers.get("server-timing") ?? "";
+for (const metric of ["bootstrap;dur=", "auth;dur=", "read;dur=", "rooms;dur=", "messages;dur="]) {
+  if (!bootstrapTiming.includes(metric)) throw new Error(`bootstrap missing server timing metric ${metric}: ${bootstrapTiming}`);
+}
+const bootstrap = bootstrapResult.payload.bootstrap;
+if (bootstrap.account.accountId !== login.account.accountId) throw new Error("bootstrap identity did not match logged-in account");
+if (!bootstrap.roles || !Array.isArray(bootstrap.rooms) || !Array.isArray(bootstrap.pendingMessages)) {
+  throw new Error("bootstrap response shape is invalid");
+}
+if (!bootstrap.rooms.some((room) => Array.isArray(room.members) && room.members.length > 0)) {
+  throw new Error("bootstrap rooms did not include members");
+}
+for (const room of synced.sync.rooms) {
+  if (!bootstrap.rooms.some((candidate) => candidate.roomId === room.roomId)) {
+    throw new Error("bootstrap room list was not compatible with sync room list");
+  }
+}
+if (!bootstrap.pendingMessages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
+  throw new Error("bootstrap pending messages were not compatible with sync pending messages");
+}
 
 await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/ack`, {
   method: "POST",
