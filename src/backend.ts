@@ -138,11 +138,16 @@ export class ConversationCoordinator {
 
     try {
       const url = new URL(request.url);
-      if (request.method !== "POST" || url.pathname !== "/messages") {
+      const sendMatch = routeParams(/^\/rooms\/([^/]+)\/messages$/, url.pathname);
+      if (request.method !== "POST" || !sendMatch) {
         throw new HttpError(404, "not_found", "Conversation coordinator route not found");
       }
 
-      const payload = parseConversationSendRequest(await readJsonObject(request));
+      const roomId = decodeURIComponent(sendMatch[1]);
+      if (roomId.length === 0 || roomId.length > 160) {
+        throw new HttpError(400, "invalid_field", "Field is invalid: roomId");
+      }
+      const payload = parseConversationSendRequest(await readJsonObject(request), roomId);
       requestId = payload.requestId;
       return this.enqueue(() => this.sendMessage(payload));
     } catch (error) {
@@ -1105,8 +1110,7 @@ async function acceptOwnershipTransfer(env: Env, auth: AuthContext, roomId: stri
   return getOwnershipTransfer(env, transferId);
 }
 
-function parseConversationSendRequest(body: Record<string, unknown>): ConversationSendRequest {
-  const roomId = stringField(body, "roomId", { required: true, min: 1, max: 160 })!;
+function parseConversationSendRequest(body: Record<string, unknown>, roomId: string): ConversationSendRequest {
   const requestId = stringField(body, "requestId", { required: true, min: 4, max: 160 })!;
   const auth = body.auth;
   const messageBody = body.body;
@@ -1134,10 +1138,10 @@ async function sendMessageThroughConversationCoordinator(
   const startedAt = performance.now();
   const coordinatorId = env.CONVERSATION_COORDINATOR.idFromName(roomId);
   const coordinator = env.CONVERSATION_COORDINATOR.get(coordinatorId);
-  const response = await coordinator.fetch("https://voyager-conversation.local/messages", {
+  const response = await coordinator.fetch(`https://voyager-conversation.local/rooms/${encodeURIComponent(roomId)}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ auth, roomId, body, requestId })
+    body: JSON.stringify({ auth, body, requestId })
   });
   const conversationDoMs = durationSince(startedAt);
   const payload = (await response.json().catch(() => null)) as ConversationSendResponse | null;
