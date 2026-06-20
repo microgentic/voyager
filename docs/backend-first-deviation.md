@@ -16,7 +16,7 @@ The following are intentionally deferred and are not implemented in this backend
 - Mobile and desktop code signing.
 - Live agent runtimes, runtime SDKs, daemon processes, and tool execution.
 - WebAuthn/passkey ceremony implementation and related third-party runtime dependency.
-- Durable Object realtime/WebSocket coordination was deferred for the original backend-first pass. Foreground WebSocket event hints are now implemented, and Conversation Durable Objects now coordinate message sends. Push providers, membership mutation serialization, and deeper D1/DO reconciliation remain deferred.
+- Durable Object realtime/WebSocket coordination was deferred for the original backend-first pass. Foreground WebSocket event hints are now implemented, and Conversation Durable Objects now coordinate message sends plus room/membership mutations. Push providers and deeper D1/DO reconciliation remain deferred.
 - Queue-based async jobs and provider-specific webhook dispatch.
 - External identity providers, email/SMS verification, SSO, billing, or marketplace flows.
 

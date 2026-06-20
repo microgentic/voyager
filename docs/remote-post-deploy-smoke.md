@@ -115,6 +115,6 @@ If the WebSocket checks fail while HTTP checks pass, inspect:
 ## Conversation Durable Object Sequencing
 
 This smoke makes the deployed realtime and message path safer to operate.
-Conversation Durable Objects now coordinate message sends, and this remote smoke
-remains the first deployed guard before further room mutation serialization and
-D1/DO reconciliation work.
+Conversation Durable Objects now coordinate message sends and room/membership
+mutations. This remote smoke remains the first deployed guard before deeper
+D1/DO reconciliation and recovery hardening work.
