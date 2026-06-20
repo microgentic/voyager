@@ -19,7 +19,7 @@ This pass adds operational tools for the current multi-client testing phase:
 - A compact realtime diagnostics view in Settings -> Advanced.
 - A remote post-deploy smoke script for the deployed dev Worker.
 
-It does not freeze the API contract and does not implement Conversation Durable Object sequencing.
+It does not freeze the API contract. Conversation Durable Objects now coordinate message sends; membership mutation serialization remains future work.
 
 ## 2. Test Device Cleanup
 
@@ -199,4 +199,4 @@ reliably for inactive-window activation drags.
 
 1. Keep the remote post-deploy smoke green on `main`.
 2. Run the manual cross-client checklist above for each rebuilt client family.
-3. Consider Conversation Durable Object sequencing only after the current deployed smoke and foreground client behavior are stable.
+3. Continue Conversation Durable Object work with membership mutation serialization only after the current deployed smoke and foreground client behavior are stable.

@@ -1,6 +1,6 @@
 import { audit, requireAdmin } from "./db";
 import { randomId } from "./crypto";
-import { HttpError, json, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
+import { errorResponse, HttpError, json, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import { notifyRoomRealtime } from "./realtime";
 import type { AccountRow, AuthContext, DeviceRow, Env, PrincipalRow, PolicyRow } from "./types";
 
@@ -17,6 +17,7 @@ type JsonObject = Record<string, unknown>;
 interface SendMessageMetrics {
   duplicate: boolean;
   totalMs: number;
+  conversationDoMs?: number;
   contextMs: number;
   insertMs: number;
   postWriteMs: number;
@@ -27,6 +28,17 @@ interface SendMessageResult {
   message: JsonObject;
   metrics: SendMessageMetrics;
 }
+
+interface ConversationSendRequest {
+  auth: AuthContext;
+  roomId: string;
+  body: Record<string, unknown>;
+  requestId: string;
+}
+
+type ConversationSendResponse =
+  | { ok: true; message: JsonObject; metrics: SendMessageMetrics }
+  | { ok: false; error: string; message: string; details?: unknown };
 
 interface AppBootstrapResult {
   bootstrap: JsonObject;
@@ -114,6 +126,52 @@ interface RoomInvitationRow {
   room_name?: string | null;
   room_type?: RoomRow["type"];
   invited_by_display_name?: string;
+}
+
+export class ConversationCoordinator {
+  private queue: Promise<void> = Promise.resolve();
+
+  constructor(_state: DurableObjectState, private readonly env: Env) {}
+
+  async fetch(request: Request): Promise<Response> {
+    let requestId = randomId("req");
+
+    try {
+      const url = new URL(request.url);
+      const sendMatch = routeParams(/^\/rooms\/([^/]+)\/messages$/, url.pathname);
+      if (request.method !== "POST" || !sendMatch) {
+        throw new HttpError(404, "not_found", "Conversation coordinator route not found");
+      }
+
+      const roomId = decodeURIComponent(sendMatch[1]);
+      if (roomId.length === 0 || roomId.length > 160) {
+        throw new HttpError(400, "invalid_field", "Field is invalid: roomId");
+      }
+      const payload = parseConversationSendRequest(await readJsonObject(request), roomId);
+      requestId = payload.requestId;
+      return this.enqueue(() => this.sendMessage(payload));
+    } catch (error) {
+      return errorResponse(error, requestId);
+    }
+  }
+
+  private enqueue(operation: () => Promise<Response>): Promise<Response> {
+    const run = this.queue.then(operation, operation);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async sendMessage(payload: ConversationSendRequest): Promise<Response> {
+    try {
+      const { message, metrics } = await sendMessageEnvelope(this.env, payload.auth, payload.roomId, payload.body, payload.requestId);
+      return json({ ok: true, message, metrics });
+    } catch (error) {
+      return errorResponse(error, payload.requestId);
+    }
+  }
 }
 
 export async function handleBackendFirstRoutes(
@@ -415,7 +473,7 @@ export async function handleBackendFirstRoutes(
       return json({ ok: true, messages: await listRoomMessages(env, auth, messagesMatch[1], url) });
     }
     if (request.method === "POST") {
-      const { message, metrics } = await sendMessageEnvelope(env, auth, messagesMatch[1], await readJsonObject(request), requestId);
+      const { message, metrics } = await sendMessageThroughConversationCoordinator(env, auth, messagesMatch[1], await readJsonObject(request), requestId);
       await audit(env, {
         actorAccountId: auth.account.account_id,
         action: "message.send",
@@ -1050,6 +1108,62 @@ async function acceptOwnershipTransfer(env: Env, auth: AuthContext, roomId: stri
   ]);
   await bumpRoom(env, roomId);
   return getOwnershipTransfer(env, transferId);
+}
+
+function parseConversationSendRequest(body: Record<string, unknown>, roomId: string): ConversationSendRequest {
+  const requestId = stringField(body, "requestId", { required: true, min: 4, max: 160 })!;
+  const auth = body.auth;
+  const messageBody = body.body;
+  if (!auth || typeof auth !== "object" || Array.isArray(auth)) {
+    throw new HttpError(400, "invalid_field", "Field must be an object: auth");
+  }
+  if (!messageBody || typeof messageBody !== "object" || Array.isArray(messageBody)) {
+    throw new HttpError(400, "invalid_field", "Field must be an object: body");
+  }
+  return {
+    auth: auth as AuthContext,
+    roomId,
+    body: messageBody as Record<string, unknown>,
+    requestId
+  };
+}
+
+async function sendMessageThroughConversationCoordinator(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  body: Record<string, unknown>,
+  requestId: string
+): Promise<SendMessageResult> {
+  const startedAt = performance.now();
+  const coordinatorId = env.CONVERSATION_COORDINATOR.idFromName(roomId);
+  const coordinator = env.CONVERSATION_COORDINATOR.get(coordinatorId);
+  const response = await coordinator.fetch(`https://voyager-conversation.local/rooms/${encodeURIComponent(roomId)}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ auth, body, requestId })
+  });
+  const conversationDoMs = durationSince(startedAt);
+  const payload = (await response.json().catch(() => null)) as ConversationSendResponse | null;
+
+  if (!payload || payload.ok !== true) {
+    const errorPayload = payload && payload.ok === false ? payload : null;
+    throw new HttpError(
+      response.status || 500,
+      errorPayload?.error ?? "conversation_do_error",
+      errorPayload?.message ?? "Conversation coordinator failed",
+      errorPayload?.details
+    );
+  }
+
+  return {
+    message: payload.message,
+    metrics: {
+      ...payload.metrics,
+      conversationDoMs,
+      totalMs: conversationDoMs
+    }
+  };
 }
 
 async function sendMessageEnvelope(
@@ -2296,13 +2410,14 @@ function nextCursor(resultCount: number, page: PageParams): string | null {
 
 function sendMessageTimingHeaders(metrics: SendMessageMetrics): Record<string, string> {
   return {
-    "server-timing": [
-      `message;dur=${metrics.totalMs}`,
-      `context;dur=${metrics.contextMs}`,
-      `insert;dur=${metrics.insertMs}`,
-      `postwrite;dur=${metrics.postWriteMs}`,
-      `realtime;dur=${metrics.realtimeMs}`
-    ].join(", ")
+    "server-timing": serverTimingHeader([
+      ["message", metrics.totalMs],
+      ["conversationDo", metrics.conversationDoMs],
+      ["context", metrics.contextMs],
+      ["insert", metrics.insertMs],
+      ["postwrite", metrics.postWriteMs],
+      ["realtime", metrics.realtimeMs]
+    ])
   };
 }
 

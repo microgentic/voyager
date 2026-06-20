@@ -17,17 +17,18 @@ The important boundary is that realtime is **not** a second message store and do
 
 This follows the master-plan direction: WebSockets provide the foreground realtime experience, while HTTP sync remains the recovery and source-of-truth path. Push notifications remain future wake-up infrastructure only.
 
-This is intentionally the **foreground mailbox/session layer**, not the full master-plan Conversation Durable Object architecture. Conversation-level Durable Objects for message sequencing, idempotency, membership mutation serialization, and D1/DO reconciliation remain future architecture work. Current sequencing and idempotency still happen through the existing D1-backed message path.
+This is intentionally the **foreground mailbox/session layer**, not the read source or message store. Conversation-level Durable Objects now coordinate message-send ordering per room, while membership mutation serialization and D1/DO reconciliation remain follow-up architecture work. D1 remains authoritative for message content, sync, and recovery.
 
 ## 2. Backend Implementation
 
 - `wrangler.jsonc` binds `REALTIME_MAILBOX` to `RealtimeMailbox` and declares the Durable Object migration `v1-realtime-mailbox`.
+- `wrangler.jsonc` also binds `CONVERSATION_COORDINATOR` to `ConversationCoordinator` for per-room message-write coordination.
 - `src/realtime.ts` owns the realtime layer:
   - `RealtimeMailbox` accepts hibernating WebSockets per account.
   - `handleRealtimeConnect()` routes an authenticated account to its mailbox.
   - `notifyRoomRealtime()` resolves active room account memberships and fan-outs an event to each non-null account mailbox.
 - `src/index.ts` exposes `GET /v1/realtime` as a WebSocket upgrade endpoint.
-- `src/backend.ts` emits a `room.message` realtime event only after message insert, delivery receipt creation, attachment reference updates, and room bump succeed.
+- `src/backend.ts` routes `POST /v1/rooms/{roomId}/messages` through the room's `ConversationCoordinator`, then emits a `room.message` realtime event only after message insert, delivery receipt creation, attachment reference updates, and room bump succeed.
 - Idempotent duplicate message sends return the existing message. Same-room duplicates also re-emit a lightweight realtime hint so a sender retry can recover if the first hint failed after the durable write.
 
 ## 3. Realtime Contract
@@ -119,6 +120,6 @@ The local backend smoke now opens authenticated WebSockets, waits for the `ready
 ## 7. Remaining Work
 
 - Add more event types as backend workflows need them, for example `room.membership`, `room.invitation`, `delivery.receipt`, or `typing` if those features become product requirements.
-- Add Conversation Durable Objects when the project is ready to move message sequencing, idempotency, membership mutation serialization, and D1/DO reconciliation into the full master-plan architecture.
+- Extend Conversation Durable Objects to membership mutation serialization and D1/DO reconciliation when the project is ready for the next architecture pass.
 - Keep APNs/FCM push deferred. When implemented, push should wake sleeping devices to run sync; it should not become the source of truth.
 - Keep local encrypted history, MLS state, and device private-key proof as future security-layer work.

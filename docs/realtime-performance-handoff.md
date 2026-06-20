@@ -11,9 +11,9 @@ Related docs:
 
 ## 1. What This PR Optimizes
 
-This pass keeps the current architecture: D1 remains the authoritative message store, Durable Objects remain foreground WebSocket event mailboxes, and HTTP sync remains the recovery path.
+This pass kept the then-current architecture: D1 remained the authoritative message store, Durable Objects remained foreground WebSocket event mailboxes, and HTTP sync remained the recovery path.
 
-The goal is to reduce perceived web-to-web message latency without introducing Conversation Durable Object sequencing yet.
+The goal was to reduce perceived web-to-web message latency without introducing Conversation Durable Object sequencing in that performance PR. Conversation DO message-send coordination was added later as a correctness-oriented follow-up.
 
 ## 2. Backend Send Path Changes
 
@@ -63,9 +63,9 @@ The client now:
 
 ## 5. What This Does Not Do
 
-This PR does **not** implement Conversation Durable Object sequencing, idempotency ownership, membership mutation serialization, or D1/DO reconciliation.
+This PR did **not** implement Conversation Durable Object sequencing, idempotency ownership, membership mutation serialization, or D1/DO reconciliation.
 
-That remains a separate architecture follow-up. The current measurements showed that the existing D1 path had obvious sequential work to remove first, so adding Conversation Durable Objects here would have been premature.
+That was left as a separate architecture follow-up because the measurements showed that the existing D1 path had obvious sequential work to remove first.
 
 ## 6. Verification
 
