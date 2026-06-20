@@ -1,6 +1,6 @@
 # Conversation Durable Object Implementation Plan
 
-Status: PR 2 implemented in this branch - room and membership mutation serialization
+Status: PR 3 implemented in this branch - recovery, observability, and smoke hardening
 
 ## Summary
 
@@ -110,15 +110,15 @@ This PR routes membership-sensitive room mutations through the same per-room coo
 
 ## PR 3: Recovery, Reconciliation, Observability, And Smoke Hardening
 
-This PR will harden operational behavior after write coordination is in place.
+This PR hardens operational behavior after write coordination is in place.
 
-### Planned Scope
+### Implementation Scope
 
 - Add recovery and retry coverage:
-  - duplicate idempotency retry after DO restart still returns the existing message;
+  - duplicate idempotency retry returns the existing D1 message and does not depend on Durable Object memory;
   - concurrent sends produce unique, contiguous per-room `serverSequence`;
-  - failed realtime hint does not roll back a durable D1 message write;
-  - D1 reads remain sufficient for client recovery after any DO failure.
+  - failed realtime hints are best-effort and do not roll back a durable D1 message write;
+  - D1 room/message reads and `/v1/sync` remain sufficient for client recovery after missed realtime events or coordinator restart.
 - Add observability:
   - structured logs for Conversation DO message and mutation timing;
   - minimal development-safe identifiers;
@@ -132,6 +132,7 @@ This PR will harden operational behavior after write coordination is in place.
   - deploys require Wrangler Durable Object binding and migration before Worker code uses the class;
   - remote post-deploy smoke is the first deployed guard;
   - Conversation DO is write coordination, not the client read source.
+  - the current coordinator stores no separate room state, so reconciliation means proving D1 remains authoritative rather than syncing a second durable store.
 
 ### PR 3 Tests
 

@@ -68,7 +68,8 @@ The backend is designed to let development proceed without app stores, push prov
 - Admin endpoints are role-gated; `platform_owner` satisfies all admin role checks.
 - The UI may open `GET /v1/realtime` for foreground near-realtime events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
 - Realtime WebSockets use `POST /v1/realtime/token` to mint a short-lived one-use socket token; clients pass that token as the WebSocket subprotocol instead of the long-lived session token.
-- Conversation-level Durable Objects now coordinate message-send sequencing, idempotency, and room/membership mutations per room. D1/DO reconciliation remains future hardening work.
+- Conversation-level Durable Objects now coordinate message-send sequencing, idempotency, and room/membership mutations per room. The coordinator stores no second durable room state; D1 remains the recovery and reconciliation source.
+- Conversation-routed writes expose `Server-Timing` metrics for the Durable Object hop, queue wait, and operation time. The Worker also logs `conversation.do.message` and `conversation.do.mutation` entries with request id, room id, operation/result, and timings.
 
 ## 5. Important Endpoint Groups
 
@@ -149,6 +150,6 @@ npm run check
 npm run smoke:backend:local
 ```
 
-The smoke path runs in GitHub PR checks and covers bootstrap, invitation one-time use, login with device reuse, password change, credential reset token revocation/reuse failure, suspended reset protection, key packages, direct-room cardinality, group initial-member rejection, human invitation enforcement, room invitations, messages, Conversation Durable Object message sequencing, Durable Object realtime event hints, sync, acknowledgements, attachments, sidebar collections, agent requests, lower-admin versus admin-account failures, lower-admin normal-account administration, cross-account device revoke failure, admin listing, permission failure, cleanup, and maintenance history.
+The smoke path runs in GitHub PR checks and covers bootstrap, invitation one-time use, login with device reuse, password change, credential reset token revocation/reuse failure, suspended reset protection, key packages, direct-room cardinality, group initial-member rejection, human invitation enforcement, room invitations, messages, Conversation Durable Object message sequencing and mutation serialization, Conversation DO timing headers, Durable Object realtime event hints, sync, acknowledgements, attachments, sidebar collections, agent requests, lower-admin versus admin-account failures, lower-admin normal-account administration, cross-account device revoke failure, admin listing, permission failure, cleanup, and maintenance history.
 
-On `main` deploys, the Worker workflow also runs `npm run smoke:backend:remote` after remote D1 migrations and Worker deployment. That smoke verifies the deployed dev Worker with seeded disposable accounts, including `/v1/app/bootstrap`, short-lived realtime socket tokens, WebSocket `room.message` delivery, and HTTP recovery reads.
+On `main` deploys, the Worker workflow also runs `npm run smoke:backend:remote` after remote D1 migrations and Worker deployment. That smoke verifies the deployed dev Worker with seeded disposable accounts, including `/v1/app/bootstrap`, short-lived realtime socket tokens, WebSocket `room.message` delivery, idempotent retry, Conversation DO timing headers, and HTTP recovery reads.

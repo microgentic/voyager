@@ -65,5 +65,5 @@ Login timing reports password verification, device/session creation, audit, and 
 Do not treat this as the final global performance architecture. Remaining candidates are deliberately separate:
 
 - D1 read replication after duplicate reads and unnecessary auth writes stay reduced.
-- Conversation Durable Object recovery/reconciliation hardening, not startup speed.
+- Future durable outbox/reconciliation work if Conversation DOs gain separate durable state or side-effect queues, not startup speed.
 - Password-hash/passkey strategy review only after login timing data is collected; do not lower PBKDF2 cost as a quick speed fix.
