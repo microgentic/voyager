@@ -675,7 +675,7 @@ for (const metric of ["bootstrap;dur=", "auth;dur=", "read;dur=", "rooms;dur=", 
 }
 const bootstrap = bootstrapResult.payload.bootstrap;
 if (bootstrap.account.accountId !== login.account.accountId) throw new Error("bootstrap identity did not match logged-in account");
-if (!bootstrap.roles || !Array.isArray(bootstrap.rooms) || !Array.isArray(bootstrap.pendingMessages)) {
+if (!Array.isArray(bootstrap.roles) || !Array.isArray(bootstrap.rooms) || !Array.isArray(bootstrap.pendingMessages)) {
   throw new Error("bootstrap response shape is invalid");
 }
 if (!bootstrap.rooms.some((room) => Array.isArray(room.members) && room.members.length > 0)) {

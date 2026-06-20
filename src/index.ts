@@ -730,6 +730,7 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
     vary: "Origin",
     "access-control-allow-methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
     "access-control-allow-headers": "authorization, content-type, x-bootstrap-token",
+    "access-control-expose-headers": "Server-Timing",
     "access-control-max-age": "86400"
   };
 }
