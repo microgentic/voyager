@@ -9,7 +9,7 @@
 
 	const PANE_WIDTH_KEY = 'voyager.conversationListWidth';
 	const DEFAULT_PANE_WIDTH = 380;
-	const MIN_PANE_WIDTH = 300;
+	const MIN_PANE_WIDTH = 240;
 	const MAX_PANE_WIDTH = 560;
 
 	let splitShell: HTMLDivElement | null = $state(null);
