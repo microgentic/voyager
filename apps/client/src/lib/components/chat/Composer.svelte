@@ -89,7 +89,12 @@
 		} finally {
 			sending = false;
 			textareaEl?.focus();
+			notifyComposerFocus();
 		}
+	}
+
+	function notifyComposerFocus(): void {
+		document.dispatchEvent(new CustomEvent('voyager:composer-focus'));
 	}
 
 	function onKeydown(event: KeyboardEvent): void {
@@ -164,6 +169,8 @@
 				<Textarea
 					bind:el={textareaEl}
 					bind:value={text}
+					onfocus={notifyComposerFocus}
+					onpointerdown={notifyComposerFocus}
 					onkeydown={onKeydown}
 					maxRows={6}
 					class="min-w-0"
@@ -173,6 +180,7 @@
 			</div>
 
 			<button
+				onpointerdown={(event) => event.preventDefault()}
 				onclick={send}
 				disabled={!ready || sending || uploading}
 				class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground transition enabled:hover:bg-primary-hover disabled:opacity-40 enabled:active:scale-95 sm:h-10 sm:w-10"

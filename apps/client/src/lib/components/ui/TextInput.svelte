@@ -7,6 +7,7 @@
 		value?: string;
 		class?: string;
 		invalid?: boolean;
+		el?: HTMLInputElement;
 		leading?: Snippet;
 		trailing?: Snippet;
 	}
@@ -15,6 +16,7 @@
 		value = $bindable(''),
 		class: className,
 		invalid = false,
+		el = $bindable(),
 		leading,
 		trailing,
 		...rest
@@ -28,6 +30,7 @@
 		</span>
 	{/if}
 	<input
+		bind:this={el}
 		bind:value
 		class={cn(
 			'h-11 w-full rounded-xl border bg-surface px-3.5 text-[15px] text-foreground outline-none transition placeholder:text-faint focus:ring-4',

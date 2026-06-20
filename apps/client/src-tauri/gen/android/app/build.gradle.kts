@@ -37,6 +37,10 @@ android {
             }
         }
         getByName("release") {
+            // Manual testing only: sign local release APKs with the Android debug key
+            // so `tauri android build --apk --target aarch64` can be sideloaded.
+            // Store/production builds must replace this with protected release signing.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

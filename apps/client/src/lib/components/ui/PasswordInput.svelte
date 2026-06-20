@@ -17,9 +17,19 @@
 	} = $props();
 
 	let show = $state(false);
+	let inputEl = $state<HTMLInputElement>();
+
+	function toggleVisibility(): void {
+		const hadFocus = document.activeElement === inputEl;
+		show = !show;
+		if (hadFocus) {
+			requestAnimationFrame(() => inputEl?.focus({ preventScroll: true }));
+		}
+	}
 </script>
 
 <TextInput
+	bind:el={inputEl}
 	bind:value
 	{id}
 	type={show ? 'text' : 'password'}
@@ -34,7 +44,8 @@
 		<button
 			type="button"
 			tabindex="-1"
-			onclick={() => (show = !show)}
+			onpointerdown={(event) => event.preventDefault()}
+			onclick={toggleVisibility}
 			class="grid h-8 w-8 place-items-center rounded-lg text-faint transition hover:text-foreground"
 			aria-label={show ? 'Hide password' : 'Show password'}
 		>

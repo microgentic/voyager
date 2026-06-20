@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { ArrowDown, Hand } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, rooms, type ChatMessage } from '$lib/stores';
@@ -52,6 +52,7 @@
 	let atBottom = $state(true);
 	let prevCount = 0;
 	let prevRoom = '';
+	let bottomSettleTimers: number[] = [];
 
 	function onScroll(): void {
 		const el = scrollEl;
@@ -63,9 +64,65 @@
 		await tick();
 		const el = scrollEl;
 		if (!el) return;
-		el.scrollTo({ top: el.scrollHeight, behavior });
+		if (behavior === 'auto') {
+			el.scrollTop = el.scrollHeight;
+		} else {
+			el.scrollTo({ top: el.scrollHeight, behavior });
+		}
 		atBottom = true;
 	}
+
+	function clearBottomSettleTimers(): void {
+		for (const timer of bottomSettleTimers) window.clearTimeout(timer);
+		bottomSettleTimers = [];
+	}
+
+	function settleToBottom(): void {
+		clearBottomSettleTimers();
+		for (const delay of [0, 50, 120, 220, 360, 520, 760]) {
+			bottomSettleTimers.push(window.setTimeout(() => void toBottom('auto'), delay));
+		}
+	}
+
+	function inputHasFocus(): boolean {
+		const active = document.activeElement;
+		return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+	}
+
+	onMount(() => {
+		const viewport = window.visualViewport;
+		const viewportHeight = () => Math.min(viewport?.height ?? window.innerHeight, window.innerHeight);
+
+		let previousHeight = viewportHeight();
+		const keepLatestVisible = () => {
+			const height = viewportHeight();
+			const heightChanged = Math.abs(height - previousHeight) > 1;
+			previousHeight = height;
+			if (heightChanged && inputHasFocus()) settleToBottom();
+		};
+		const keepLatestVisibleAfterFocus = (event: FocusEvent | Event) => {
+			if (event.type === 'voyager:composer-focus') {
+				settleToBottom();
+				return;
+			}
+			const target = event.target;
+			if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) settleToBottom();
+		};
+
+		viewport?.addEventListener('resize', keepLatestVisible);
+		viewport?.addEventListener('scroll', keepLatestVisible);
+		window.addEventListener('resize', keepLatestVisible);
+		document.addEventListener('focusin', keepLatestVisibleAfterFocus);
+		document.addEventListener('voyager:composer-focus', keepLatestVisibleAfterFocus);
+		return () => {
+			clearBottomSettleTimers();
+			viewport?.removeEventListener('resize', keepLatestVisible);
+			viewport?.removeEventListener('scroll', keepLatestVisible);
+			window.removeEventListener('resize', keepLatestVisible);
+			document.removeEventListener('focusin', keepLatestVisibleAfterFocus);
+			document.removeEventListener('voyager:composer-focus', keepLatestVisibleAfterFocus);
+		};
+	});
 
 	$effect(() => {
 		const id = room.roomId;
@@ -89,11 +146,11 @@
 	});
 </script>
 
-<div class="relative min-h-0 flex-1">
+<div class="relative min-h-0 flex-1 select-none">
 	<div
 		bind:this={scrollEl}
 		onscroll={onScroll}
-		class="h-full overflow-y-auto overscroll-contain py-3"
+		class="h-full overflow-y-auto overscroll-contain py-3 select-none"
 	>
 		{#if loading}
 			<div class="grid h-full place-items-center"><Spinner class="text-primary" /></div>

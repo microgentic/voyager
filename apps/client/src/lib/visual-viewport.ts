@@ -11,7 +11,10 @@ export function bindVisualViewportVars(): () => void {
 		const top = Math.max(0, viewport?.offsetTop ?? 0);
 		const left = Math.max(0, viewport?.offsetLeft ?? 0);
 		const width = viewport?.width ?? window.innerWidth;
-		const height = viewport?.height ?? window.innerHeight;
+		const heightCandidates = [viewport?.height, window.innerHeight].filter(
+			(value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0
+		);
+		const height = heightCandidates.length > 0 ? Math.min(...heightCandidates) : window.innerHeight;
 
 		root.style.setProperty('--vv-top', `${top}px`);
 		root.style.setProperty('--vv-left', `${left}px`);
@@ -26,7 +29,7 @@ export function bindVisualViewportVars(): () => void {
 
 	function scheduleFocusSettle(): void {
 		schedule();
-		for (const delay of [50, 150, 300]) {
+		for (const delay of [50, 150, 300, 500, 800]) {
 			timers.push(window.setTimeout(schedule, delay));
 		}
 	}

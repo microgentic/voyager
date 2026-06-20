@@ -16,7 +16,7 @@ Related docs:
 - The **hardware back button** navigates the in-app history (thread → conversation list) and exits at the root — see Implementation Notes.
 - Status bar + gesture-nav insets are respected (edge-to-edge `MainActivity` + the shared safe-area CSS).
 - The Android device registers with the backend as `platform = android`, label `Mobile app · Android` (shared `platform.ts` logic the iOS pass added).
-- A sideloadable **debug APK** (arm64) is produced for a physical phone; it targets the deployed Worker and connects with working CORS (a deployed-Worker sign-in returns a real auth response, confirming connectivity).
+- Sideloadable **debug and local manual-test release APKs** (arm64) are produced for a physical phone; they target the deployed Worker and connect with working CORS (a deployed-Worker sign-in returns a real auth response, confirming connectivity).
 
 ## 2. Implementation Notes
 
@@ -27,6 +27,7 @@ Related docs:
 - **Inherited iOS fixes apply on Android too:** 16px touch inputs (no focus-zoom), VisualViewport-bound app shell, tightened composer, narrow-width bubble constraints.
 - **Toolchain:** JDK 17 (Temurin), Android SDK at `~/Library/Android/sdk`, **NDK r27.3.13750724**, CMake 3.22.1, `cmdline-tools;latest`, platform `android-36`. Env vars are in `~/.zshrc` (`ANDROID_HOME`, `NDK_HOME`, `JAVA_HOME`, PATH). Rust targets: `aarch64/armv7/i686/x86_64-linux-android`.
 - **Binary size:** `[profile.dev] strip = "debuginfo"` in `src-tauri/Cargo.toml` keeps the debug `.so` (and thus the sideload APK) small without affecting release.
+- **Manual release signing:** Local release APKs reuse Android's debug signing config only so `npm run tauri -- android build --apk --target aarch64` can be installed on a physical test device. This is not production/store signing.
 
 ## 3. Verified Commands
 
@@ -70,7 +71,17 @@ Install on the phone — either path:
 - **Cable (adb):** enable **Developer options** (Settings → About phone → tap *Build number* 7×) and **USB debugging**, connect the phone, then `adb install -r app-universal-debug.apk`.
 - **No cable:** copy the `.apk` to the phone (USB file transfer, Drive, email…), tap it in **Files**, and allow **"Install unknown apps"** for the installer when prompted.
 
-It is a **debug** APK (debug-signed, installs without a keystore). A Play Store / production build needs a release keystore (deferred — see §6).
+It is a **debug** APK (debug-signed, installs without a keystore).
+
+Build the local manual-test release APK:
+
+```bash
+cd apps/client
+npm run tauri -- android build --apk --target aarch64
+# → src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+```
+
+This release APK is signed with the local Android debug key for sideload testing only. A Play Store / production build still needs a protected release keystore (deferred — see §6).
 
 ## 5. Giving the phone an account to sign into
 
@@ -105,6 +116,6 @@ Keep the phone on the same Wi-Fi as the Mac; sign in with the demo credentials. 
 
 ## 6. Remaining Mobile Work
 
-- External dependencies remain deferred: FCM push, Play Store, **release signing/keystore**, billing, hosted AI runtimes, encrypted cloud backups, production updater.
+- External dependencies remain deferred: FCM push, Play Store, **production release signing/keystore**, billing, hosted AI runtimes, encrypted cloud backups, production updater.
 - Native security work remains future scope: MLS/OpenMLS, local encrypted history, secure storage, biometric unlock, device-bound proof.
 - Native polish remains future scope: swipe-back gesture, pull-to-refresh, haptics, deep links, share sheets, camera/file picker, and virtualized long-history timelines.

@@ -1,13 +1,40 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import DesktopTitlebar from '$lib/components/shell/DesktopTitlebar.svelte';
 
 	let { children } = $props();
+
+	onMount(() => {
+		const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+		let timers: number[] = [];
+
+		function settleFocusedField(event: FocusEvent): void {
+			if (!isCoarsePointer) return;
+			const target = event.target;
+			if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
+
+			for (const delay of [80, 200, 360, 560]) {
+				timers.push(
+					window.setTimeout(() => {
+						if (target.isConnected) target.scrollIntoView({ block: 'center', inline: 'nearest' });
+					}, delay)
+				);
+			}
+		}
+
+		document.addEventListener('focusin', settleFocusedField);
+		return () => {
+			document.removeEventListener('focusin', settleFocusedField);
+			for (const timer of timers) window.clearTimeout(timer);
+			timers = [];
+		};
+	});
 </script>
 
-<div class="flex min-h-dvh flex-col bg-background">
+<div class="flex h-[var(--vv-height)] min-h-0 flex-col overflow-hidden bg-background">
 	<DesktopTitlebar />
 	<div
-		class="relative grid min-h-0 flex-1 place-items-center overflow-hidden px-5 py-10 pt-[calc(var(--sat)+2.5rem)] pb-[calc(var(--sab)+2.5rem)]"
+		class="relative flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-5 py-6 pt-[calc(var(--sat)+1.5rem)] pb-[calc(var(--sab)+1.5rem)] sm:py-10 sm:pt-[calc(var(--sat)+2.5rem)] sm:pb-[calc(var(--sab)+2.5rem)]"
 	>
 		<!-- Aurora backdrop -->
 		<div class="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
@@ -20,7 +47,7 @@
 			></div>
 		</div>
 
-		<div class="w-full max-w-sm">
+		<div class="my-auto w-full max-w-sm">
 			<div class="mb-7 flex flex-col items-center text-center">
 				<img src="/favicon.svg" alt="Voyager" class="h-14 w-14 rounded-[18px] shadow-lg" />
 				<h1 class="mt-3 text-xl font-semibold tracking-tight text-foreground">Voyager</h1>
