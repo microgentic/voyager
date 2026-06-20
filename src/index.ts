@@ -30,13 +30,13 @@ import {
   setAccountStatus,
   updateAccountPolicy
 } from "./db";
-import { handleBackendFirstRoutes } from "./backend";
+import { ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import { handleRealtimeConnect, REALTIME_PROTOCOL, RealtimeMailbox } from "./realtime";
 import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow } from "./types";
 
-export { RealtimeMailbox };
+export { ConversationCoordinator, RealtimeMailbox };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_TEST_DEVICE_LABEL_MATCHERS = [

@@ -4,7 +4,7 @@ Status: current `/v1` contract after the startup/read-path optimization pass
 
 ## Purpose
 
-This document is the canonical contract reference for Voyager clients and future agents. It describes the API that is implemented today. It does not redesign routes, rename fields, change authentication, or introduce the future Conversation Durable Object, MLS, push, billing, or production agent-runtime architecture.
+This document is the canonical contract reference for Voyager clients and future agents. It describes the API that is implemented today. It does not redesign routes, rename fields, change authentication, or introduce MLS, push, billing, or production agent-runtime architecture.
 
 The current contract is intentionally additive-first:
 
@@ -453,7 +453,7 @@ Those assertions cover common error payloads, auth results, bootstrap, sync, roo
 
 The following are deliberately outside this freeze:
 
-- Conversation Durable Object sequencing and mutation serialization.
+- Conversation Durable Object membership mutation serialization and deeper D1/DO reconciliation.
 - MLS/E2EE wire payload semantics beyond opaque transport fields.
 - Push notification provider contracts.
 - Production hosted AI agent runtime APIs.

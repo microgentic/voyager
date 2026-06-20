@@ -13,6 +13,10 @@
       {
         "name": "REALTIME_MAILBOX",
         "class_name": "RealtimeMailbox"
+      },
+      {
+        "name": "CONVERSATION_COORDINATOR",
+        "class_name": "ConversationCoordinator"
       }
     ]
   },
@@ -20,6 +24,10 @@
     {
       "tag": "v1-realtime-mailbox",
       "new_sqlite_classes": ["RealtimeMailbox"]
+    },
+    {
+      "tag": "v2-conversation-coordinator",
+      "new_sqlite_classes": ["ConversationCoordinator"]
     }
   ],
   "d1_databases": [

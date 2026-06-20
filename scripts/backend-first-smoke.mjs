@@ -728,7 +728,7 @@ if (!directMessageResult.response.ok) {
   throw new Error(`POST direct message failed ${directMessageResult.response.status}: ${JSON.stringify(directMessageResult.payload)}`);
 }
 const directTiming = directMessageResult.response.headers.get("server-timing") ?? "";
-if (!directTiming.includes("message;dur=") || !directTiming.includes("realtime;dur=")) {
+if (!directTiming.includes("message;dur=") || !directTiming.includes("conversationDo;dur=") || !directTiming.includes("realtime;dur=")) {
   throw new Error(`message send did not include server timing metrics: ${directTiming}`);
 }
 const directMessage = directMessageResult.payload;
@@ -755,6 +755,56 @@ if (realtimeEvent.senderDeviceId !== owner.device.deviceId) {
   throw new Error("realtime event did not reference the sender device");
 }
 await expectRealtimeConnectFailure(realtimeToken.realtimeToken);
+
+const duplicatePayload = {
+  idempotencyKey: `dup-${suffix}`,
+  protocolType: "opaque-test",
+  ciphertext: "encrypted-duplicate-smoke-payload"
+};
+const firstDuplicate = await api(`/v1/rooms/${direct.room.roomId}/messages`, {
+  method: "POST",
+  headers: userHeaders,
+  json: duplicatePayload
+});
+assertMessageResponse(firstDuplicate, "POST /v1/rooms/{roomId}/messages duplicate first");
+const secondDuplicate = await api(`/v1/rooms/${direct.room.roomId}/messages`, {
+  method: "POST",
+  headers: userHeaders,
+  json: duplicatePayload
+});
+assertMessageResponse(secondDuplicate, "POST /v1/rooms/{roomId}/messages duplicate retry");
+if (secondDuplicate.message.envelopeId !== firstDuplicate.message.envelopeId) {
+  throw new Error("duplicate idempotency retry returned a different message envelope");
+}
+if (secondDuplicate.message.serverSequence !== firstDuplicate.message.serverSequence) {
+  throw new Error("duplicate idempotency retry returned a different server sequence");
+}
+
+const concurrentMessages = await Promise.all(
+  Array.from({ length: 6 }, (_, index) =>
+    api(`/v1/rooms/${direct.room.roomId}/messages`, {
+      method: "POST",
+      headers: userHeaders,
+      json: {
+        idempotencyKey: `concurrent-${index}-${suffix}`,
+        protocolType: "opaque-test",
+        ciphertext: `encrypted-concurrent-smoke-payload-${index}`
+      }
+    })
+  )
+);
+for (const [index, message] of concurrentMessages.entries()) {
+  assertMessageResponse(message, `POST /v1/rooms/{roomId}/messages concurrent ${index}`);
+}
+const concurrentSequences = concurrentMessages.map((result) => result.message.serverSequence).sort((left, right) => left - right);
+if (new Set(concurrentSequences).size !== concurrentSequences.length) {
+  throw new Error(`concurrent sends did not produce unique server sequences: ${concurrentSequences.join(", ")}`);
+}
+for (let index = 1; index < concurrentSequences.length; index += 1) {
+  if (concurrentSequences[index] !== concurrentSequences[index - 1] + 1) {
+    throw new Error(`concurrent sends did not produce contiguous server sequences: ${concurrentSequences.join(", ")}`);
+  }
+}
 
 const synced = await api("/v1/sync", { headers: userHeaders });
 assertSyncResponse(synced, "GET /v1/sync");
