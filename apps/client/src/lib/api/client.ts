@@ -17,6 +17,7 @@ import type {
 	OwnershipTransfer,
 	Paginated,
 	Principal,
+	RealtimeTokenResult,
 	Room,
 	RoomInvitation,
 	RoomInvitationRole,
@@ -50,12 +51,13 @@ export class VoyagerClient {
 		this.token = token;
 	}
 
-	openRealtimeSocket(): WebSocket | null {
+	async openRealtimeSocket(): Promise<WebSocket | null> {
 		if (!this.token || typeof WebSocket === 'undefined') return null;
+		const { realtimeToken } = await this.createRealtimeToken();
 		const origin = getApiBase() || (typeof location !== 'undefined' ? location.origin : 'http://localhost');
 		const url = new URL('/v1/realtime', origin);
 		url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-		return new WebSocket(url, [REALTIME_PROTOCOL, this.token]);
+		return new WebSocket(url, [REALTIME_PROTOCOL, realtimeToken]);
 	}
 
 	private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -172,6 +174,11 @@ export class VoyagerClient {
 
 	logout(): Promise<{ ok: true }> {
 		return this.request('POST', '/v1/auth/logout');
+	}
+
+	async createRealtimeToken(): Promise<RealtimeTokenResult> {
+		const res = await this.request<RealtimeTokenResult & { ok: true }>('POST', '/v1/realtime/token');
+		return { realtimeToken: res.realtimeToken, expiresAt: res.expiresAt };
 	}
 
 	changePassword(currentPassword: string, newPassword: string): Promise<{ ok: true }> {

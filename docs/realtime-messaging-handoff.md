@@ -40,14 +40,14 @@ GET /v1/realtime
 
 Authentication:
 
-- Non-browser clients may use `Authorization: Bearer <sessionToken>`.
-- Browser/WebView clients authenticate through WebSocket subprotocols because the browser WebSocket API cannot set custom headers:
+- Clients first mint a short-lived one-use socket token with `POST /v1/realtime/token` using the normal Bearer session.
+- Browser/WebView clients pass that realtime token through WebSocket subprotocols because the browser WebSocket API cannot set custom headers:
 
 ```ts
-new WebSocket(url, ["voyager.realtime.v1", sessionToken])
+new WebSocket(url, ["voyager.realtime.v1", realtimeToken])
 ```
 
-This is acceptable for the current development contract, but production hardening should replace long-lived session-token socket auth with a short-lived realtime token, for example `POST /v1/realtime/token` followed by a one-use or renewable WebSocket token.
+Realtime tokens are stored hashed in D1, expire quickly, and are consumed when the socket is opened. Reconnects must request a fresh token. Revoked sessions, expired sessions, inactive accounts, and revoked devices cannot mint or consume realtime tokens. Token minting is rate-limited per account/device, and token expiration is checked at socket open; an already-open socket may remain connected after the token's `expiresAt`.
 
 Server-selected protocol:
 
@@ -120,6 +120,5 @@ The local backend smoke now opens authenticated WebSockets, waits for the `ready
 
 - Add more event types as backend workflows need them, for example `room.membership`, `room.invitation`, `delivery.receipt`, or `typing` if those features become product requirements.
 - Add Conversation Durable Objects when the project is ready to move message sequencing, idempotency, membership mutation serialization, and D1/DO reconciliation into the full master-plan architecture.
-- Add short-lived realtime socket tokens so long-lived session tokens do not need to travel in WebSocket subprotocol headers.
 - Keep APNs/FCM push deferred. When implemented, push should wake sleeping devices to run sync; it should not become the source of truth.
 - Keep local encrypted history, MLS state, and device private-key proof as future security-layer work.

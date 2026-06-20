@@ -76,9 +76,10 @@ One layout adapts by viewport (`ui.isWide`, ≥ 900px):
 
 ### State + sync
 
-Runes-based class stores. `realtime.svelte.ts` opens `GET /v1/realtime` as a
-Durable Object WebSocket and receives lightweight `room.message` hints. Those
-hints call `sync.pokeNow()`; `sync.svelte.ts` still polls `GET /v1/sync` as the
+Runes-based class stores. `realtime.svelte.ts` mints a short-lived token with
+`POST /v1/realtime/token`, opens `GET /v1/realtime` as a Durable Object
+WebSocket, and receives lightweight `room.message` hints. Those hints call
+`sync.pokeNow()`; `sync.svelte.ts` still polls `GET /v1/sync` as the
 source-of-truth and recovery path, then pulls new messages for the open room.
 Sends are optimistic (`sending → sent/failed`, with retry) and reconciled by
 `idempotencyKey`. Unread is derived from a per-room last-read sequence; opening

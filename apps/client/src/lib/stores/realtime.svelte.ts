@@ -33,7 +33,7 @@ class RealtimeStore {
 	start(): void {
 		if (this.active) return;
 		this.active = true;
-		this.connect();
+		void this.connect();
 	}
 
 	stop(): void {
@@ -52,16 +52,30 @@ class RealtimeStore {
 		}
 	}
 
-	private connect(): void {
+	private async connect(): Promise<void> {
 		if (!this.active || auth.status !== 'authed' || this.socket) return;
-		const socket = api.openRealtimeSocket();
+		this.state = 'connecting';
+		this.lastError = null;
+
+		let socket: WebSocket | null;
+		try {
+			socket = await api.openRealtimeSocket();
+		} catch (error) {
+			this.lastError = (error as Error)?.message ?? 'Realtime token request failed';
+			if (!this.active || auth.status !== 'authed') return;
+			this.scheduleReconnect();
+			return;
+		}
+
+		if (!this.active || auth.status !== 'authed') {
+			socket?.close(1000, 'client_stop');
+			return;
+		}
 		if (!socket) {
 			this.scheduleReconnect();
 			return;
 		}
 
-		this.state = 'connecting';
-		this.lastError = null;
 		this.socket = socket;
 
 		socket.onopen = () => {
@@ -132,7 +146,7 @@ class RealtimeStore {
 		this.attempts += 1;
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
-			this.connect();
+			void this.connect();
 		}, delay);
 	}
 

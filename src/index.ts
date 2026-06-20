@@ -7,9 +7,11 @@ import {
   checkRateLimit,
   cleanupTestDevices,
   completeCredentialReset,
+  consumeRealtimeSocketToken,
   createDeviceForPrincipal,
   createCredentialReset,
   createInvitation,
+  createRealtimeSocketToken,
   getActiveAdminRoles,
   getAuditEvents,
   getAuthContext,
@@ -48,6 +50,8 @@ const DEFAULT_TEST_DEVICE_LABEL_MATCHERS = [
   "dev test"
 ];
 const DEFAULT_TEST_DEVICE_PLATFORM_MATCHERS = ["probe", "smoke", "test"];
+const REALTIME_TOKEN_LIMIT = 60;
+const REALTIME_TOKEN_WINDOW_SECONDS = 5 * 60;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -256,6 +260,19 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   const authStartedAt = performance.now();
   const auth = await getAuthContext(env, request);
   const authTimingMs = durationSince(authStartedAt);
+
+  if (url.pathname === "/v1/realtime/token") {
+    requireMethod(request, "POST");
+    await checkRateLimit(env, {
+      key: `realtime-token:${auth.account.account_id}:${auth.device.device_id}`,
+      action: "realtime-token",
+      limit: REALTIME_TOKEN_LIMIT,
+      windowSeconds: REALTIME_TOKEN_WINDOW_SECONDS
+    });
+    const token = await createRealtimeSocketToken(env, auth);
+    return json({ ok: true, realtimeToken: token.token, expiresAt: token.expiresAt });
+  }
+
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
   if (backendFirstResponse) {
     return backendFirstResponse;
@@ -681,9 +698,7 @@ async function getRealtimeAuthContext(env: Env, request: Request): Promise<AuthC
   if (!token) {
     throw new HttpError(401, "unauthorized", "Missing realtime token");
   }
-  const headers = new Headers(request.headers);
-  headers.set("authorization", `Bearer ${token}`);
-  return getAuthContext(env, new Request(request.url, { method: "GET", headers }));
+  return consumeRealtimeSocketToken(env, token);
 }
 
 function realtimeToken(request: Request): string | null {
