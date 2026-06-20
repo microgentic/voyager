@@ -42,6 +42,12 @@ class RoomsStore {
 		this.list = [...map.values()];
 	}
 
+	hydrate(nextRooms: Room[]): void {
+		this.list = nextRooms;
+		this.loaded = true;
+		this.loading = false;
+	}
+
 	upsert(room: Room): void {
 		this.merge([room]);
 	}

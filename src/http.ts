@@ -18,6 +18,19 @@ export interface RequestContext {
   auth?: AuthContext;
 }
 
+export type ServerTimingMetric = [name: string, durationMs: number | null | undefined];
+
+export function serverTimingHeader(metrics: ServerTimingMetric[]): string {
+  return metrics
+    .filter((metric): metric is [string, number] => typeof metric[1] === "number" && Number.isFinite(metric[1]))
+    .map(([name, durationMs]) => `${name.replace(/[^a-zA-Z0-9_-]/g, "")};dur=${roundDuration(durationMs)}`)
+    .join(", ");
+}
+
+export function roundDuration(durationMs: number): number {
+  return Math.round(durationMs * 100) / 100;
+}
+
 export function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json; charset=utf-8");

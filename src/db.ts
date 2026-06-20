@@ -5,6 +5,18 @@ import type { AccountRow, AuthContext, DeviceInput, DeviceRow, Env, PolicyRow, P
 const SESSION_DAYS = 30;
 const INVITATION_DAYS = 7;
 const CREDENTIAL_RESET_DAYS = 3;
+const AUTH_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+
+export interface LoginWithPasswordMetrics {
+  accountMs: number;
+  authenticatorMs: number;
+  passwordVerifyMs: number;
+  authenticatorTouchMs: number;
+  principalMs: number;
+  deviceMs: number;
+  sessionMs: number;
+  totalMs: number;
+}
 
 export interface CredentialResetResult {
   account: AccountRow;
@@ -123,10 +135,16 @@ export async function getAuthContext(env: Env, request: Request): Promise<AuthCo
 
   const roles = await getActiveAdminRoles(env, String(row.account_id));
 
-  await env.CONTROL_DB.batch([
-    env.CONTROL_DB.prepare("UPDATE sessions SET last_used_at = CURRENT_TIMESTAMP WHERE session_id = ?").bind(row.session_id),
-    env.CONTROL_DB.prepare("UPDATE devices SET last_seen_at = CURRENT_TIMESTAMP WHERE device_id = ?").bind(row.device_id)
-  ]);
+  const touchStatements: D1PreparedStatement[] = [];
+  if (authTimestampIsStale(nullableString(row.session_last_used_at))) {
+    touchStatements.push(env.CONTROL_DB.prepare("UPDATE sessions SET last_used_at = CURRENT_TIMESTAMP WHERE session_id = ?").bind(row.session_id));
+  }
+  if (authTimestampIsStale(nullableString(row.last_seen_at))) {
+    touchStatements.push(env.CONTROL_DB.prepare("UPDATE devices SET last_seen_at = CURRENT_TIMESTAMP WHERE device_id = ?").bind(row.device_id));
+  }
+  if (touchStatements.length) {
+    await env.CONTROL_DB.batch(touchStatements);
+  }
 
   return {
     account: {
@@ -372,13 +390,17 @@ export async function acceptInvitation(
 export async function loginWithPassword(
   env: Env,
   input: { email: string; password: string; device: DeviceInput }
-): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; sessionToken: string }> {
+): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; sessionToken: string; metrics: LoginWithPasswordMetrics }> {
+  const startedAt = performance.now();
+  const accountStartedAt = performance.now();
   const account = await env.CONTROL_DB.prepare("SELECT * FROM accounts WHERE lower(email) = lower(?)")
     .bind(input.email)
     .first<AccountRow>();
+  const accountMs = durationSince(accountStartedAt);
   if (!account || account.status !== "active") {
     throw new HttpError(401, "invalid_credentials", "Invalid credentials");
   }
+  const authenticatorStartedAt = performance.now();
   const authenticator = await env.CONTROL_DB.prepare(
     `SELECT authenticator_id, password_verifier
      FROM authenticators
@@ -388,19 +410,46 @@ export async function loginWithPassword(
   )
     .bind(account.account_id)
     .first<{ authenticator_id: string; password_verifier: string }>();
-  if (!authenticator || !(await verifyPassword(input.password, authenticator.password_verifier))) {
+  const authenticatorMs = durationSince(authenticatorStartedAt);
+  const passwordVerifyStartedAt = performance.now();
+  const passwordValid = authenticator ? await verifyPassword(input.password, authenticator.password_verifier) : false;
+  const passwordVerifyMs = durationSince(passwordVerifyStartedAt);
+  if (!authenticator || !passwordValid) {
     throw new HttpError(401, "invalid_credentials", "Invalid credentials");
   }
   if (!account.default_principal_id) {
     throw new HttpError(500, "missing_principal", "Account is missing its default principal");
   }
+  const authenticatorTouchStartedAt = performance.now();
   await env.CONTROL_DB.prepare("UPDATE authenticators SET last_used_at = CURRENT_TIMESTAMP WHERE authenticator_id = ?")
     .bind(authenticator.authenticator_id)
     .run();
+  const authenticatorTouchMs = durationSince(authenticatorTouchStartedAt);
+  const principalStartedAt = performance.now();
   const principal = await getPrincipal(env, account.default_principal_id);
+  const principalMs = durationSince(principalStartedAt);
+  const deviceStartedAt = performance.now();
   const device = await getOrCreateLoginDevice(env, account.account_id, principal.principal_id, input.device);
+  const deviceMs = durationSince(deviceStartedAt);
+  const sessionStartedAt = performance.now();
   const sessionToken = await createSession(env, account.account_id, device.device_id);
-  return { account, principal, device, sessionToken };
+  const sessionMs = durationSince(sessionStartedAt);
+  return {
+    account,
+    principal,
+    device,
+    sessionToken,
+    metrics: {
+      accountMs,
+      authenticatorMs,
+      passwordVerifyMs,
+      authenticatorTouchMs,
+      principalMs,
+      deviceMs,
+      sessionMs,
+      totalMs: durationSince(startedAt)
+    }
+  };
 }
 
 export async function changePassword(
@@ -1093,6 +1142,16 @@ async function count(env: Env, table: string, where?: string): Promise<number> {
 
 function nullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function authTimestampIsStale(value: string | null): boolean {
+  if (!value) return true;
+  const parsed = Date.parse(`${value.replace(" ", "T")}Z`);
+  return !Number.isFinite(parsed) || Date.now() - parsed >= AUTH_TOUCH_INTERVAL_MS;
+}
+
+function durationSince(startedAt: number): number {
+  return Math.round((performance.now() - startedAt) * 100) / 100;
 }
 
 function stringValue(value: unknown, fallback: string, max: number): string {

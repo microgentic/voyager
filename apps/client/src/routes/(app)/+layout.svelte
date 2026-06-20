@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { ui, rooms, principals, invitations, collections, sync, realtime } from '$lib/stores';
+	import { auth, ui, rooms, messages, principals, invitations, collections, sync, realtime } from '$lib/stores';
 	import DesktopTitlebar from '$lib/components/shell/DesktopTitlebar.svelte';
 	import NavRail from '$lib/components/nav/NavRail.svelte';
 	import TabBar from '$lib/components/nav/TabBar.svelte';
@@ -10,17 +10,32 @@
 	let { children } = $props();
 
 	onMount(() => {
-		void rooms.load();
-		void principals.load();
-		void invitations.load();
-		void collections.load();
-		sync.start();
+		const bootstrap = auth.consumeBootstrap();
+		if (bootstrap) {
+			rooms.hydrate(bootstrap.rooms);
+			void messages.ingest(bootstrap.pendingMessages);
+		}
+		sync.start({ immediate: !bootstrap });
 		realtime.start();
+		deferNonCriticalLoads();
 		return () => {
 			realtime.stop();
 			sync.stop();
 		};
 	});
+
+	function deferNonCriticalLoads(): void {
+		const load = () => {
+			void principals.load();
+			void invitations.load();
+			void collections.load();
+		};
+		if (typeof requestIdleCallback === 'function') {
+			requestIdleCallback(load, { timeout: 1000 });
+		} else {
+			setTimeout(load, 0);
+		}
+	}
 
 	// On mobile, a conversation thread takes the full screen (no tab bar).
 	const inThread = $derived(!!page.params.roomId);

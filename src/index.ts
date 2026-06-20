@@ -30,7 +30,7 @@ import {
 } from "./db";
 import { handleBackendFirstRoutes } from "./backend";
 import { randomId } from "./crypto";
-import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, stringField } from "./http";
+import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import { handleRealtimeConnect, REALTIME_PROTOCOL, RealtimeMailbox } from "./realtime";
 import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow } from "./types";
 
@@ -165,15 +165,19 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   }
 
   if (url.pathname === "/v1/auth/password/login") {
+    const routeStartedAt = performance.now();
     requireMethod(request, "POST");
     const body = await readJsonObject(request);
     const email = stringField(body, "email", { required: true, max: 254, pattern: EMAIL_PATTERN })!;
+    const rateLimitStartedAt = performance.now();
     await checkRateLimit(env, { key: `password-login:${email.toLowerCase()}:${clientIp(request)}`, action: "password-login", limit: 12, windowSeconds: 15 * 60 });
+    const rateLimitMs = durationSince(rateLimitStartedAt);
     const result = await loginWithPassword(env, {
       email,
       password: stringField(body, "password", { required: true, min: 1, max: 512 })!,
       device: optionalObject(body, "device") ?? {}
     });
+    const auditStartedAt = performance.now();
     await audit(env, {
       actorAccountId: result.account.account_id,
       action: "auth.password.login",
@@ -182,13 +186,32 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       requestId,
       result: "success"
     });
-    return json({
-      ok: true,
-      account: publicAccount(result.account),
-      principal: publicPrincipal(result.principal),
-      device: publicDevice(result.device),
-      sessionToken: result.sessionToken
-    });
+    const auditMs = durationSince(auditStartedAt);
+    return json(
+      {
+        ok: true,
+        account: publicAccount(result.account),
+        principal: publicPrincipal(result.principal),
+        device: publicDevice(result.device),
+        sessionToken: result.sessionToken
+      },
+      {
+        headers: {
+          "server-timing": serverTimingHeader([
+            ["login", durationSince(routeStartedAt)],
+            ["rateLimit", rateLimitMs],
+            ["account", result.metrics.accountMs],
+            ["authenticator", result.metrics.authenticatorMs],
+            ["passwordVerify", result.metrics.passwordVerifyMs],
+            ["authenticatorTouch", result.metrics.authenticatorTouchMs],
+            ["principal", result.metrics.principalMs],
+            ["device", result.metrics.deviceMs],
+            ["session", result.metrics.sessionMs],
+            ["audit", auditMs]
+          ])
+        }
+      }
+    );
   }
 
   if (url.pathname === "/v1/auth/password/reset/complete") {
@@ -230,15 +253,21 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return handleRealtimeConnect(request, env, auth);
   }
 
+  const authStartedAt = performance.now();
   const auth = await getAuthContext(env, request);
-  const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth);
+  const authTimingMs = durationSince(authStartedAt);
+  const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
   if (backendFirstResponse) {
     return backendFirstResponse;
   }
 
   if (url.pathname === "/v1/me") {
     requireMethod(request, "GET");
-    return json({ ok: true, account: publicAccount(auth.account), principal: publicPrincipal(auth.principal), device: publicDevice(auth.device), roles: auth.roles });
+    const startedAt = performance.now();
+    return json(
+      { ok: true, account: publicAccount(auth.account), principal: publicPrincipal(auth.principal), device: publicDevice(auth.device), roles: auth.roles },
+      { headers: readTimingHeaders("me", authTimingMs, startedAt) }
+    );
   }
 
   if (url.pathname === "/v1/auth/logout") {
@@ -632,6 +661,21 @@ function clientIp(request: Request): string {
   return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 }
 
+function readTimingHeaders(routeName: string, authMs: number, startedAt: number): Record<string, string> {
+  const readMs = durationSince(startedAt);
+  return {
+    "server-timing": serverTimingHeader([
+      [routeName, authMs + readMs],
+      ["auth", authMs],
+      ["read", readMs]
+    ])
+  };
+}
+
+function durationSince(startedAt: number): number {
+  return Math.round((performance.now() - startedAt) * 100) / 100;
+}
+
 async function getRealtimeAuthContext(env: Env, request: Request): Promise<AuthContext> {
   const token = realtimeToken(request);
   if (!token) {
@@ -686,6 +730,7 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
     vary: "Origin",
     "access-control-allow-methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
     "access-control-allow-headers": "authorization, content-type, x-bootstrap-token",
+    "access-control-expose-headers": "Server-Timing",
     "access-control-max-age": "86400"
   };
 }
