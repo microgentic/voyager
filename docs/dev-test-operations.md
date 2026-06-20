@@ -19,7 +19,7 @@ This pass adds operational tools for the current multi-client testing phase:
 - A compact realtime diagnostics view in Settings -> Advanced.
 - A remote post-deploy smoke script for the deployed dev Worker.
 
-It does not freeze the API contract. Conversation Durable Objects now coordinate message sends and room/membership mutations; recovery and reconciliation hardening remains future work.
+It does not freeze the API contract. Conversation Durable Objects now coordinate message sends and room/membership mutations; D1 remains the recovery and reconciliation source for the current stateless coordinator.
 
 ## 2. Test Device Cleanup
 
@@ -151,9 +151,9 @@ The smoke logs in with the disposable seeded accounts, verifies
 `/v1/app/bootstrap`, proves session tokens cannot directly open `/v1/realtime`,
 mints a short-lived realtime token, sends a direct message in an existing
 Ada/Grace room when available, waits for the exact matching `room.message`, then
-verifies HTTP recovery reads. It acknowledges the smoke message, archives only a
-fallback room it had to create, and revokes the temporary smoke devices when
-possible.
+verifies idempotent retry, Conversation DO timing headers, and HTTP recovery
+reads. It acknowledges the smoke message, archives only a fallback room it had
+to create, and revokes the temporary smoke devices when possible.
 
 Manual run:
 
@@ -199,4 +199,4 @@ reliably for inactive-window activation drags.
 
 1. Keep the remote post-deploy smoke green on `main`.
 2. Run the manual cross-client checklist above for each rebuilt client family.
-3. Continue Conversation Durable Object work with recovery/reconciliation hardening only after the current deployed smoke and foreground client behavior are stable.
+3. Add a durable outbox/reconciler only if future work introduces separate durable Conversation DO state, push jobs, or other side-effect queues.

@@ -38,7 +38,7 @@ function realtimeUrl() {
   return url.toString();
 }
 
-async function api(path, { method = "GET", headers = {}, json } = {}) {
+async function apiRaw(path, { method = "GET", headers = {}, json } = {}) {
   const response = await fetch(`${base}${path}`, {
     method,
     headers: {
@@ -48,10 +48,23 @@ async function api(path, { method = "GET", headers = {}, json } = {}) {
     body: json ? JSON.stringify(json) : undefined
   });
   const payload = await response.json().catch(() => null);
+  return { response, payload };
+}
+
+async function api(path, options = {}) {
+  const { response, payload } = await apiRaw(path, options);
   if (!response.ok || !payload || payload.ok === false) {
-    throw new Error(`${method} ${path} -> ${response.status} ${JSON.stringify(payload)}`);
+    throw new Error(`${options.method ?? "GET"} ${path} -> ${response.status} ${JSON.stringify(payload)}`);
   }
   return payload;
+}
+
+function assertServerTiming(header, metrics, context) {
+  for (const metric of metrics) {
+    if (!header.includes(`${metric};dur=`)) {
+      throw new Error(`${context} missing server timing metric ${metric}: ${header}`);
+    }
+  }
 }
 
 async function login(email, label) {
@@ -274,18 +287,41 @@ async function main() {
   cleanupState.roomId = roomId;
 
   const watcher = await openRealtimeWatcher(receiver.sessionToken, roomId);
-  const message = await api(`/v1/rooms/${roomId}/messages`, {
+  const messageBody = {
+    idempotencyKey: runId,
+    protocolType: "opaque-test",
+    ciphertext: encodeSmokePayload(owner.principal.principalId),
+    clientCreatedAt: new Date().toISOString()
+  };
+  const messageResult = await apiRaw(`/v1/rooms/${roomId}/messages`, {
     method: "POST",
     headers: ownerHeaders,
-    json: {
-      idempotencyKey: runId,
-      protocolType: "opaque-test",
-      ciphertext: encodeSmokePayload(owner.principal.principalId),
-      clientCreatedAt: new Date().toISOString()
-    }
+    json: messageBody
   });
+  if (!messageResult.response.ok || !messageResult.payload || messageResult.payload.ok === false) {
+    throw new Error(`POST /v1/rooms/${roomId}/messages -> ${messageResult.response.status} ${JSON.stringify(messageResult.payload)}`);
+  }
+  assertServerTiming(
+    messageResult.response.headers.get("server-timing") ?? "",
+    ["message", "conversationDo", "conversationQueue", "conversationOperation", "realtime"],
+    "POST /v1/rooms/{roomId}/messages remote smoke"
+  );
+  const message = messageResult.payload;
   assertMessageResponse(message, "POST /v1/rooms/{roomId}/messages remote smoke");
   cleanupState.envelopeId = message.message.envelopeId;
+
+  const duplicate = await api(`/v1/rooms/${roomId}/messages`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: messageBody
+  });
+  assertMessageResponse(duplicate, "POST /v1/rooms/{roomId}/messages remote duplicate");
+  if (duplicate.message.envelopeId !== message.message.envelopeId) {
+    throw new Error("remote smoke duplicate idempotency retry returned a different envelopeId");
+  }
+  if (duplicate.message.serverSequence !== message.message.serverSequence) {
+    throw new Error("remote smoke duplicate idempotency retry returned a different serverSequence");
+  }
 
   const realtimeEvent = await watcher.waitForRoomMessage(message.message.envelopeId);
   assertRealtimeRoomMessageEvent(realtimeEvent, "remote smoke room.message");
@@ -305,7 +341,11 @@ async function main() {
   if (!messages.messages.some((candidate) => candidate.envelopeId === message.message.envelopeId)) {
     throw new Error("remote smoke receiver message fetch did not include the sent message");
   }
-  assertSyncResponse(await api("/v1/sync?limit=100", { headers: receiverHeaders }), "GET /v1/sync remote smoke");
+  const sync = await api("/v1/sync?limit=100", { headers: receiverHeaders });
+  assertSyncResponse(sync, "GET /v1/sync remote smoke");
+  if (!sync.sync.pendingMessages.some((candidate) => candidate.envelopeId === message.message.envelopeId)) {
+    throw new Error("remote smoke sync did not include the sent pending message before cleanup ack");
+  }
 
   console.log(
     JSON.stringify(

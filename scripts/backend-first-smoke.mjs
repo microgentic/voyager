@@ -9,6 +9,7 @@ import {
   assertKeyPackageResponse,
   assertKeyPackagesResponse,
   assertMessageResponse,
+  assertMessagesResponse,
   assertPaginatedAgentRequestsResponse,
   assertPaginatedKeyPackagesResponse,
   assertPaginatedRoomInvitationsResponse,
@@ -62,6 +63,14 @@ async function expectFailure(path, options, status) {
 
 function auth(token) {
   return { authorization: `Bearer ${token}` };
+}
+
+function assertServerTiming(header, metrics, context) {
+  for (const metric of metrics) {
+    if (!header.includes(`${metric};dur=`)) {
+      throw new Error(`${context} missing server timing metric ${metric}: ${header}`);
+    }
+  }
 }
 
 function realtimeUrl() {
@@ -620,7 +629,7 @@ const group = await api("/v1/rooms/groups", {
 });
 assertRoomResponse(group, "POST /v1/rooms/groups");
 
-const updatedGroup = await api(`/v1/rooms/${group.room.roomId}`, {
+const updatedGroupResult = await apiRaw(`/v1/rooms/${group.room.roomId}`, {
   method: "PATCH",
   headers: ownerHeaders,
   json: {
@@ -628,6 +637,15 @@ const updatedGroup = await api(`/v1/rooms/${group.room.roomId}`, {
     description: "Backend-first smoke group with serialized mutations"
   }
 });
+if (!updatedGroupResult.response.ok) {
+  throw new Error(`PATCH room failed ${updatedGroupResult.response.status}: ${JSON.stringify(updatedGroupResult.payload)}`);
+}
+assertServerTiming(
+  updatedGroupResult.response.headers.get("server-timing") ?? "",
+  ["roomUpdate", "conversationDo", "conversationQueue", "conversationOperation"],
+  "PATCH /v1/rooms/{roomId}"
+);
+const updatedGroup = updatedGroupResult.payload;
 assertRoomResponse(updatedGroup, "PATCH /v1/rooms/{roomId}");
 if (updatedGroup.room.name !== "Smoke group updated") {
   throw new Error("room metadata update did not persist");
@@ -899,9 +917,11 @@ if (!directMessageResult.response.ok) {
   throw new Error(`POST direct message failed ${directMessageResult.response.status}: ${JSON.stringify(directMessageResult.payload)}`);
 }
 const directTiming = directMessageResult.response.headers.get("server-timing") ?? "";
-if (!directTiming.includes("message;dur=") || !directTiming.includes("conversationDo;dur=") || !directTiming.includes("realtime;dur=")) {
-  throw new Error(`message send did not include server timing metrics: ${directTiming}`);
-}
+assertServerTiming(
+  directTiming,
+  ["message", "conversationDo", "conversationQueue", "conversationOperation", "context", "insert", "postwrite", "realtime"],
+  "POST /v1/rooms/{roomId}/messages"
+);
 const directMessage = directMessageResult.payload;
 assertMessageResponse(directMessage, "POST /v1/rooms/{roomId}/messages");
 
@@ -974,6 +994,14 @@ if (new Set(concurrentSequences).size !== concurrentSequences.length) {
 for (let index = 1; index < concurrentSequences.length; index += 1) {
   if (concurrentSequences[index] !== concurrentSequences[index - 1] + 1) {
     throw new Error(`concurrent sends did not produce contiguous server sequences: ${concurrentSequences.join(", ")}`);
+  }
+}
+const concurrentRecovery = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${concurrentSequences[0] - 1}`, { headers: userHeaders });
+assertMessagesResponse(concurrentRecovery, "GET /v1/rooms/{roomId}/messages concurrent recovery");
+const recoveredEnvelopeIds = new Set(concurrentRecovery.messages.map((message) => message.envelopeId));
+for (const message of concurrentMessages) {
+  if (!recoveredEnvelopeIds.has(message.message.envelopeId)) {
+    throw new Error(`D1 message recovery did not include concurrent envelope ${message.message.envelopeId}`);
   }
 }
 

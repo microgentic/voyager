@@ -42,7 +42,10 @@ Worker and seeded disposable test accounts.
 - Long-lived session tokens cannot authenticate `GET /v1/realtime` directly.
 - `POST /v1/realtime/token` returns a valid short-lived socket token.
 - `GET /v1/realtime` opens with that socket token and emits `ready`.
-- Sending a direct message emits a matching `room.message` event.
+- Sending a direct message includes Conversation DO timing diagnostics and emits
+  a matching `room.message` event.
+- Retrying that send with the same idempotency key returns the same
+  `envelopeId` and `serverSequence` without creating a second durable message.
 - Receiver recovery reads work through `GET /v1/rooms/{roomId}`,
   `GET /v1/rooms/{roomId}/messages`, and `GET /v1/sync`.
 
@@ -116,5 +119,7 @@ If the WebSocket checks fail while HTTP checks pass, inspect:
 
 This smoke makes the deployed realtime and message path safer to operate.
 Conversation Durable Objects now coordinate message sends and room/membership
-mutations. This remote smoke remains the first deployed guard before deeper
-D1/DO reconciliation and recovery hardening work.
+mutations. The current coordinator does not store a second durable room state;
+D1 remains the reconciliation source. This remote smoke is the first deployed
+guard that the write path, realtime hint, idempotency retry, and HTTP recovery
+reads all still agree after deploy.

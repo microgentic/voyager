@@ -453,7 +453,7 @@ Those assertions cover common error payloads, auth results, bootstrap, sync, roo
 
 The following are deliberately outside this freeze:
 
-- Conversation Durable Object recovery/reconciliation internals beyond the current write-coordination path.
+- Durable outbox/reconciliation internals beyond the current stateless Conversation DO write-coordination path.
 - MLS/E2EE wire payload semantics beyond opaque transport fields.
 - Push notification provider contracts.
 - Production hosted AI agent runtime APIs.

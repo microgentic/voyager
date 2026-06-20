@@ -18,6 +18,8 @@ interface SendMessageMetrics {
   duplicate: boolean;
   totalMs: number;
   conversationDoMs?: number;
+  conversationQueueMs?: number;
+  conversationOperationMs?: number;
   contextMs: number;
   insertMs: number;
   postWriteMs: number;
@@ -47,12 +49,23 @@ interface ConversationMutationRequest {
   transferId?: string;
 }
 
+interface ConversationMutationMetrics {
+  totalMs: number;
+  queueMs: number;
+  operationMs: number;
+}
+
+interface ConversationMutationResult {
+  result?: JsonObject;
+  metrics: ConversationMutationMetrics;
+}
+
 type ConversationSendResponse =
   | { ok: true; message: JsonObject; metrics: SendMessageMetrics }
   | { ok: false; error: string; message: string; details?: unknown };
 
 type ConversationMutationResponse =
-  | { ok: true; result?: JsonObject }
+  | { ok: true; result?: JsonObject; metrics: ConversationMutationMetrics }
   | { ok: false; error: string; message: string; details?: unknown };
 
 interface AppBootstrapResult {
@@ -168,19 +181,23 @@ export class ConversationCoordinator {
       if (sendMatch) {
         const payload = parseConversationSendRequest(body, roomId);
         requestId = payload.requestId;
-        return this.enqueue(() => this.sendMessage(payload));
+        return this.enqueue((queueMs) => this.sendMessage(payload, queueMs));
       }
 
       const payload = parseConversationMutationRequest(body, roomId);
       requestId = payload.requestId;
-      return this.enqueue(() => this.runMutation(payload));
+      return this.enqueue((queueMs) => this.runMutation(payload, queueMs));
     } catch (error) {
       return errorResponse(error, requestId);
     }
   }
 
-  private enqueue(operation: () => Promise<Response>): Promise<Response> {
-    const run = this.queue.then(operation, operation);
+  private enqueue(operation: (queueMs: number) => Promise<Response>): Promise<Response> {
+    const enqueuedAt = performance.now();
+    const run = this.queue.then(
+      () => operation(durationSince(enqueuedAt)),
+      () => operation(durationSince(enqueuedAt))
+    );
     this.queue = run.then(
       () => undefined,
       () => undefined
@@ -188,20 +205,39 @@ export class ConversationCoordinator {
     return run;
   }
 
-  private async sendMessage(payload: ConversationSendRequest): Promise<Response> {
+  private async sendMessage(payload: ConversationSendRequest, queueMs: number): Promise<Response> {
+    const startedAt = performance.now();
     try {
       const { message, metrics } = await sendMessageEnvelope(this.env, payload.auth, payload.roomId, payload.body, payload.requestId);
-      return json({ ok: true, message, metrics });
+      const operationMs = durationSince(startedAt);
+      const enrichedMetrics = { ...metrics, conversationQueueMs: queueMs, conversationOperationMs: operationMs };
+      logConversationMessage("success", payload, message, enrichedMetrics);
+      return json({ ok: true, message, metrics: enrichedMetrics });
     } catch (error) {
+      logConversationMessage("error", payload, undefined, {
+        duplicate: false,
+        totalMs: durationSince(startedAt),
+        conversationQueueMs: queueMs,
+        conversationOperationMs: durationSince(startedAt),
+        contextMs: 0,
+        insertMs: 0,
+        postWriteMs: 0,
+        realtimeMs: 0
+      }, error);
       return errorResponse(error, payload.requestId);
     }
   }
 
-  private async runMutation(payload: ConversationMutationRequest): Promise<Response> {
+  private async runMutation(payload: ConversationMutationRequest, queueMs: number): Promise<Response> {
+    const startedAt = performance.now();
     try {
       const result = await runConversationMutation(this.env, payload);
-      return json(result === undefined ? { ok: true } : { ok: true, result });
+      const metrics = finalizeMutationMetrics(queueMs, startedAt);
+      logConversationMutation("success", payload, metrics);
+      return json(result === undefined ? { ok: true, metrics } : { ok: true, result, metrics });
     } catch (error) {
+      const metrics = finalizeMutationMetrics(queueMs, startedAt);
+      logConversationMutation("error", payload, metrics, error);
       return errorResponse(error, payload.requestId);
     }
   }
@@ -338,12 +374,11 @@ export async function handleBackendFirstRoutes(
       return json({ ok: true, room: await getRoomForMember(env, auth, roomMatch[1]) });
     }
     if (request.method === "PATCH") {
-      const room = requireCoordinatorResult(
-        await runMutationThroughConversationCoordinator(env, auth, roomMatch[1], requestId, {
-          operation: "room.update",
-          body: await readJsonObject(request)
-        })
-      );
+      const mutation = await runMutationThroughConversationCoordinator(env, auth, roomMatch[1], requestId, {
+        operation: "room.update",
+        body: await readJsonObject(request)
+      });
+      const room = requireCoordinatorResult(mutation.result);
       await audit(env, {
         actorAccountId: auth.account.account_id,
         action: "room.update",
@@ -352,18 +387,17 @@ export async function handleBackendFirstRoutes(
         requestId,
         result: "success"
       });
-      return json({ ok: true, room });
+      return json({ ok: true, room }, { headers: mutationTimingHeaders("roomUpdate", mutation.metrics) });
     }
   }
 
   const roomArchiveMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/archive$/, url.pathname);
   if (roomArchiveMatch) {
     requireMethod(request, "POST");
-    const room = requireCoordinatorResult(
-      await runMutationThroughConversationCoordinator(env, auth, roomArchiveMatch[1], requestId, {
-        operation: "room.archive"
-      })
-    );
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, roomArchiveMatch[1], requestId, {
+      operation: "room.archive"
+    });
+    const room = requireCoordinatorResult(mutation.result);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.archive",
@@ -372,18 +406,17 @@ export async function handleBackendFirstRoutes(
       requestId,
       result: "success"
     });
-    return json({ ok: true, room });
+    return json({ ok: true, room }, { headers: mutationTimingHeaders("roomArchive", mutation.metrics) });
   }
 
   const roomMembersMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members$/, url.pathname);
   if (roomMembersMatch) {
     requireMethod(request, "POST");
-    const member = requireCoordinatorResult(
-      await runMutationThroughConversationCoordinator(env, auth, roomMembersMatch[1], requestId, {
-        operation: "room.member.add",
-        body: await readJsonObject(request)
-      })
-    );
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, roomMembersMatch[1], requestId, {
+      operation: "room.member.add",
+      body: await readJsonObject(request)
+    });
+    const member = requireCoordinatorResult(mutation.result);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.member.add",
@@ -393,18 +426,17 @@ export async function handleBackendFirstRoutes(
       result: "success",
       metadata: { principalId: member.principalId, role: member.role }
     });
-    return json({ ok: true, member }, { status: 201 });
+    return json({ ok: true, member }, { status: 201, headers: mutationTimingHeaders("roomMemberAdd", mutation.metrics) });
   }
 
   const roomInvitationsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/invitations$/, url.pathname);
   if (roomInvitationsMatch) {
     requireMethod(request, "POST");
-    const invitation = requireCoordinatorResult(
-      await runMutationThroughConversationCoordinator(env, auth, roomInvitationsMatch[1], requestId, {
-        operation: "room.invitation.create",
-        body: await readJsonObject(request)
-      })
-    );
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, roomInvitationsMatch[1], requestId, {
+      operation: "room.invitation.create",
+      body: await readJsonObject(request)
+    });
+    const invitation = requireCoordinatorResult(mutation.result);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.invitation.create",
@@ -414,7 +446,7 @@ export async function handleBackendFirstRoutes(
       result: "success",
       metadata: { roomInvitationId: invitation.roomInvitationId, invitedPrincipalId: invitation.invitedPrincipalId }
     });
-    return json({ ok: true, invitation }, { status: 201 });
+    return json({ ok: true, invitation }, { status: 201, headers: mutationTimingHeaders("roomInvitationCreate", mutation.metrics) });
   }
 
   if (url.pathname === "/v1/room-invitations") {
@@ -428,12 +460,11 @@ export async function handleBackendFirstRoutes(
     requireMethod(request, "POST");
     const [, roomInvitationId, action] = roomInvitationActionMatch;
     const roomId = await getRoomIdForPendingRoomInvitation(env, auth, roomInvitationId);
-    const invitation = requireCoordinatorResult(
-      await runMutationThroughConversationCoordinator(env, auth, roomId, requestId, {
-        operation: `room.invitation.${action}`,
-        roomInvitationId
-      })
-    );
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, roomId, requestId, {
+      operation: `room.invitation.${action}`,
+      roomInvitationId
+    });
+    const invitation = requireCoordinatorResult(mutation.result);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: `room.invitation.${action}`,
@@ -442,20 +473,19 @@ export async function handleBackendFirstRoutes(
       requestId,
       result: "success"
     });
-    return json({ ok: true, invitation });
+    return json({ ok: true, invitation }, { headers: mutationTimingHeaders(`roomInvitation${capitalize(action)}`, mutation.metrics) });
   }
 
   const roomMemberRoleMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members\/([^/]+)\/role$/, url.pathname);
   if (roomMemberRoleMatch) {
     requireMethod(request, "PATCH");
     const body = await readJsonObject(request);
-    const member = requireCoordinatorResult(
-      await runMutationThroughConversationCoordinator(env, auth, roomMemberRoleMatch[1], requestId, {
-        operation: "room.member.role.update",
-        principalId: roomMemberRoleMatch[2],
-        body
-      })
-    );
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, roomMemberRoleMatch[1], requestId, {
+      operation: "room.member.role.update",
+      principalId: roomMemberRoleMatch[2],
+      body
+    });
+    const member = requireCoordinatorResult(mutation.result);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.member.role.update",
@@ -465,13 +495,13 @@ export async function handleBackendFirstRoutes(
       result: "success",
       metadata: { principalId: roomMemberRoleMatch[2], role: member.role }
     });
-    return json({ ok: true, member });
+    return json({ ok: true, member }, { headers: mutationTimingHeaders("roomMemberRoleUpdate", mutation.metrics) });
   }
 
   const roomMemberRemoveMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members\/([^/]+)$/, url.pathname);
   if (roomMemberRemoveMatch) {
     requireMethod(request, "DELETE");
-    await runMutationThroughConversationCoordinator(env, auth, roomMemberRemoveMatch[1], requestId, {
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, roomMemberRemoveMatch[1], requestId, {
       operation: "room.member.remove",
       principalId: roomMemberRemoveMatch[2]
     });
@@ -484,13 +514,13 @@ export async function handleBackendFirstRoutes(
       result: "success",
       metadata: { principalId: roomMemberRemoveMatch[2] }
     });
-    return json({ ok: true });
+    return json({ ok: true }, { headers: mutationTimingHeaders("roomMemberRemove", mutation.metrics) });
   }
 
   const leaveRoomMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/leave$/, url.pathname);
   if (leaveRoomMatch) {
     requireMethod(request, "POST");
-    await runMutationThroughConversationCoordinator(env, auth, leaveRoomMatch[1], requestId, {
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, leaveRoomMatch[1], requestId, {
       operation: "room.member.leave"
     });
     await audit(env, {
@@ -501,18 +531,17 @@ export async function handleBackendFirstRoutes(
       requestId,
       result: "success"
     });
-    return json({ ok: true });
+    return json({ ok: true }, { headers: mutationTimingHeaders("roomMemberLeave", mutation.metrics) });
   }
 
   const proposeTransferMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/ownership-transfers$/, url.pathname);
   if (proposeTransferMatch) {
     requireMethod(request, "POST");
-    const transfer = requireCoordinatorResult(
-      await runMutationThroughConversationCoordinator(env, auth, proposeTransferMatch[1], requestId, {
-        operation: "room.ownership_transfer.propose",
-        body: await readJsonObject(request)
-      })
-    );
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, proposeTransferMatch[1], requestId, {
+      operation: "room.ownership_transfer.propose",
+      body: await readJsonObject(request)
+    });
+    const transfer = requireCoordinatorResult(mutation.result);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.ownership_transfer.propose",
@@ -522,18 +551,17 @@ export async function handleBackendFirstRoutes(
       result: "success",
       metadata: { transferId: transfer.transferId }
     });
-    return json({ ok: true, transfer }, { status: 201 });
+    return json({ ok: true, transfer }, { status: 201, headers: mutationTimingHeaders("roomOwnershipTransferPropose", mutation.metrics) });
   }
 
   const acceptTransferMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/ownership-transfers\/([^/]+)\/accept$/, url.pathname);
   if (acceptTransferMatch) {
     requireMethod(request, "POST");
-    const transfer = requireCoordinatorResult(
-      await runMutationThroughConversationCoordinator(env, auth, acceptTransferMatch[1], requestId, {
-        operation: "room.ownership_transfer.accept",
-        transferId: acceptTransferMatch[2]
-      })
-    );
+    const mutation = await runMutationThroughConversationCoordinator(env, auth, acceptTransferMatch[1], requestId, {
+      operation: "room.ownership_transfer.accept",
+      transferId: acceptTransferMatch[2]
+    });
+    const transfer = requireCoordinatorResult(mutation.result);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.ownership_transfer.accept",
@@ -543,7 +571,7 @@ export async function handleBackendFirstRoutes(
       result: "success",
       metadata: { transferId: acceptTransferMatch[2] }
     });
-    return json({ ok: true, transfer });
+    return json({ ok: true, transfer }, { headers: mutationTimingHeaders("roomOwnershipTransferAccept", mutation.metrics) });
   }
 
   const messagesMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages$/, url.pathname);
@@ -1291,6 +1319,61 @@ async function runConversationMutation(env: Env, payload: ConversationMutationRe
   }
 }
 
+function finalizeMutationMetrics(queueMs: number, startedAt: number): ConversationMutationMetrics {
+  const operationMs = durationSince(startedAt);
+  return {
+    totalMs: queueMs + operationMs,
+    queueMs,
+    operationMs
+  };
+}
+
+function logConversationMessage(
+  result: "success" | "error",
+  payload: ConversationSendRequest,
+  message: JsonObject | undefined,
+  metrics: SendMessageMetrics,
+  error?: unknown
+): void {
+  const logger = result === "success" ? console.info : console.warn;
+  logger("conversation.do.message", {
+    requestId: payload.requestId,
+    roomId: payload.roomId,
+    result,
+    envelopeId: message?.envelopeId,
+    serverSequence: message?.serverSequence,
+    duplicate: metrics.duplicate,
+    queueMs: metrics.conversationQueueMs ?? 0,
+    operationMs: metrics.conversationOperationMs ?? metrics.totalMs,
+    error: errorCode(error)
+  });
+}
+
+function logConversationMutation(
+  result: "success" | "error",
+  payload: ConversationMutationRequest,
+  metrics: ConversationMutationMetrics,
+  error?: unknown
+): void {
+  const logger = result === "success" ? console.info : console.warn;
+  logger("conversation.do.mutation", {
+    requestId: payload.requestId,
+    roomId: payload.roomId,
+    operation: payload.operation,
+    result,
+    queueMs: metrics.queueMs,
+    operationMs: metrics.operationMs,
+    error: errorCode(error)
+  });
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error) return undefined;
+  if (error instanceof HttpError) return error.code;
+  if (error instanceof Error) return error.name || "error";
+  return "unknown_error";
+}
+
 async function sendMessageThroughConversationCoordinator(
   env: Env,
   auth: AuthContext,
@@ -1335,14 +1418,16 @@ async function runMutationThroughConversationCoordinator(
   roomId: string,
   requestId: string,
   input: Omit<ConversationMutationRequest, "auth" | "roomId" | "requestId">
-): Promise<JsonObject | undefined> {
+): Promise<ConversationMutationResult> {
   const coordinatorId = env.CONVERSATION_COORDINATOR.idFromName(roomId);
   const coordinator = env.CONVERSATION_COORDINATOR.get(coordinatorId);
+  const startedAt = performance.now();
   const response = await coordinator.fetch(`https://voyager-conversation.local/rooms/${encodeURIComponent(roomId)}/mutations`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ auth, requestId, ...input })
   });
+  const conversationDoMs = durationSince(startedAt);
   const payload = (await response.json().catch(() => null)) as ConversationMutationResponse | null;
 
   if (!payload || payload.ok !== true) {
@@ -1355,7 +1440,13 @@ async function runMutationThroughConversationCoordinator(
     );
   }
 
-  return payload.result;
+  return {
+    result: payload.result,
+    metrics: {
+      ...payload.metrics,
+      totalMs: conversationDoMs
+    }
+  };
 }
 
 async function sendMessageEnvelope(
@@ -2621,10 +2712,23 @@ function sendMessageTimingHeaders(metrics: SendMessageMetrics): Record<string, s
     "server-timing": serverTimingHeader([
       ["message", metrics.totalMs],
       ["conversationDo", metrics.conversationDoMs],
+      ["conversationQueue", metrics.conversationQueueMs],
+      ["conversationOperation", metrics.conversationOperationMs],
       ["context", metrics.contextMs],
       ["insert", metrics.insertMs],
       ["postwrite", metrics.postWriteMs],
       ["realtime", metrics.realtimeMs]
+    ])
+  };
+}
+
+function mutationTimingHeaders(routeName: string, metrics: ConversationMutationMetrics): Record<string, string> {
+  return {
+    "server-timing": serverTimingHeader([
+      [routeName, metrics.totalMs],
+      ["conversationDo", metrics.totalMs],
+      ["conversationQueue", metrics.queueMs],
+      ["conversationOperation", metrics.operationMs]
     ])
   };
 }
@@ -2639,6 +2743,10 @@ function readTimingHeaders(routeName: string, authMs: number, startedAt: number,
       ...extra
     ])
   };
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function finalizeSendMetrics(input: {
