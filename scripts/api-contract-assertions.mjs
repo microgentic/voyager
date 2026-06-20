@@ -1,0 +1,450 @@
+export const endpointStabilityCatalog = [
+  { method: "GET", path: "/health", stability: "stable/current" },
+  { method: "GET", path: "/v1/meta", stability: "stable/current" },
+  { method: "POST", path: "/v1/auth/password/login", stability: "stable/current" },
+  { method: "POST", path: "/v1/auth/logout", stability: "stable/current" },
+  { method: "POST", path: "/v1/auth/password/change", stability: "stable/current" },
+  { method: "POST", path: "/v1/auth/password/reset/complete", stability: "stable/current" },
+  { method: "GET", path: "/v1/me", stability: "stable/current" },
+  { method: "GET", path: "/v1/app/bootstrap", stability: "stable/current" },
+  { method: "GET", path: "/v1/sessions", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/sessions/{sessionId}", stability: "stable/current" },
+  { method: "GET", path: "/v1/devices", stability: "stable/current" },
+  { method: "POST", path: "/v1/devices", stability: "stable/current" },
+  { method: "POST", path: "/v1/devices/{deviceId}/revoke", stability: "stable/current" },
+  { method: "GET", path: "/v1/principals", stability: "stable/current" },
+  { method: "GET", path: "/v1/principals/{principalId}/devices", stability: "stable/current" },
+  { method: "GET", path: "/v1/rooms", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/direct", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/groups", stability: "stable/current" },
+  { method: "GET", path: "/v1/rooms/{roomId}", stability: "stable/current" },
+  { method: "PATCH", path: "/v1/rooms/{roomId}", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/archive", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/members", stability: "stable/current" },
+  { method: "PATCH", path: "/v1/rooms/{roomId}/members/{principalId}/role", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/rooms/{roomId}/members/{principalId}", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/leave", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/ownership-transfers", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/ownership-transfers/{transferId}/accept", stability: "stable/current" },
+  { method: "GET", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
+  { method: "GET", path: "/v1/sync", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/invitations", stability: "stable/current" },
+  { method: "GET", path: "/v1/room-invitations", stability: "stable/current" },
+  { method: "POST", path: "/v1/room-invitations/{roomInvitationId}/accept", stability: "stable/current" },
+  { method: "POST", path: "/v1/room-invitations/{roomInvitationId}/decline", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/attachments", stability: "stable/current" },
+  { method: "PUT", path: "/v1/attachments/{attachmentId}/blob", stability: "stable/current" },
+  { method: "GET", path: "/v1/attachments/{attachmentId}/blob", stability: "stable/current" },
+  { method: "POST", path: "/v1/attachments/{attachmentId}/complete", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/attachments/{attachmentId}", stability: "stable/current" },
+  { method: "GET", path: "/v1/sidebar-collections", stability: "stable/current" },
+  { method: "POST", path: "/v1/sidebar-collections", stability: "stable/current" },
+  { method: "PATCH", path: "/v1/sidebar-collections/{collectionId}", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/sidebar-collections/{collectionId}", stability: "stable/current" },
+  { method: "POST", path: "/v1/sidebar-collections/{collectionId}/items", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/sidebar-collections/{collectionId}/items/{roomId}", stability: "stable/current" },
+  { method: "GET", path: "/v1/agent-requests", stability: "stable/current" },
+  { method: "POST", path: "/v1/agent-requests", stability: "stable/current" },
+  { method: "GET", path: "/v1/realtime", stability: "stable/current" },
+  { method: "GET", path: "/v1/devices/{deviceId}/key-packages", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/devices/{deviceId}/key-packages", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/principals/{principalId}/key-packages", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/key-packages/{keyPackageId}/claim", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/key-packages/{keyPackageId}/revoke", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/admin/bootstrap/status", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/bootstrap", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/invitations/accept", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/invitations", stability: "admin/dev-only" },
+  { method: "GET", path: "/v1/admin/accounts", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/accounts/{accountId}/suspend", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/accounts/{accountId}/restore", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/accounts/{accountId}/require-auth-reset", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/accounts/{accountId}/credential-reset", stability: "admin/dev-only" },
+  { method: "PATCH", path: "/v1/admin/accounts/{accountId}/policy", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/accounts/{accountId}/roles", stability: "admin/dev-only" },
+  { method: "DELETE", path: "/v1/admin/accounts/{accountId}/roles/{roleName}", stability: "admin/dev-only" },
+  { method: "GET", path: "/v1/admin/policies", stability: "admin/dev-only" },
+  { method: "GET", path: "/v1/admin/usage", stability: "admin/dev-only" },
+  { method: "GET", path: "/v1/admin/audit-events", stability: "admin/dev-only" },
+  { method: "GET", path: "/v1/admin/rooms", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/devices/test-cleanup", stability: "admin/dev-only" },
+  { method: "GET", path: "/v1/admin/agent-requests", stability: "admin/dev-only" },
+  { method: "PATCH", path: "/v1/admin/agent-requests/{requestId}", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/agents", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/admin/maintenance/runs", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/maintenance/cleanup", stability: "admin/dev-only" }
+];
+
+export function assertApiErrorShape(payload, context) {
+  const value = object(payload, context);
+  literal(value.ok, false, `${context}.ok`);
+  string(value.error, `${context}.error`);
+  string(value.message, `${context}.message`);
+  string(value.requestId, `${context}.requestId`);
+}
+
+export function assertAuthResult(payload, context) {
+  const value = success(payload, context);
+  assertAccount(value.account, `${context}.account`);
+  assertPrincipal(value.principal, `${context}.principal`);
+  assertDevice(value.device, `${context}.device`);
+  string(value.sessionToken, `${context}.sessionToken`);
+}
+
+export function assertBootstrapResponse(payload, context) {
+  const value = success(payload, context);
+  const bootstrap = object(value.bootstrap, `${context}.bootstrap`);
+  assertAccount(bootstrap.account, `${context}.bootstrap.account`);
+  assertPrincipal(bootstrap.principal, `${context}.bootstrap.principal`);
+  assertDevice(bootstrap.device, `${context}.bootstrap.device`);
+  array(bootstrap.roles, `${context}.bootstrap.roles`).forEach((role, index) => string(role, `${context}.bootstrap.roles[${index}]`));
+  array(bootstrap.rooms, `${context}.bootstrap.rooms`).forEach((room, index) => assertRoom(room, `${context}.bootstrap.rooms[${index}]`));
+  nullableString(bootstrap.roomsNextCursor, `${context}.bootstrap.roomsNextCursor`);
+  array(bootstrap.pendingMessages, `${context}.bootstrap.pendingMessages`).forEach((message, index) =>
+    assertMessage(message, `${context}.bootstrap.pendingMessages[${index}]`)
+  );
+  string(bootstrap.serverTime, `${context}.bootstrap.serverTime`);
+  string(bootstrap.requestId, `${context}.bootstrap.requestId`);
+}
+
+export function assertSyncResponse(payload, context) {
+  const value = success(payload, context);
+  const sync = object(value.sync, `${context}.sync`);
+  array(sync.rooms, `${context}.sync.rooms`).forEach((room, index) => assertRoom(room, `${context}.sync.rooms[${index}]`));
+  nullableString(sync.roomsNextCursor, `${context}.sync.roomsNextCursor`);
+  array(sync.pendingMessages, `${context}.sync.pendingMessages`).forEach((message, index) =>
+    assertMessage(message, `${context}.sync.pendingMessages[${index}]`)
+  );
+}
+
+export function assertRoomResponse(payload, context) {
+  assertRoom(success(payload, context).room, `${context}.room`);
+}
+
+export function assertPaginatedRoomsResponse(payload, context) {
+  const value = success(payload, context);
+  array(value.rooms, `${context}.rooms`).forEach((room, index) => assertRoom(room, `${context}.rooms[${index}]`));
+  nullableString(value.nextCursor, `${context}.nextCursor`);
+}
+
+export function assertMessagesResponse(payload, context) {
+  const value = success(payload, context);
+  array(value.messages, `${context}.messages`).forEach((message, index) => assertMessage(message, `${context}.messages[${index}]`));
+}
+
+export function assertMessageResponse(payload, context) {
+  assertMessage(success(payload, context).message, `${context}.message`);
+}
+
+export function assertRoomInvitationResponse(payload, context) {
+  assertRoomInvitation(success(payload, context).invitation, `${context}.invitation`);
+}
+
+export function assertPaginatedRoomInvitationsResponse(payload, context) {
+  const value = success(payload, context);
+  array(value.invitations, `${context}.invitations`).forEach((invitation, index) =>
+    assertRoomInvitation(invitation, `${context}.invitations[${index}]`)
+  );
+  nullableString(value.nextCursor, `${context}.nextCursor`);
+}
+
+export function assertKeyPackageResponse(payload, context) {
+  assertKeyPackage(success(payload, context).keyPackage, `${context}.keyPackage`);
+}
+
+export function assertKeyPackagesResponse(payload, context) {
+  const value = success(payload, context);
+  array(value.keyPackages, `${context}.keyPackages`).forEach((keyPackage, index) =>
+    assertKeyPackage(keyPackage, `${context}.keyPackages[${index}]`)
+  );
+}
+
+export function assertPaginatedKeyPackagesResponse(payload, context) {
+  assertKeyPackagesResponse(payload, context);
+  nullableString(object(payload, context).nextCursor, `${context}.nextCursor`);
+}
+
+export function assertAttachmentResponse(payload, context) {
+  assertAttachment(success(payload, context).attachment, `${context}.attachment`);
+}
+
+export function assertSidebarCollectionResponse(payload, context) {
+  assertSidebarCollection(success(payload, context).collection, `${context}.collection`);
+}
+
+export function assertPaginatedAgentRequestsResponse(payload, context) {
+  const value = success(payload, context);
+  array(value.requests, `${context}.requests`).forEach((request, index) => assertAgentRequest(request, `${context}.requests[${index}]`));
+  nullableString(value.nextCursor, `${context}.nextCursor`);
+}
+
+export function assertAgentRequestResponse(payload, context) {
+  assertAgentRequest(success(payload, context).request, `${context}.request`);
+}
+
+export function assertAgentResponse(payload, context) {
+  const value = success(payload, context);
+  assertPrincipal(value.agent, `${context}.agent`);
+  literal(value.agent.principalType, "agent", `${context}.agent.principalType`);
+}
+
+export function assertRealtimeRoomMessageEvent(payload, context) {
+  const value = object(payload, context);
+  literal(value.type, "room.message", `${context}.type`);
+  string(value.eventId, `${context}.eventId`);
+  string(value.createdAt, `${context}.createdAt`);
+  string(value.roomId, `${context}.roomId`);
+  string(value.envelopeId, `${context}.envelopeId`);
+  number(value.serverSequence, `${context}.serverSequence`);
+  string(value.senderDeviceId, `${context}.senderDeviceId`);
+}
+
+export function assertEndpointCatalog() {
+  const seen = new Set();
+  for (const endpoint of endpointStabilityCatalog) {
+    string(endpoint.method, "endpoint.method");
+    string(endpoint.path, "endpoint.path");
+    if (!["stable/current", "admin/dev-only", "future-sensitive"].includes(endpoint.stability)) {
+      fail(`endpoint ${endpoint.method} ${endpoint.path} has invalid stability ${endpoint.stability}`);
+    }
+    const key = `${endpoint.method} ${endpoint.path}`;
+    if (seen.has(key)) fail(`duplicate endpoint catalog entry: ${key}`);
+    seen.add(key);
+  }
+}
+
+function assertAccount(value, context) {
+  const account = object(value, context);
+  string(account.accountId, `${context}.accountId`);
+  enumValue(account.status, ["invited", "active", "locked", "suspended", "pending_deletion", "deleted"], `${context}.status`);
+  string(account.displayName, `${context}.displayName`);
+  nullableString(account.email, `${context}.email`);
+  nullableString(account.phone, `${context}.phone`);
+  string(account.policyId, `${context}.policyId`);
+  nullableString(account.defaultPrincipalId, `${context}.defaultPrincipalId`);
+  string(account.createdAt, `${context}.createdAt`);
+  nullableString(account.activatedAt, `${context}.activatedAt`);
+}
+
+function assertPrincipal(value, context) {
+  const principal = object(value, context);
+  string(principal.principalId, `${context}.principalId`);
+  string(principal.accountId, `${context}.accountId`);
+  enumValue(principal.principalType, ["human", "agent"], `${context}.principalType`);
+  string(principal.displayName, `${context}.displayName`);
+  nullableString(principal.avatarRef ?? null, `${context}.avatarRef`);
+  enumValue(principal.status, ["active", "suspended", "revoked"], `${context}.status`);
+  nullableString(principal.ownerPrincipalId ?? null, `${context}.ownerPrincipalId`);
+  string(principal.createdAt, `${context}.createdAt`);
+  nullableString(principal.revokedAt ?? null, `${context}.revokedAt`);
+}
+
+function assertDevice(value, context) {
+  const device = object(value, context);
+  string(device.deviceId, `${context}.deviceId`);
+  string(device.accountId, `${context}.accountId`);
+  string(device.principalId, `${context}.principalId`);
+  string(device.platform, `${context}.platform`);
+  string(device.label, `${context}.label`);
+  nullableString(device.credentialFingerprint, `${context}.credentialFingerprint`);
+  number(device.credentialVersion, `${context}.credentialVersion`);
+  nullableString(device.publicKeyPackage ?? null, `${context}.publicKeyPackage`);
+  nullableString(device.notificationCapability, `${context}.notificationCapability`);
+  nullableString(device.clientVersion, `${context}.clientVersion`);
+  nullableString(device.protocolVersion, `${context}.protocolVersion`);
+  string(device.createdAt, `${context}.createdAt`);
+  nullableString(device.lastSeenAt, `${context}.lastSeenAt`);
+  nullableString(device.revokedAt, `${context}.revokedAt`);
+  nullableString(device.revocationReason, `${context}.revocationReason`);
+}
+
+function assertRoom(value, context) {
+  const room = object(value, context);
+  string(room.roomId, `${context}.roomId`);
+  enumValue(room.type, ["direct", "group", "channel"], `${context}.type`);
+  nullableString(room.name, `${context}.name`);
+  nullableString(room.description, `${context}.description`);
+  enumValue(room.status, ["active", "archived", "deleted"], `${context}.status`);
+  number(room.version, `${context}.version`);
+  string(room.createdByAccountId, `${context}.createdByAccountId`);
+  string(room.createdByPrincipalId, `${context}.createdByPrincipalId`);
+  string(room.createdAt, `${context}.createdAt`);
+  string(room.updatedAt, `${context}.updatedAt`);
+  nullableString(room.archivedAt, `${context}.archivedAt`);
+  array(room.members, `${context}.members`).forEach((member, index) => assertMembership(member, `${context}.members[${index}]`));
+}
+
+function assertMembership(value, context) {
+  const membership = object(value, context);
+  string(membership.membershipId, `${context}.membershipId`);
+  string(membership.roomId, `${context}.roomId`);
+  string(membership.accountId, `${context}.accountId`);
+  string(membership.principalId, `${context}.principalId`);
+  enumValue(membership.principalType, ["human", "agent"], `${context}.principalType`);
+  string(membership.displayName, `${context}.displayName`);
+  enumValue(membership.role, ["owner", "admin", "member", "agent"], `${context}.role`);
+  enumValue(membership.status, ["invited", "active", "leaving", "removed", "banned"], `${context}.status`);
+  string(membership.createdAt, `${context}.createdAt`);
+  string(membership.updatedAt, `${context}.updatedAt`);
+  nullableString(membership.removedAt, `${context}.removedAt`);
+}
+
+function assertMessage(value, context) {
+  const message = object(value, context);
+  string(message.envelopeId, `${context}.envelopeId`);
+  string(message.roomId, `${context}.roomId`);
+  string(message.senderAccountId, `${context}.senderAccountId`);
+  string(message.senderPrincipalId, `${context}.senderPrincipalId`);
+  string(message.senderDeviceId, `${context}.senderDeviceId`);
+  string(message.idempotencyKey, `${context}.idempotencyKey`);
+  enumValue(message.protocolType, ["opaque-test", "mls_application", "mls_commit", "mls_proposal", "mls_welcome"], `${context}.protocolType`);
+  string(message.ciphertext, `${context}.ciphertext`);
+  number(message.ciphertextBytes, `${context}.ciphertextBytes`);
+  nullableString(message.clientCreatedAt, `${context}.clientCreatedAt`);
+  number(message.serverSequence, `${context}.serverSequence`);
+  string(message.serverReceivedAt, `${context}.serverReceivedAt`);
+  string(message.expiresAt, `${context}.expiresAt`);
+  enumValue(
+    message.state,
+    ["accepted", "available", "partially_acknowledged", "fully_acknowledged", "expired", "purged"],
+    `${context}.state`
+  );
+}
+
+function assertRoomInvitation(value, context) {
+  const invitation = object(value, context);
+  string(invitation.roomInvitationId, `${context}.roomInvitationId`);
+  string(invitation.roomId, `${context}.roomId`);
+  nullableString(invitation.roomName, `${context}.roomName`);
+  enumValue(invitation.roomType, ["direct", "group", "channel"], `${context}.roomType`);
+  string(invitation.invitedAccountId, `${context}.invitedAccountId`);
+  string(invitation.invitedPrincipalId, `${context}.invitedPrincipalId`);
+  string(invitation.invitedByAccountId, `${context}.invitedByAccountId`);
+  string(invitation.invitedByPrincipalId, `${context}.invitedByPrincipalId`);
+  string(invitation.invitedByDisplayName, `${context}.invitedByDisplayName`);
+  enumValue(invitation.role, ["admin", "member"], `${context}.role`);
+  enumValue(invitation.status, ["pending", "accepted", "declined", "revoked", "expired"], `${context}.status`);
+  string(invitation.expiresAt, `${context}.expiresAt`);
+  nullableString(invitation.respondedAt, `${context}.respondedAt`);
+  string(invitation.createdAt, `${context}.createdAt`);
+}
+
+function assertKeyPackage(value, context) {
+  const keyPackage = object(value, context);
+  string(keyPackage.keyPackageId, `${context}.keyPackageId`);
+  string(keyPackage.accountId, `${context}.accountId`);
+  string(keyPackage.principalId, `${context}.principalId`);
+  string(keyPackage.deviceId, `${context}.deviceId`);
+  string(keyPackage.protocol, `${context}.protocol`);
+  nullableString(keyPackage.publicIdentityKey, `${context}.publicIdentityKey`);
+  nullableString(keyPackage.signedPrekey, `${context}.signedPrekey`);
+  nullableString(keyPackage.oneTimePrekey, `${context}.oneTimePrekey`);
+  if (!("package" in keyPackage)) fail(`${context}.package is missing`);
+  string(keyPackage.status, `${context}.status`);
+  nullableString(keyPackage.claimedByDeviceId, `${context}.claimedByDeviceId`);
+  nullableString(keyPackage.claimedAt, `${context}.claimedAt`);
+  string(keyPackage.expiresAt, `${context}.expiresAt`);
+  string(keyPackage.createdAt, `${context}.createdAt`);
+}
+
+function assertAttachment(value, context) {
+  const attachment = object(value, context);
+  string(attachment.attachmentId, `${context}.attachmentId`);
+  string(attachment.roomId, `${context}.roomId`);
+  string(attachment.uploaderAccountId, `${context}.uploaderAccountId`);
+  string(attachment.uploaderPrincipalId, `${context}.uploaderPrincipalId`);
+  string(attachment.uploaderDeviceId, `${context}.uploaderDeviceId`);
+  string(attachment.state, `${context}.state`);
+  number(attachment.expectedBytes, `${context}.expectedBytes`);
+  if (attachment.ciphertextBytes !== null) number(attachment.ciphertextBytes, `${context}.ciphertextBytes`);
+  nullableString(attachment.ciphertextSha256, `${context}.ciphertextSha256`);
+  nullableString(attachment.contentCategory, `${context}.contentCategory`);
+  string(attachment.retentionClass, `${context}.retentionClass`);
+  string(attachment.expiresAt, `${context}.expiresAt`);
+  string(attachment.createdAt, `${context}.createdAt`);
+  nullableString(attachment.uploadedAt, `${context}.uploadedAt`);
+  nullableString(attachment.referencedAt, `${context}.referencedAt`);
+  nullableString(attachment.deletedAt, `${context}.deletedAt`);
+}
+
+function assertSidebarCollection(value, context) {
+  const collection = object(value, context);
+  string(collection.collectionId, `${context}.collectionId`);
+  string(collection.accountId, `${context}.accountId`);
+  string(collection.name, `${context}.name`);
+  number(collection.sortOrder, `${context}.sortOrder`);
+  boolean(collection.collapsed, `${context}.collapsed`);
+  string(collection.createdAt, `${context}.createdAt`);
+  string(collection.updatedAt, `${context}.updatedAt`);
+  array(collection.items, `${context}.items`).forEach((item, index) => {
+    const value = object(item, `${context}.items[${index}]`);
+    string(value.itemId, `${context}.items[${index}].itemId`);
+    string(value.roomId, `${context}.items[${index}].roomId`);
+    number(value.sortOrder, `${context}.items[${index}].sortOrder`);
+    string(value.createdAt, `${context}.items[${index}].createdAt`);
+  });
+}
+
+function assertAgentRequest(value, context) {
+  const request = object(value, context);
+  string(request.requestId, `${context}.requestId`);
+  string(request.requesterAccountId, `${context}.requesterAccountId`);
+  string(request.requesterPrincipalId, `${context}.requesterPrincipalId`);
+  string(request.desiredAgentName, `${context}.desiredAgentName`);
+  string(request.summary, `${context}.summary`);
+  enumValue(request.status, ["submitted", "under_review", "approved", "rejected", "provisioning", "active", "closed"], `${context}.status`);
+  if (!("metadata" in request)) fail(`${context}.metadata is missing`);
+  nullableString(request.reviewedByAccountId, `${context}.reviewedByAccountId`);
+  nullableString(request.reviewedAt, `${context}.reviewedAt`);
+  nullableString(request.createdAgentPrincipalId, `${context}.createdAgentPrincipalId`);
+  string(request.createdAt, `${context}.createdAt`);
+  string(request.updatedAt, `${context}.updatedAt`);
+}
+
+function success(payload, context) {
+  const value = object(payload, context);
+  literal(value.ok, true, `${context}.ok`);
+  return value;
+}
+
+function object(value, context) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail(`${context} must be an object`);
+  }
+  return value;
+}
+
+function array(value, context) {
+  if (!Array.isArray(value)) fail(`${context} must be an array`);
+  return value;
+}
+
+function string(value, context) {
+  if (typeof value !== "string" || value.length === 0) fail(`${context} must be a non-empty string`);
+}
+
+function nullableString(value, context) {
+  if (value !== null && typeof value !== "string") fail(`${context} must be a string or null`);
+}
+
+function number(value, context) {
+  if (typeof value !== "number" || !Number.isFinite(value)) fail(`${context} must be a finite number`);
+}
+
+function boolean(value, context) {
+  if (typeof value !== "boolean") fail(`${context} must be a boolean`);
+}
+
+function enumValue(value, values, context) {
+  if (!values.includes(value)) fail(`${context} must be one of ${values.join(", ")}`);
+}
+
+function literal(value, expected, context) {
+  if (value !== expected) fail(`${context} must be ${JSON.stringify(expected)}`);
+}
+
+function fail(message) {
+  throw new Error(`API contract assertion failed: ${message}`);
+}
