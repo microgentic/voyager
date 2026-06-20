@@ -1,3 +1,4 @@
+> This is the original project architecture plan document. It is based on the original brainstorming doc, but it has been edited and updated therefore is mostly deprecated as the project has evolved and changed since then. However, I want to keep it for reference and to track the evolution of the project. The original brainstorming doc is still available in `docs/brainstorming.md` and it is not edited, so it can be used as a reference to see how the project evolved from the initial brainstorming to this more structured architecture plan.
 # Secure Agent Communications Project Plan
 
 Status: planning document

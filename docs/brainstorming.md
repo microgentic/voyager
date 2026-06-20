@@ -1,3 +1,4 @@
+> This is the original brainstorming doc and it's currently deprecated as the project has evolved and changed since then, but I want to keep it for reference and to track the evolution of the project.
 Brainstorming for a private communication app for clients to communicate securely with AI agents. (although it should technically and practically function exactly as a normal user to user app similar to signal etc and users can communicate securely with each other)
 Goal: build a private app for private communications so my clients can communicate with my AI agents securely without using telegram, slack, discord etc.
 
