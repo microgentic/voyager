@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { ArrowDown, Hand } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, rooms, type ChatMessage } from '$lib/stores';
@@ -67,6 +67,31 @@
 		atBottom = true;
 	}
 
+	function inputHasFocus(): boolean {
+		const active = document.activeElement;
+		return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+	}
+
+	onMount(() => {
+		const viewport = window.visualViewport;
+		if (!viewport) return undefined;
+
+		let previousHeight = viewport.height;
+		const keepLatestVisible = () => {
+			const height = viewport.height;
+			const keyboardOpened = height < previousHeight - 24;
+			previousHeight = height;
+			if (keyboardOpened && inputHasFocus()) void toBottom('auto');
+		};
+
+		viewport.addEventListener('resize', keepLatestVisible);
+		viewport.addEventListener('scroll', keepLatestVisible);
+		return () => {
+			viewport.removeEventListener('resize', keepLatestVisible);
+			viewport.removeEventListener('scroll', keepLatestVisible);
+		};
+	});
+
 	$effect(() => {
 		const id = room.roomId;
 		const count = list.length;
@@ -89,11 +114,11 @@
 	});
 </script>
 
-<div class="relative min-h-0 flex-1">
+<div class="relative min-h-0 flex-1 select-none">
 	<div
 		bind:this={scrollEl}
 		onscroll={onScroll}
-		class="h-full overflow-y-auto overscroll-contain py-3"
+		class="h-full overflow-y-auto overscroll-contain py-3 select-none"
 	>
 		{#if loading}
 			<div class="grid h-full place-items-center"><Spinner class="text-primary" /></div>
