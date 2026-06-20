@@ -17,6 +17,7 @@
     "client:check": "npm --prefix apps/client run check",
     "smoke:backend": "node scripts/backend-first-smoke.mjs",
     "smoke:backend:local": "node scripts/run-local-backend-smoke.mjs",
+    "smoke:backend:remote": "node scripts/remote-post-deploy-smoke.mjs",
     "wrangler": "wrangler"
   },
   "devDependencies": {

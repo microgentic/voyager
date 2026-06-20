@@ -45,3 +45,9 @@ jobs:
         run: npm run deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Remote post-deploy smoke
+        if: github.event_name != 'pull_request'
+        run: npm run smoke:backend:remote
+        env:
+          BASE_URL: https://voyager-api-dev.microgentic-voyager.workers.dev

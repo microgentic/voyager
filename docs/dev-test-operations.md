@@ -6,16 +6,18 @@ Related docs:
 
 - `docs/realtime-performance-handoff.md`
 - `docs/realtime-messaging-handoff.md`
+- `docs/remote-post-deploy-smoke.md`
 - `docs/frontend-web-desktop-handoff.md`
 - `docs/mobile-ios-handoff.md`
 - `docs/mobile-android-handoff.md`
 
 ## 1. Purpose
 
-This pass adds two small operational tools for the current multi-client testing phase:
+This pass adds operational tools for the current multi-client testing phase:
 
 - A platform-owner-only cleanup endpoint and CLI script for stale test devices.
 - A compact realtime diagnostics view in Settings -> Advanced.
+- A remote post-deploy smoke script for the deployed dev Worker.
 
 It does not freeze the API contract and does not implement Conversation Durable Object sequencing.
 
@@ -131,7 +133,36 @@ The panel shows:
 
 This is a development/testing surface. It is intentionally tucked under Advanced settings rather than exposed as product UX.
 
-## 5. Manual Cross-Client Checklist
+## 5. Remote Post-Deploy Smoke
+
+After the Worker deploys on `main`, GitHub Actions runs:
+
+```bash
+npm run smoke:backend:remote
+```
+
+against:
+
+```text
+https://voyager-api-dev.microgentic-voyager.workers.dev
+```
+
+The smoke logs in with the disposable seeded accounts, verifies
+`/v1/app/bootstrap`, proves session tokens cannot directly open `/v1/realtime`,
+mints a short-lived realtime token, sends a direct message, waits for the
+matching `room.message`, then verifies HTTP recovery reads. It revokes the
+temporary smoke devices when possible.
+
+Manual run:
+
+```bash
+BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
+npm run smoke:backend:remote
+```
+
+See `docs/remote-post-deploy-smoke.md` for full details and troubleshooting.
+
+## 6. Manual Cross-Client Checklist
 
 After this PR is deployed, manually verify:
 
@@ -141,9 +172,10 @@ After this PR is deployed, manually verify:
 - Desktop -> web messaging.
 - Web -> Android/iOS/desktop receiving while the target app is foregrounded.
 - Settings diagnostics show `connected` and recent room events after messages arrive.
+- Remote post-deploy smoke passes against the deployed Worker.
 - Device cleanup dry-run lists only expected stale test devices.
 
-## 6. Desktop Packaged Startup Note
+## 7. Desktop Packaged Startup Note
 
 The packaged Tauri desktop app can start from `tauri://localhost/index.html`
 instead of `/`. The auth route guard must treat both paths as the root splash.
@@ -161,9 +193,8 @@ do not regress. Active-window dragging depends on the Tauri v2
 `startDragging()` handler; `data-tauri-drag-region` alone may only behave
 reliably for inactive-window activation drags.
 
-## 7. Recommended Next Sequence
+## 8. Recommended Next Sequence
 
-1. Merge this dev/test operations PR.
-2. Run the manual cross-client checklist above.
-3. Create the shared API contract/schema freeze PR.
-4. Consider Conversation Durable Object sequencing only after the current client behavior and API contract are stable.
+1. Keep the remote post-deploy smoke green on `main`.
+2. Run the manual cross-client checklist above for each rebuilt client family.
+3. Consider Conversation Durable Object sequencing only after the current deployed smoke and foreground client behavior are stable.
