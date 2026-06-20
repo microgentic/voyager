@@ -14,12 +14,19 @@ const OWNER_EMAIL = process.env.REMOTE_SMOKE_OWNER_EMAIL ?? "ada@example.com";
 const RECEIVER_EMAIL = process.env.REMOTE_SMOKE_RECEIVER_EMAIL ?? "grace@example.com";
 const PASSWORD = process.env.REMOTE_SMOKE_PASSWORD ?? "voyager-demo-pass";
 const KEEP_DEVICES = process.env.REMOTE_SMOKE_KEEP_DEVICES === "1";
-const TIMEOUT_MS = Number(process.env.REMOTE_SMOKE_TIMEOUT_MS ?? 8_000);
+const TIMEOUT_MS = Number(process.env.REMOTE_SMOKE_TIMEOUT_MS ?? 20_000);
 const REALTIME_PROTOCOL = "voyager.realtime.v1";
 
 const base = BASE_URL.replace(/\/+$/, "");
 const runId = `remote-smoke-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createdDevices = [];
+const cleanupState = {
+  ownerToken: null,
+  receiverToken: null,
+  roomId: null,
+  createdRoom: false,
+  envelopeId: null
+};
 
 function auth(token) {
   return { authorization: `Bearer ${token}` };
@@ -112,45 +119,59 @@ async function openRealtimeWatcher(sessionToken, expectedRoomId) {
   const realtimeToken = await mintRealtimeToken(sessionToken, "POST /v1/realtime/token remote smoke");
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(realtimeUrl(), [REALTIME_PROTOCOL, realtimeToken]);
-    const timeout = setTimeout(() => {
+    const bufferedRoomMessages = [];
+    const readyTimeout = setTimeout(() => {
       socket.close(1000, "remote_smoke_timeout");
       reject(new Error("timed out waiting for realtime ready"));
     }, TIMEOUT_MS);
-
-    const roomMessage = new Promise((eventResolve, eventReject) => {
-      const eventTimeout = setTimeout(() => {
-        socket.close(1000, "remote_smoke_timeout");
-        eventReject(new Error("timed out waiting for remote smoke room.message"));
-      }, TIMEOUT_MS);
-
-      socket.addEventListener("message", (event) => {
-        const payload = JSON.parse(String(event.data));
-        if (payload.type === "room.message" && payload.roomId === expectedRoomId) {
-          clearTimeout(eventTimeout);
-          socket.close(1000, "remote_smoke_done");
-          eventResolve(payload);
-        }
-      });
-
-      socket.addEventListener("error", () => {
-        clearTimeout(eventTimeout);
-        eventReject(new Error("realtime WebSocket errored while waiting for room.message"));
-      });
-    });
 
     socket.addEventListener("open", () => {
       // Wait for the server's ready frame before resolving the watcher.
     });
     socket.addEventListener("message", (event) => {
       const payload = JSON.parse(String(event.data));
+      if (payload.type === "room.message" && payload.roomId === expectedRoomId) {
+        bufferedRoomMessages.push(payload);
+      }
       if (payload.type === "ready") {
-        clearTimeout(timeout);
-        resolve({ roomMessage });
+        clearTimeout(readyTimeout);
+        resolve({
+          waitForRoomMessage: (envelopeId) => waitForRoomMessage(socket, expectedRoomId, envelopeId, bufferedRoomMessages)
+        });
       }
     });
     socket.addEventListener("error", () => {
-      clearTimeout(timeout);
+      clearTimeout(readyTimeout);
       reject(new Error("realtime WebSocket failed before ready"));
+    });
+  });
+}
+
+async function waitForRoomMessage(socket, expectedRoomId, expectedEnvelopeId, bufferedRoomMessages) {
+  const buffered = bufferedRoomMessages.find((payload) => payload.envelopeId === expectedEnvelopeId);
+  if (buffered) {
+    socket.close(1000, "remote_smoke_done");
+    return buffered;
+  }
+
+  return new Promise((resolve, reject) => {
+    const eventTimeout = setTimeout(() => {
+      socket.close(1000, "remote_smoke_timeout");
+      reject(new Error(`timed out waiting for remote smoke room.message ${expectedEnvelopeId}`));
+    }, TIMEOUT_MS);
+
+    socket.addEventListener("message", (event) => {
+      const payload = JSON.parse(String(event.data));
+      if (payload.type === "room.message" && payload.roomId === expectedRoomId && payload.envelopeId === expectedEnvelopeId) {
+        clearTimeout(eventTimeout);
+        socket.close(1000, "remote_smoke_done");
+        resolve(payload);
+      }
+    });
+
+    socket.addEventListener("error", () => {
+      clearTimeout(eventTimeout);
+      reject(new Error("realtime WebSocket errored while waiting for room.message"));
     });
   });
 }
@@ -165,6 +186,27 @@ function encodeSmokePayload(senderPrincipalId) {
     client_metadata: { sender_principal_id: senderPrincipalId, created_at: new Date().toISOString() }
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+}
+
+async function cleanupSmokeArtifacts() {
+  if (cleanupState.envelopeId && cleanupState.roomId && cleanupState.receiverToken) {
+    await api(`/v1/rooms/${cleanupState.roomId}/messages/${cleanupState.envelopeId}/ack`, {
+      method: "POST",
+      headers: auth(cleanupState.receiverToken),
+      json: { status: "stored" }
+    }).catch((error) => {
+      console.warn(`Could not acknowledge remote smoke message ${cleanupState.envelopeId}: ${error.message ?? error}`);
+    });
+  }
+
+  if (cleanupState.createdRoom && cleanupState.roomId && cleanupState.ownerToken) {
+    await api(`/v1/rooms/${cleanupState.roomId}/archive`, {
+      method: "POST",
+      headers: auth(cleanupState.ownerToken)
+    }).catch((error) => {
+      console.warn(`Could not archive remote smoke room ${cleanupState.roomId}: ${error.message ?? error}`);
+    });
+  }
 }
 
 async function cleanupDevices() {
@@ -183,6 +225,22 @@ async function cleanupDevices() {
   }
 }
 
+async function cleanup() {
+  await cleanupSmokeArtifacts();
+  await cleanupDevices();
+}
+
+async function findDirectRoom(headers, counterpartPrincipalId) {
+  const rooms = await api("/v1/rooms?limit=200", { headers });
+  const room = rooms.rooms.find(
+    (candidate) =>
+      candidate.type === "direct" &&
+      candidate.status === "active" &&
+      candidate.members.some((member) => member.principalId === counterpartPrincipalId && member.status === "active")
+  );
+  return room ?? null;
+}
+
 async function main() {
   const health = await api("/health");
   if (health.status !== "healthy" || health.d1 !== "bound" || health.r2 !== "bound") {
@@ -193,19 +251,27 @@ async function main() {
   const receiver = await login(RECEIVER_EMAIL, `Remote post-deploy smoke receiver ${runId}`);
   const ownerHeaders = auth(owner.sessionToken);
   const receiverHeaders = auth(receiver.sessionToken);
+  cleanupState.ownerToken = owner.sessionToken;
+  cleanupState.receiverToken = receiver.sessionToken;
 
   assertBootstrapResponse(await api("/v1/app/bootstrap?limit=100", { headers: ownerHeaders }), "GET /v1/app/bootstrap owner");
   assertBootstrapResponse(await api("/v1/app/bootstrap?limit=100", { headers: receiverHeaders }), "GET /v1/app/bootstrap receiver");
 
   await expectRealtimeConnectFailure(receiver.sessionToken);
 
-  const directRoom = await api("/v1/rooms/direct", {
-    method: "POST",
-    headers: ownerHeaders,
-    json: { principalIds: [receiver.principal.principalId] }
-  });
-  assertRoomResponse(directRoom, "POST /v1/rooms/direct remote smoke");
-  const roomId = directRoom.room.roomId;
+  let room = await findDirectRoom(ownerHeaders, receiver.principal.principalId);
+  if (!room) {
+    const directRoom = await api("/v1/rooms/direct", {
+      method: "POST",
+      headers: ownerHeaders,
+      json: { principalIds: [receiver.principal.principalId] }
+    });
+    assertRoomResponse(directRoom, "POST /v1/rooms/direct remote smoke");
+    room = directRoom.room;
+    cleanupState.createdRoom = true;
+  }
+  const roomId = room.roomId;
+  cleanupState.roomId = roomId;
 
   const watcher = await openRealtimeWatcher(receiver.sessionToken, roomId);
   const message = await api(`/v1/rooms/${roomId}/messages`, {
@@ -219,8 +285,9 @@ async function main() {
     }
   });
   assertMessageResponse(message, "POST /v1/rooms/{roomId}/messages remote smoke");
+  cleanupState.envelopeId = message.message.envelopeId;
 
-  const realtimeEvent = await watcher.roomMessage;
+  const realtimeEvent = await watcher.waitForRoomMessage(message.message.envelopeId);
   assertRealtimeRoomMessageEvent(realtimeEvent, "remote smoke room.message");
   if (realtimeEvent.envelopeId !== message.message.envelopeId) {
     throw new Error("remote smoke realtime event envelopeId did not match sent message");
@@ -259,7 +326,7 @@ async function main() {
 }
 
 main()
-  .finally(cleanupDevices)
+  .finally(cleanup)
   .catch((error) => {
     console.error(error.message ?? error);
     process.exit(1);

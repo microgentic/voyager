@@ -46,8 +46,11 @@ Worker and seeded disposable test accounts.
 - Receiver recovery reads work through `GET /v1/rooms/{roomId}`,
   `GET /v1/rooms/{roomId}/messages`, and `GET /v1/sync`.
 
-The smoke creates temporary `probe` devices for the two accounts and revokes
-them at the end of a successful or failed run when possible.
+The smoke prefers an existing seeded Ada/Grace direct room so each run does not
+create another room. If no active direct room exists, it creates a fallback room
+and archives it during cleanup. The smoke also acknowledges the sent message as
+stored and revokes temporary `probe` devices at the end of a successful or
+failed run when possible.
 
 ## Manual Run
 
@@ -72,6 +75,15 @@ To keep the temporary smoke devices for debugging:
 
 ```bash
 REMOTE_SMOKE_KEEP_DEVICES=1 \
+BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
+npm run smoke:backend:remote
+```
+
+Default WebSocket wait timeout is 20 seconds. Override it only when diagnosing
+slow CI or network behavior:
+
+```bash
+REMOTE_SMOKE_TIMEOUT_MS=30000 \
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
 npm run smoke:backend:remote
 ```
