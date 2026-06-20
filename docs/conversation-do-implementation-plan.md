@@ -91,6 +91,7 @@ This PR routes membership-sensitive room mutations through the same per-room coo
 - For routes that do not include `roomId` directly, resolve the room id first in the Worker, then forward the mutation to the room coordinator.
 - Keep existing authorization rules and response shapes unchanged.
 - Keep room creation outside the coordinator for now because new rooms do not yet have an existing per-room concurrency surface.
+- Enforce active-room lifecycle guards for membership-affecting mutations after `room.archive` wins the serialized order.
 
 ### Timeline Boundary
 
@@ -102,6 +103,7 @@ This PR routes membership-sensitive room mutations through the same per-room coo
 
 - Member removal versus later send rejection.
 - Metadata update, invitation decline/accept, role change, ownership transfer, and member removal.
+- Archived-room update, invitation creation, invitation acceptance, and message sends are rejected.
 - Ownership transfer accept serialization.
 - Room invitation acceptance creates membership exactly once.
 - Existing authorization and response-shape smoke coverage remains green.

@@ -795,6 +795,50 @@ await expectFailure(`/v1/rooms/${archivalGroup.room.roomId}/messages`, {
   }
 }, 409);
 
+const archivedPendingGroup = await api("/v1/rooms/groups", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    name: "Archived pending invitation group",
+    description: "Exercises active-room mutation guards"
+  }
+});
+assertRoomResponse(archivedPendingGroup, "POST /v1/rooms/groups archived pending");
+const archivedPendingInvitation = await api(`/v1/rooms/${archivedPendingGroup.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: resetComplete.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+});
+assertRoomInvitationResponse(archivedPendingInvitation, "POST /v1/rooms/{roomId}/invitations archived pending");
+await api(`/v1/rooms/${archivedPendingGroup.room.roomId}/archive`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+await expectFailure(`/v1/room-invitations/${archivedPendingInvitation.invitation.roomInvitationId}/accept`, {
+  method: "POST",
+  headers: resetHeaders
+}, 409);
+await expectFailure(`/v1/rooms/${archivedPendingGroup.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: acceptedInvitee.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+}, 409);
+await expectFailure(`/v1/rooms/${archivedPendingGroup.room.roomId}`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: {
+    name: "Should not update archived room"
+  }
+}, 409);
+
 const roomsPage = await api("/v1/rooms?limit=1", { headers: ownerHeaders });
 assertPaginatedRoomsResponse(roomsPage, "GET /v1/rooms");
 if (roomsPage.rooms.length !== 1 || roomsPage.nextCursor === null) throw new Error("room pagination failed");

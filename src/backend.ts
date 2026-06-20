@@ -1256,18 +1256,23 @@ function requireCoordinatorResult(result: JsonObject | undefined): JsonObject {
 async function runConversationMutation(env: Env, payload: ConversationMutationRequest): Promise<JsonObject | undefined> {
   switch (payload.operation) {
     case "room.update":
+      await requireActiveRoom(env, payload.roomId);
       return updateRoom(env, payload.auth, payload.roomId, requiredMutationBody(payload));
     case "room.archive":
       return archiveRoom(env, payload.auth, payload.roomId);
     case "room.member.add":
+      await requireActiveRoom(env, payload.roomId);
       return addRoomMember(env, payload.auth, payload.roomId, requiredMutationBody(payload));
     case "room.invitation.create":
+      await requireActiveRoom(env, payload.roomId);
       return createRoomInvitation(env, payload.auth, payload.roomId, requiredMutationBody(payload));
     case "room.invitation.accept":
-      return acceptRoomInvitation(env, payload.auth, requiredMutationField(payload, "roomInvitationId"));
+      await requireActiveRoom(env, payload.roomId);
+      return acceptRoomInvitation(env, payload.auth, await requireRoomInvitationInRoom(env, payload.roomId, requiredMutationField(payload, "roomInvitationId")));
     case "room.invitation.decline":
-      return declineRoomInvitation(env, payload.auth, requiredMutationField(payload, "roomInvitationId"));
+      return declineRoomInvitation(env, payload.auth, await requireRoomInvitationInRoom(env, payload.roomId, requiredMutationField(payload, "roomInvitationId")));
     case "room.member.role.update":
+      await requireActiveRoom(env, payload.roomId);
       return updateRoomMemberRole(env, payload.auth, payload.roomId, requiredMutationField(payload, "principalId"), requiredMutationBody(payload));
     case "room.member.remove":
       await removeRoomMember(env, payload.auth, payload.roomId, requiredMutationField(payload, "principalId"));
@@ -1276,8 +1281,10 @@ async function runConversationMutation(env: Env, payload: ConversationMutationRe
       await leaveRoom(env, payload.auth, payload.roomId);
       return undefined;
     case "room.ownership_transfer.propose":
+      await requireActiveRoom(env, payload.roomId);
       return proposeOwnershipTransfer(env, payload.auth, payload.roomId, requiredMutationBody(payload));
     case "room.ownership_transfer.accept":
+      await requireActiveRoom(env, payload.roomId);
       return acceptOwnershipTransfer(env, payload.auth, payload.roomId, requiredMutationField(payload, "transferId"));
     default:
       throw new HttpError(400, "invalid_conversation_operation", "Conversation operation is invalid");
@@ -1961,6 +1968,22 @@ async function getRoom(env: Env, roomId: string): Promise<RoomRow> {
   const room = await env.CONTROL_DB.prepare("SELECT * FROM rooms WHERE room_id = ?").bind(roomId).first<RoomRow>();
   if (!room) throw new HttpError(404, "room_not_found", "Room not found");
   return room;
+}
+
+async function requireActiveRoom(env: Env, roomId: string): Promise<RoomRow> {
+  const room = await getRoom(env, roomId);
+  if (room.status !== "active") {
+    throw new HttpError(409, "room_not_active", "Room is not active");
+  }
+  return room;
+}
+
+async function requireRoomInvitationInRoom(env: Env, roomId: string, roomInvitationId: string): Promise<string> {
+  const invitation = await getRoomInvitation(env, roomInvitationId);
+  if (invitation.room_id !== roomId) {
+    throw new HttpError(404, "room_invitation_not_found", "Room invitation not found");
+  }
+  return roomInvitationId;
 }
 
 async function insertMembership(
