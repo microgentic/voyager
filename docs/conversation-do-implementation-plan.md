@@ -1,6 +1,6 @@
 # Conversation Durable Object Implementation Plan
 
-Status: PR 1 in progress - design plus message send sequencing
+Status: PR 2 implemented in this branch - room and membership mutation serialization
 
 ## Summary
 
@@ -18,7 +18,7 @@ MLS and hosted agent runtime sequencing are future beneficiaries only. They are 
 
 ```mermaid
 flowchart LR
-  Client["Client POST /v1/rooms/{roomId}/messages"] --> Worker["Worker auth + route"]
+  Client["Client room write"] --> Worker["Worker auth + route"]
   Worker --> Coordinator["ConversationCoordinator DO for roomId"]
   Coordinator --> D1["D1 durable write"]
   D1 --> Coordinator
@@ -32,7 +32,7 @@ flowchart LR
 
 ## PR 1: Conversation DO Design And Message Sequencing
 
-This PR introduces the per-room coordinator and routes only message sends through it.
+This PR introduced the per-room coordinator and routes only message sends through it.
 
 ### Implementation Scope
 
@@ -57,7 +57,7 @@ This PR introduces the per-room coordinator and routes only message sends throug
 
 ### Intentional Non-Goals
 
-- No membership mutation serialization yet.
+- No membership mutation serialization in PR 1.
 - No room creation changes.
 - No client contract changes.
 - No Conversation DO read model.
@@ -75,9 +75,9 @@ This PR introduces the per-room coordinator and routes only message sends throug
 
 ## PR 2: Room And Membership Mutation Serialization
 
-This PR will route membership-sensitive room mutations through the same per-room coordinator.
+This PR routes membership-sensitive room mutations through the same per-room coordinator.
 
-### Planned Scope
+### Implementation Scope
 
 - Route these room mutations through `ConversationCoordinator`:
   - archive room;
@@ -91,6 +91,7 @@ This PR will route membership-sensitive room mutations through the same per-room
 - For routes that do not include `roomId` directly, resolve the room id first in the Worker, then forward the mutation to the room coordinator.
 - Keep existing authorization rules and response shapes unchanged.
 - Keep room creation outside the coordinator for now because new rooms do not yet have an existing per-room concurrency surface.
+- Enforce active-room lifecycle guards for membership-affecting mutations after `room.archive` wins the serialized order.
 
 ### Timeline Boundary
 
@@ -100,8 +101,9 @@ This PR will route membership-sensitive room mutations through the same per-room
 
 ### PR 2 Tests
 
-- Member removal versus send ordering.
-- Leave/archive versus send rejection.
+- Member removal versus later send rejection.
+- Metadata update, invitation decline/accept, role change, ownership transfer, and member removal.
+- Archived-room update, invitation creation, invitation acceptance, and message sends are rejected.
 - Ownership transfer accept serialization.
 - Room invitation acceptance creates membership exactly once.
 - Existing authorization and response-shape smoke coverage remains green.
@@ -143,4 +145,3 @@ This PR will harden operational behavior after write coordination is in place.
 ## Later: MLS And Hosted Agent Runtime Sequencing
 
 MLS and hosted agent runtimes are intentionally outside this three-PR plan. Conversation DO write coordination should make those later systems easier to introduce because a room will already have a single mutation-ordering boundary, but this plan does not design MLS epochs, MLS commits/proposals, live agent execution, billing, push wakeups, or hosted runtime scheduling.
-

@@ -42,7 +42,7 @@ The backend is designed to let development proceed without app stores, push prov
 
 - External blockers remain deferred: iOS/Android builds, app stores, APNs/FCM, mobile background execution, production signing, notarization, billing, paid plans, production updater, hosted AI runtimes, encrypted cloud backups, public custom domain, and production assurance claims.
 - Cloudflare Worker, D1, and R2 are active dependencies because they are the chosen backend substrate, not deferred third-party blockers.
-- Durable Objects are active for foreground realtime message event hints and per-room message-send coordination. Queues, KV, Cron triggers, and push provider integrations are still deferred from the active code path. Cleanup is exposed as an admin HTTP endpoint for now so it can be tested with curl before a scheduler is introduced.
+- Durable Objects are active for foreground realtime message event hints, per-room message-send coordination, and room/membership mutation serialization. Queues, KV, Cron triggers, and push provider integrations are still deferred from the active code path. Cleanup is exposed as an admin HTTP endpoint for now so it can be tested with curl before a scheduler is introduced.
 - Password/passphrase auth is active. Passkey/WebAuthn schema support remains future-ready, but live ceremonies are deferred with the external runtime dependency work.
 - Room invitations are human-only for now. Agent principals are added directly by room admins because agents do not have an interactive acceptance UX while live agent runtimes are deferred.
 - Group creation starts with the creator as owner only. Supplying `memberPrincipalIds` is rejected so human membership flows through invitations and agents are added through the explicit member endpoint.
@@ -68,7 +68,7 @@ The backend is designed to let development proceed without app stores, push prov
 - Admin endpoints are role-gated; `platform_owner` satisfies all admin role checks.
 - The UI may open `GET /v1/realtime` for foreground near-realtime events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
 - Realtime WebSockets use `POST /v1/realtime/token` to mint a short-lived one-use socket token; clients pass that token as the WebSocket subprotocol instead of the long-lived session token.
-- Conversation-level Durable Objects now coordinate message-send sequencing and idempotency per room. Membership mutation serialization and D1/DO reconciliation remain future hardening work.
+- Conversation-level Durable Objects now coordinate message-send sequencing, idempotency, and room/membership mutations per room. D1/DO reconciliation remains future hardening work.
 
 ## 5. Important Endpoint Groups
 

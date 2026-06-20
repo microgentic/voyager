@@ -1,6 +1,6 @@
 import { audit, requireAdmin } from "./db";
 import { randomId } from "./crypto";
-import { errorResponse, HttpError, json, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
+import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import { notifyRoomRealtime } from "./realtime";
 import type { AccountRow, AuthContext, DeviceRow, Env, PrincipalRow, PolicyRow } from "./types";
 
@@ -36,8 +36,23 @@ interface ConversationSendRequest {
   requestId: string;
 }
 
+interface ConversationMutationRequest {
+  auth: AuthContext;
+  roomId: string;
+  operation: string;
+  requestId: string;
+  body?: Record<string, unknown>;
+  principalId?: string;
+  roomInvitationId?: string;
+  transferId?: string;
+}
+
 type ConversationSendResponse =
   | { ok: true; message: JsonObject; metrics: SendMessageMetrics }
+  | { ok: false; error: string; message: string; details?: unknown };
+
+type ConversationMutationResponse =
+  | { ok: true; result?: JsonObject }
   | { ok: false; error: string; message: string; details?: unknown };
 
 interface AppBootstrapResult {
@@ -139,17 +154,26 @@ export class ConversationCoordinator {
     try {
       const url = new URL(request.url);
       const sendMatch = routeParams(/^\/rooms\/([^/]+)\/messages$/, url.pathname);
-      if (request.method !== "POST" || !sendMatch) {
+      const mutationMatch = routeParams(/^\/rooms\/([^/]+)\/mutations$/, url.pathname);
+      if (request.method !== "POST" || (!sendMatch && !mutationMatch)) {
         throw new HttpError(404, "not_found", "Conversation coordinator route not found");
       }
 
-      const roomId = decodeURIComponent(sendMatch[1]);
+      const roomId = decodeURIComponent((sendMatch ?? mutationMatch)![1]);
       if (roomId.length === 0 || roomId.length > 160) {
         throw new HttpError(400, "invalid_field", "Field is invalid: roomId");
       }
-      const payload = parseConversationSendRequest(await readJsonObject(request), roomId);
+
+      const body = await readJsonObject(request);
+      if (sendMatch) {
+        const payload = parseConversationSendRequest(body, roomId);
+        requestId = payload.requestId;
+        return this.enqueue(() => this.sendMessage(payload));
+      }
+
+      const payload = parseConversationMutationRequest(body, roomId);
       requestId = payload.requestId;
-      return this.enqueue(() => this.sendMessage(payload));
+      return this.enqueue(() => this.runMutation(payload));
     } catch (error) {
       return errorResponse(error, requestId);
     }
@@ -168,6 +192,15 @@ export class ConversationCoordinator {
     try {
       const { message, metrics } = await sendMessageEnvelope(this.env, payload.auth, payload.roomId, payload.body, payload.requestId);
       return json({ ok: true, message, metrics });
+    } catch (error) {
+      return errorResponse(error, payload.requestId);
+    }
+  }
+
+  private async runMutation(payload: ConversationMutationRequest): Promise<Response> {
+    try {
+      const result = await runConversationMutation(this.env, payload);
+      return json(result === undefined ? { ok: true } : { ok: true, result });
     } catch (error) {
       return errorResponse(error, payload.requestId);
     }
@@ -305,7 +338,12 @@ export async function handleBackendFirstRoutes(
       return json({ ok: true, room: await getRoomForMember(env, auth, roomMatch[1]) });
     }
     if (request.method === "PATCH") {
-      const room = await updateRoom(env, auth, roomMatch[1], await readJsonObject(request));
+      const room = requireCoordinatorResult(
+        await runMutationThroughConversationCoordinator(env, auth, roomMatch[1], requestId, {
+          operation: "room.update",
+          body: await readJsonObject(request)
+        })
+      );
       await audit(env, {
         actorAccountId: auth.account.account_id,
         action: "room.update",
@@ -321,7 +359,11 @@ export async function handleBackendFirstRoutes(
   const roomArchiveMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/archive$/, url.pathname);
   if (roomArchiveMatch) {
     requireMethod(request, "POST");
-    const room = await archiveRoom(env, auth, roomArchiveMatch[1]);
+    const room = requireCoordinatorResult(
+      await runMutationThroughConversationCoordinator(env, auth, roomArchiveMatch[1], requestId, {
+        operation: "room.archive"
+      })
+    );
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.archive",
@@ -336,7 +378,12 @@ export async function handleBackendFirstRoutes(
   const roomMembersMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members$/, url.pathname);
   if (roomMembersMatch) {
     requireMethod(request, "POST");
-    const member = await addRoomMember(env, auth, roomMembersMatch[1], await readJsonObject(request));
+    const member = requireCoordinatorResult(
+      await runMutationThroughConversationCoordinator(env, auth, roomMembersMatch[1], requestId, {
+        operation: "room.member.add",
+        body: await readJsonObject(request)
+      })
+    );
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.member.add",
@@ -352,7 +399,12 @@ export async function handleBackendFirstRoutes(
   const roomInvitationsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/invitations$/, url.pathname);
   if (roomInvitationsMatch) {
     requireMethod(request, "POST");
-    const invitation = await createRoomInvitation(env, auth, roomInvitationsMatch[1], await readJsonObject(request));
+    const invitation = requireCoordinatorResult(
+      await runMutationThroughConversationCoordinator(env, auth, roomInvitationsMatch[1], requestId, {
+        operation: "room.invitation.create",
+        body: await readJsonObject(request)
+      })
+    );
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.invitation.create",
@@ -375,7 +427,13 @@ export async function handleBackendFirstRoutes(
   if (roomInvitationActionMatch) {
     requireMethod(request, "POST");
     const [, roomInvitationId, action] = roomInvitationActionMatch;
-    const invitation = action === "accept" ? await acceptRoomInvitation(env, auth, roomInvitationId) : await declineRoomInvitation(env, auth, roomInvitationId);
+    const roomId = await getRoomIdForPendingRoomInvitation(env, auth, roomInvitationId);
+    const invitation = requireCoordinatorResult(
+      await runMutationThroughConversationCoordinator(env, auth, roomId, requestId, {
+        operation: `room.invitation.${action}`,
+        roomInvitationId
+      })
+    );
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: `room.invitation.${action}`,
@@ -391,7 +449,13 @@ export async function handleBackendFirstRoutes(
   if (roomMemberRoleMatch) {
     requireMethod(request, "PATCH");
     const body = await readJsonObject(request);
-    const member = await updateRoomMemberRole(env, auth, roomMemberRoleMatch[1], roomMemberRoleMatch[2], body);
+    const member = requireCoordinatorResult(
+      await runMutationThroughConversationCoordinator(env, auth, roomMemberRoleMatch[1], requestId, {
+        operation: "room.member.role.update",
+        principalId: roomMemberRoleMatch[2],
+        body
+      })
+    );
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.member.role.update",
@@ -407,7 +471,10 @@ export async function handleBackendFirstRoutes(
   const roomMemberRemoveMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members\/([^/]+)$/, url.pathname);
   if (roomMemberRemoveMatch) {
     requireMethod(request, "DELETE");
-    await removeRoomMember(env, auth, roomMemberRemoveMatch[1], roomMemberRemoveMatch[2]);
+    await runMutationThroughConversationCoordinator(env, auth, roomMemberRemoveMatch[1], requestId, {
+      operation: "room.member.remove",
+      principalId: roomMemberRemoveMatch[2]
+    });
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.member.remove",
@@ -423,7 +490,9 @@ export async function handleBackendFirstRoutes(
   const leaveRoomMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/leave$/, url.pathname);
   if (leaveRoomMatch) {
     requireMethod(request, "POST");
-    await leaveRoom(env, auth, leaveRoomMatch[1]);
+    await runMutationThroughConversationCoordinator(env, auth, leaveRoomMatch[1], requestId, {
+      operation: "room.member.leave"
+    });
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.member.leave",
@@ -438,7 +507,12 @@ export async function handleBackendFirstRoutes(
   const proposeTransferMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/ownership-transfers$/, url.pathname);
   if (proposeTransferMatch) {
     requireMethod(request, "POST");
-    const transfer = await proposeOwnershipTransfer(env, auth, proposeTransferMatch[1], await readJsonObject(request));
+    const transfer = requireCoordinatorResult(
+      await runMutationThroughConversationCoordinator(env, auth, proposeTransferMatch[1], requestId, {
+        operation: "room.ownership_transfer.propose",
+        body: await readJsonObject(request)
+      })
+    );
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.ownership_transfer.propose",
@@ -454,7 +528,12 @@ export async function handleBackendFirstRoutes(
   const acceptTransferMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/ownership-transfers\/([^/]+)\/accept$/, url.pathname);
   if (acceptTransferMatch) {
     requireMethod(request, "POST");
-    const transfer = await acceptOwnershipTransfer(env, auth, acceptTransferMatch[1], acceptTransferMatch[2]);
+    const transfer = requireCoordinatorResult(
+      await runMutationThroughConversationCoordinator(env, auth, acceptTransferMatch[1], requestId, {
+        operation: "room.ownership_transfer.accept",
+        transferId: acceptTransferMatch[2]
+      })
+    );
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "room.ownership_transfer.accept",
@@ -1029,6 +1108,11 @@ async function declineRoomInvitation(env: Env, auth: AuthContext, roomInvitation
   return publicRoomInvitation(await getRoomInvitation(env, roomInvitationId));
 }
 
+async function getRoomIdForPendingRoomInvitation(env: Env, auth: AuthContext, roomInvitationId: string): Promise<string> {
+  const invitation = await getPendingRoomInvitationForPrincipal(env, roomInvitationId, auth.principal.principal_id);
+  return invitation.room_id;
+}
+
 async function updateRoomMemberRole(env: Env, auth: AuthContext, roomId: string, principalId: string, body: Record<string, unknown>): Promise<JsonObject> {
   await requireRoomOwner(env, auth, roomId);
   const principal = await getActivePrincipal(env, principalId);
@@ -1128,6 +1212,85 @@ function parseConversationSendRequest(body: Record<string, unknown>, roomId: str
   };
 }
 
+function parseConversationMutationRequest(body: Record<string, unknown>, roomId: string): ConversationMutationRequest {
+  const requestId = stringField(body, "requestId", { required: true, min: 4, max: 160 })!;
+  const operation = stringField(body, "operation", { required: true, min: 3, max: 120 })!;
+  const auth = body.auth;
+  if (!auth || typeof auth !== "object" || Array.isArray(auth)) {
+    throw new HttpError(400, "invalid_field", "Field must be an object: auth");
+  }
+  return {
+    auth: auth as AuthContext,
+    roomId,
+    operation,
+    requestId,
+    body: optionalObject(body, "body"),
+    principalId: stringField(body, "principalId", { max: 80 }),
+    roomInvitationId: stringField(body, "roomInvitationId", { max: 80 }),
+    transferId: stringField(body, "transferId", { max: 80 })
+  };
+}
+
+function requiredMutationBody(payload: ConversationMutationRequest): Record<string, unknown> {
+  if (!payload.body) {
+    throw new HttpError(400, "missing_field", "Missing required field: body");
+  }
+  return payload.body;
+}
+
+function requiredMutationField(payload: ConversationMutationRequest, key: "principalId" | "roomInvitationId" | "transferId"): string {
+  const value = payload[key];
+  if (!value) {
+    throw new HttpError(400, "missing_field", `Missing required field: ${key}`);
+  }
+  return value;
+}
+
+function requireCoordinatorResult(result: JsonObject | undefined): JsonObject {
+  if (!result) {
+    throw new HttpError(500, "conversation_do_error", "Conversation coordinator did not return a result");
+  }
+  return result;
+}
+
+async function runConversationMutation(env: Env, payload: ConversationMutationRequest): Promise<JsonObject | undefined> {
+  switch (payload.operation) {
+    case "room.update":
+      await requireActiveRoom(env, payload.roomId);
+      return updateRoom(env, payload.auth, payload.roomId, requiredMutationBody(payload));
+    case "room.archive":
+      return archiveRoom(env, payload.auth, payload.roomId);
+    case "room.member.add":
+      await requireActiveRoom(env, payload.roomId);
+      return addRoomMember(env, payload.auth, payload.roomId, requiredMutationBody(payload));
+    case "room.invitation.create":
+      await requireActiveRoom(env, payload.roomId);
+      return createRoomInvitation(env, payload.auth, payload.roomId, requiredMutationBody(payload));
+    case "room.invitation.accept":
+      await requireActiveRoom(env, payload.roomId);
+      return acceptRoomInvitation(env, payload.auth, await requireRoomInvitationInRoom(env, payload.roomId, requiredMutationField(payload, "roomInvitationId")));
+    case "room.invitation.decline":
+      return declineRoomInvitation(env, payload.auth, await requireRoomInvitationInRoom(env, payload.roomId, requiredMutationField(payload, "roomInvitationId")));
+    case "room.member.role.update":
+      await requireActiveRoom(env, payload.roomId);
+      return updateRoomMemberRole(env, payload.auth, payload.roomId, requiredMutationField(payload, "principalId"), requiredMutationBody(payload));
+    case "room.member.remove":
+      await removeRoomMember(env, payload.auth, payload.roomId, requiredMutationField(payload, "principalId"));
+      return undefined;
+    case "room.member.leave":
+      await leaveRoom(env, payload.auth, payload.roomId);
+      return undefined;
+    case "room.ownership_transfer.propose":
+      await requireActiveRoom(env, payload.roomId);
+      return proposeOwnershipTransfer(env, payload.auth, payload.roomId, requiredMutationBody(payload));
+    case "room.ownership_transfer.accept":
+      await requireActiveRoom(env, payload.roomId);
+      return acceptOwnershipTransfer(env, payload.auth, payload.roomId, requiredMutationField(payload, "transferId"));
+    default:
+      throw new HttpError(400, "invalid_conversation_operation", "Conversation operation is invalid");
+  }
+}
+
 async function sendMessageThroughConversationCoordinator(
   env: Env,
   auth: AuthContext,
@@ -1164,6 +1327,35 @@ async function sendMessageThroughConversationCoordinator(
       totalMs: conversationDoMs
     }
   };
+}
+
+async function runMutationThroughConversationCoordinator(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  requestId: string,
+  input: Omit<ConversationMutationRequest, "auth" | "roomId" | "requestId">
+): Promise<JsonObject | undefined> {
+  const coordinatorId = env.CONVERSATION_COORDINATOR.idFromName(roomId);
+  const coordinator = env.CONVERSATION_COORDINATOR.get(coordinatorId);
+  const response = await coordinator.fetch(`https://voyager-conversation.local/rooms/${encodeURIComponent(roomId)}/mutations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ auth, requestId, ...input })
+  });
+  const payload = (await response.json().catch(() => null)) as ConversationMutationResponse | null;
+
+  if (!payload || payload.ok !== true) {
+    const errorPayload = payload && payload.ok === false ? payload : null;
+    throw new HttpError(
+      response.status || 500,
+      errorPayload?.error ?? "conversation_do_error",
+      errorPayload?.message ?? "Conversation coordinator failed",
+      errorPayload?.details
+    );
+  }
+
+  return payload.result;
 }
 
 async function sendMessageEnvelope(
@@ -1776,6 +1968,22 @@ async function getRoom(env: Env, roomId: string): Promise<RoomRow> {
   const room = await env.CONTROL_DB.prepare("SELECT * FROM rooms WHERE room_id = ?").bind(roomId).first<RoomRow>();
   if (!room) throw new HttpError(404, "room_not_found", "Room not found");
   return room;
+}
+
+async function requireActiveRoom(env: Env, roomId: string): Promise<RoomRow> {
+  const room = await getRoom(env, roomId);
+  if (room.status !== "active") {
+    throw new HttpError(409, "room_not_active", "Room is not active");
+  }
+  return room;
+}
+
+async function requireRoomInvitationInRoom(env: Env, roomId: string, roomInvitationId: string): Promise<string> {
+  const invitation = await getRoomInvitation(env, roomInvitationId);
+  if (invitation.room_id !== roomId) {
+    throw new HttpError(404, "room_invitation_not_found", "Room invitation not found");
+  }
+  return roomInvitationId;
 }
 
 async function insertMembership(

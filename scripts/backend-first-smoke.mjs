@@ -620,6 +620,19 @@ const group = await api("/v1/rooms/groups", {
 });
 assertRoomResponse(group, "POST /v1/rooms/groups");
 
+const updatedGroup = await api(`/v1/rooms/${group.room.roomId}`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: {
+    name: "Smoke group updated",
+    description: "Backend-first smoke group with serialized mutations"
+  }
+});
+assertRoomResponse(updatedGroup, "PATCH /v1/rooms/{roomId}");
+if (updatedGroup.room.name !== "Smoke group updated") {
+  throw new Error("room metadata update did not persist");
+}
+
 await expectFailure(`/v1/rooms/${group.room.roomId}/members`, {
   method: "POST",
   headers: ownerHeaders,
@@ -648,6 +661,17 @@ const userRoomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations
 });
 assertRoomInvitationResponse(userRoomInvitation, "POST /v1/rooms/{roomId}/invitations user");
 
+const declinedRoomInvitation = await api(`/v1/rooms/${group.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: resetComplete.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+});
+assertRoomInvitationResponse(declinedRoomInvitation, "POST /v1/rooms/{roomId}/invitations declined");
+
 const pendingRoomInvitations = await api("/v1/room-invitations", {
   headers: inviteeHeaders
 });
@@ -667,6 +691,153 @@ const acceptedUserRoomInvitation = await api(`/v1/room-invitations/${userRoomInv
   headers: userHeaders
 });
 assertRoomInvitationResponse(acceptedUserRoomInvitation, "POST /v1/room-invitations/{roomInvitationId}/accept user");
+
+const declinedInvitation = await api(`/v1/room-invitations/${declinedRoomInvitation.invitation.roomInvitationId}/decline`, {
+  method: "POST",
+  headers: resetHeaders
+});
+assertRoomInvitationResponse(declinedInvitation, "POST /v1/room-invitations/{roomInvitationId}/decline");
+if (declinedInvitation.invitation.status !== "declined") {
+  throw new Error("declined room invitation did not return declined status");
+}
+
+const promotedMember = await api(`/v1/rooms/${group.room.roomId}/members/${accepted.principal.principalId}/role`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: { role: "admin" }
+});
+if (promotedMember.member.role !== "admin") {
+  throw new Error("room member role update did not persist");
+}
+
+const ownershipTransfer = await api(`/v1/rooms/${group.room.roomId}/ownership-transfers`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { toPrincipalId: accepted.principal.principalId }
+});
+if (!ownershipTransfer.transfer.transferId) {
+  throw new Error("ownership transfer proposal did not return a transfer id");
+}
+const acceptedTransfer = await api(`/v1/rooms/${group.room.roomId}/ownership-transfers/${ownershipTransfer.transfer.transferId}/accept`, {
+  method: "POST",
+  headers: userHeaders
+});
+if (acceptedTransfer.transfer.status !== "completed") {
+  throw new Error("ownership transfer accept did not complete");
+}
+
+await api(`/v1/rooms/${group.room.roomId}/members/${acceptedInvitee.principal.principalId}`, {
+  method: "DELETE",
+  headers: ownerHeaders
+});
+await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: inviteeHeaders,
+  json: {
+    idempotencyKey: `removed-member-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "removed-member-should-not-send-here"
+  }
+}, 403);
+
+const archivalGroup = await api("/v1/rooms/groups", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    name: "Archival smoke group",
+    description: "Exercises leave and archive serialization"
+  }
+});
+assertRoomResponse(archivalGroup, "POST /v1/rooms/groups archival");
+const archivalInvitation = await api(`/v1/rooms/${archivalGroup.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: resetComplete.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+});
+assertRoomInvitationResponse(archivalInvitation, "POST /v1/rooms/{roomId}/invitations archival");
+const acceptedArchivalInvitation = await api(`/v1/room-invitations/${archivalInvitation.invitation.roomInvitationId}/accept`, {
+  method: "POST",
+  headers: resetHeaders
+});
+assertRoomInvitationResponse(acceptedArchivalInvitation, "POST /v1/room-invitations/{roomInvitationId}/accept archival");
+await api(`/v1/rooms/${archivalGroup.room.roomId}/leave`, {
+  method: "POST",
+  headers: resetHeaders
+});
+await expectFailure(`/v1/rooms/${archivalGroup.room.roomId}/messages`, {
+  method: "POST",
+  headers: resetHeaders,
+  json: {
+    idempotencyKey: `left-member-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "left-member-should-not-send-here"
+  }
+}, 403);
+const archivedRoom = await api(`/v1/rooms/${archivalGroup.room.roomId}/archive`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertRoomResponse(archivedRoom, "POST /v1/rooms/{roomId}/archive");
+if (archivedRoom.room.status !== "archived") {
+  throw new Error("archived room did not return archived status");
+}
+await expectFailure(`/v1/rooms/${archivalGroup.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `archived-room-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "archived-room-should-not-send-here"
+  }
+}, 409);
+
+const archivedPendingGroup = await api("/v1/rooms/groups", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    name: "Archived pending invitation group",
+    description: "Exercises active-room mutation guards"
+  }
+});
+assertRoomResponse(archivedPendingGroup, "POST /v1/rooms/groups archived pending");
+const archivedPendingInvitation = await api(`/v1/rooms/${archivedPendingGroup.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: resetComplete.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+});
+assertRoomInvitationResponse(archivedPendingInvitation, "POST /v1/rooms/{roomId}/invitations archived pending");
+await api(`/v1/rooms/${archivedPendingGroup.room.roomId}/archive`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+await expectFailure(`/v1/room-invitations/${archivedPendingInvitation.invitation.roomInvitationId}/accept`, {
+  method: "POST",
+  headers: resetHeaders
+}, 409);
+await expectFailure(`/v1/rooms/${archivedPendingGroup.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: acceptedInvitee.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+}, 409);
+await expectFailure(`/v1/rooms/${archivedPendingGroup.room.roomId}`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: {
+    name: "Should not update archived room"
+  }
+}, 409);
 
 const roomsPage = await api("/v1/rooms?limit=1", { headers: ownerHeaders });
 assertPaginatedRoomsResponse(roomsPage, "GET /v1/rooms");

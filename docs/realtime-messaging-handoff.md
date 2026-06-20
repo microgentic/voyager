@@ -17,7 +17,7 @@ The important boundary is that realtime is **not** a second message store and do
 
 This follows the master-plan direction: WebSockets provide the foreground realtime experience, while HTTP sync remains the recovery and source-of-truth path. Push notifications remain future wake-up infrastructure only.
 
-This is intentionally the **foreground mailbox/session layer**, not the read source or message store. Conversation-level Durable Objects now coordinate message-send ordering per room, while membership mutation serialization and D1/DO reconciliation remain follow-up architecture work. D1 remains authoritative for message content, sync, and recovery.
+This is intentionally the **foreground mailbox/session layer**, not the read source or message store. Conversation-level Durable Objects now coordinate message-send ordering and room/membership mutations per room, while D1/DO reconciliation remains follow-up architecture work. D1 remains authoritative for message content, sync, and recovery.
 
 ## 2. Backend Implementation
 
@@ -120,6 +120,6 @@ The local backend smoke now opens authenticated WebSockets, waits for the `ready
 ## 7. Remaining Work
 
 - Add more event types as backend workflows need them, for example `room.membership`, `room.invitation`, `delivery.receipt`, or `typing` if those features become product requirements.
-- Extend Conversation Durable Objects to membership mutation serialization and D1/DO reconciliation when the project is ready for the next architecture pass.
+- Extend Conversation Durable Objects with recovery/reconciliation hardening when the project is ready for the next architecture pass.
 - Keep APNs/FCM push deferred. When implemented, push should wake sleeping devices to run sync; it should not become the source of truth.
 - Keep local encrypted history, MLS state, and device private-key proof as future security-layer work.
