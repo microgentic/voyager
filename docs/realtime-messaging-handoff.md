@@ -47,7 +47,7 @@ Authentication:
 new WebSocket(url, ["voyager.realtime.v1", realtimeToken])
 ```
 
-Realtime tokens are stored hashed in D1, expire quickly, and are consumed when the socket is opened. Reconnects must request a fresh token. Revoked sessions, expired sessions, inactive accounts, and revoked devices cannot mint or consume realtime tokens.
+Realtime tokens are stored hashed in D1, expire quickly, and are consumed when the socket is opened. Reconnects must request a fresh token. Revoked sessions, expired sessions, inactive accounts, and revoked devices cannot mint or consume realtime tokens. Token minting is rate-limited per account/device, and token expiration is checked at socket open; an already-open socket may remain connected after the token's `expiresAt`.
 
 Server-selected protocol:
 

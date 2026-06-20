@@ -260,6 +260,8 @@ Realtime events are hints only. Clients must recover authoritative state through
 
 Realtime tokens are one-use, short-lived socket credentials bound to the issuing account, session, device, and principal. Revoked sessions, expired sessions, revoked devices, inactive accounts, expired tokens, and reused tokens cannot open the socket. Clients should request a fresh realtime token for every reconnect attempt.
 
+Realtime token minting is rate-limited per account/device. Token expiration is checked when opening the socket; an already-open socket may remain connected after the token's `expiresAt`.
+
 Ready event:
 
 ```json

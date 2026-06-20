@@ -50,6 +50,8 @@ const DEFAULT_TEST_DEVICE_LABEL_MATCHERS = [
   "dev test"
 ];
 const DEFAULT_TEST_DEVICE_PLATFORM_MATCHERS = ["probe", "smoke", "test"];
+const REALTIME_TOKEN_LIMIT = 60;
+const REALTIME_TOKEN_WINDOW_SECONDS = 5 * 60;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -261,6 +263,12 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
 
   if (url.pathname === "/v1/realtime/token") {
     requireMethod(request, "POST");
+    await checkRateLimit(env, {
+      key: `realtime-token:${auth.account.account_id}:${auth.device.device_id}`,
+      action: "realtime-token",
+      limit: REALTIME_TOKEN_LIMIT,
+      windowSeconds: REALTIME_TOKEN_WINDOW_SECONDS
+    });
     const token = await createRealtimeSocketToken(env, auth);
     return json({ ok: true, realtimeToken: token.token, expiresAt: token.expiresAt });
   }
