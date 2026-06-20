@@ -1551,6 +1551,9 @@ async function runCleanup(env: Env, auth: AuthContext): Promise<JsonObject> {
   const revokedExpiredSessions = await runCounted(
     env.CONTROL_DB.prepare("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE expires_at <= CURRENT_TIMESTAMP AND revoked_at IS NULL")
   );
+  const deletedRealtimeTokens = await runCounted(
+    env.CONTROL_DB.prepare("DELETE FROM realtime_socket_tokens WHERE expires_at <= CURRENT_TIMESTAMP OR used_at IS NOT NULL OR revoked_at IS NOT NULL")
+  );
   const deletedRateLimits = await runCounted(env.CONTROL_DB.prepare("DELETE FROM rate_limits WHERE expires_at <= CURRENT_TIMESTAMP"));
   const cleanup = {
     maintenanceRunId: randomId("mrun"),
@@ -1561,6 +1564,7 @@ async function runCleanup(env: Env, auth: AuthContext): Promise<JsonObject> {
     expiredRoomInvitations,
     revokedCredentialResets,
     revokedExpiredSessions,
+    deletedRealtimeTokens,
     deletedRateLimits
   };
   await env.CONTROL_DB.prepare(

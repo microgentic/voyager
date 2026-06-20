@@ -7,9 +7,11 @@ import {
   checkRateLimit,
   cleanupTestDevices,
   completeCredentialReset,
+  consumeRealtimeSocketToken,
   createDeviceForPrincipal,
   createCredentialReset,
   createInvitation,
+  createRealtimeSocketToken,
   getActiveAdminRoles,
   getAuditEvents,
   getAuthContext,
@@ -256,6 +258,13 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   const authStartedAt = performance.now();
   const auth = await getAuthContext(env, request);
   const authTimingMs = durationSince(authStartedAt);
+
+  if (url.pathname === "/v1/realtime/token") {
+    requireMethod(request, "POST");
+    const token = await createRealtimeSocketToken(env, auth);
+    return json({ ok: true, realtimeToken: token.token, expiresAt: token.expiresAt });
+  }
+
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
   if (backendFirstResponse) {
     return backendFirstResponse;
@@ -681,9 +690,7 @@ async function getRealtimeAuthContext(env: Env, request: Request): Promise<AuthC
   if (!token) {
     throw new HttpError(401, "unauthorized", "Missing realtime token");
   }
-  const headers = new Headers(request.headers);
-  headers.set("authorization", `Bearer ${token}`);
-  return getAuthContext(env, new Request(request.url, { method: "GET", headers }));
+  return consumeRealtimeSocketToken(env, token);
 }
 
 function realtimeToken(request: Request): string | null {

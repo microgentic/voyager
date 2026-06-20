@@ -14,6 +14,7 @@ import {
   assertPaginatedRoomInvitationsResponse,
   assertPaginatedRoomsResponse,
   assertRealtimeRoomMessageEvent,
+  assertRealtimeTokenResponse,
   assertRoomInvitationResponse,
   assertRoomResponse,
   assertSidebarCollectionResponse,
@@ -128,6 +129,32 @@ async function openRealtimeMessageWatcher(token, expectedRoomId, timeoutMs = 5_0
     socket.addEventListener("close", () => {
       if (!ready) failReady(new Error("realtime websocket closed before ready"));
       else if (!settled) finishMessage(new Error("realtime websocket closed before room.message event"));
+    });
+  });
+}
+
+async function expectRealtimeConnectFailure(token, timeoutMs = 5_000) {
+  if (typeof WebSocket === "undefined") {
+    throw new Error("Node WebSocket global is required for realtime smoke coverage");
+  }
+  await new Promise((resolve, reject) => {
+    const socket = new WebSocket(realtimeUrl(), ["voyager.realtime.v1", token]);
+    const timeout = setTimeout(() => {
+      socket.close(1000, "smoke_timeout");
+      reject(new Error("realtime websocket unexpectedly stayed pending"));
+    }, timeoutMs);
+    socket.addEventListener("open", () => {
+      clearTimeout(timeout);
+      socket.close(1000, "unexpected_ready");
+      reject(new Error("realtime websocket unexpectedly opened"));
+    });
+    socket.addEventListener("error", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    socket.addEventListener("close", () => {
+      clearTimeout(timeout);
+      resolve();
     });
   });
 }
@@ -679,7 +706,14 @@ await api(`/v1/rooms/${group.room.roomId}/members`, {
   json: { principalId: agent.agent.principalId }
 });
 
-const realtimeWatcher = await openRealtimeMessageWatcher(relogin.sessionToken, direct.room.roomId);
+await expectRealtimeConnectFailure(relogin.sessionToken);
+
+const realtimeToken = await api("/v1/realtime/token", {
+  method: "POST",
+  headers: userHeaders
+});
+assertRealtimeTokenResponse(realtimeToken, "POST /v1/realtime/token");
+const realtimeWatcher = await openRealtimeMessageWatcher(realtimeToken.realtimeToken, direct.room.roomId);
 
 const directMessageResult = await apiRaw(`/v1/rooms/${direct.room.roomId}/messages`, {
   method: "POST",
@@ -720,6 +754,7 @@ if (realtimeEvent.serverSequence !== directMessage.message.serverSequence) {
 if (realtimeEvent.senderDeviceId !== owner.device.deviceId) {
   throw new Error("realtime event did not reference the sender device");
 }
+await expectRealtimeConnectFailure(realtimeToken.realtimeToken);
 
 const synced = await api("/v1/sync", { headers: userHeaders });
 assertSyncResponse(synced, "GET /v1/sync");
@@ -779,7 +814,12 @@ const completedAttachment = await api(`/v1/attachments/${attachment.attachment.a
 });
 assertAttachmentResponse(completedAttachment, "POST /v1/attachments/{attachmentId}/complete");
 
-const groupRealtimeWatcher = await openRealtimeMessageWatcher(relogin.sessionToken, group.room.roomId);
+const groupRealtimeToken = await api("/v1/realtime/token", {
+  method: "POST",
+  headers: userHeaders
+});
+assertRealtimeTokenResponse(groupRealtimeToken, "POST /v1/realtime/token group");
+const groupRealtimeWatcher = await openRealtimeMessageWatcher(groupRealtimeToken.realtimeToken, group.room.roomId);
 
 const groupMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",

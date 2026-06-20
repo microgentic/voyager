@@ -6,6 +6,7 @@ const SESSION_DAYS = 30;
 const INVITATION_DAYS = 7;
 const CREDENTIAL_RESET_DAYS = 3;
 const AUTH_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+const REALTIME_TOKEN_SECONDS = 90;
 
 export interface LoginWithPasswordMetrics {
   accountMs: number;
@@ -54,6 +55,8 @@ export interface CleanupTestDeviceResult {
     reason: string;
   }>;
 }
+
+type AuthContextRecord = Record<string, string | number | null>;
 
 export async function audit(
   env: Env,
@@ -124,7 +127,7 @@ export async function getAuthContext(env: Env, request: Request): Promise<AuthCo
       AND d.revoked_at IS NULL`
   )
     .bind(tokenHash)
-    .first<Record<string, string | number | null>>();
+    .first<AuthContextRecord>();
 
   if (!row) {
     throw new HttpError(401, "unauthorized", "Invalid or expired session");
@@ -146,6 +149,115 @@ export async function getAuthContext(env: Env, request: Request): Promise<AuthCo
     await env.CONTROL_DB.batch(touchStatements);
   }
 
+  return authContextFromRow(row, roles);
+}
+
+export async function createRealtimeSocketToken(env: Env, auth: AuthContext): Promise<{ token: string; expiresAt: string }> {
+  const token = randomToken();
+  const tokenHash = await sha256Base64Url(token);
+  const tokenId = randomId("rtt");
+  const expiresAt = sqliteTimestamp(Date.now() + REALTIME_TOKEN_SECONDS * 1000);
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO realtime_socket_tokens (
+      token_id, token_hash, account_id, session_id, device_id, principal_id, expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      tokenId,
+      tokenHash,
+      auth.account.account_id,
+      auth.session.session_id,
+      auth.device.device_id,
+      auth.principal.principal_id,
+      expiresAt
+    )
+    .run();
+  return { token, expiresAt };
+}
+
+export async function consumeRealtimeSocketToken(env: Env, token: string): Promise<AuthContext> {
+  const tokenHash = await sha256Base64Url(token.trim());
+  const tokenRow = await env.CONTROL_DB.prepare(
+    `SELECT token_id, session_id
+     FROM realtime_socket_tokens
+     WHERE token_hash = ?
+       AND used_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > CURRENT_TIMESTAMP`
+  )
+    .bind(tokenHash)
+    .first<{ token_id: string; session_id: string }>();
+  if (!tokenRow) {
+    throw new HttpError(401, "invalid_realtime_token", "Realtime token is invalid or expired");
+  }
+
+  const usedAt = operationMarker();
+  const claim = await env.CONTROL_DB.prepare(
+    `UPDATE realtime_socket_tokens
+     SET used_at = ?
+     WHERE token_id = ?
+       AND token_hash = ?
+       AND used_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > CURRENT_TIMESTAMP
+       AND EXISTS (
+         SELECT 1
+         FROM sessions s
+         JOIN accounts a ON a.account_id = s.account_id
+         JOIN devices d ON d.device_id = s.device_id
+         WHERE s.session_id = realtime_socket_tokens.session_id
+           AND s.revoked_at IS NULL
+           AND s.expires_at > CURRENT_TIMESTAMP
+           AND a.status = 'active'
+           AND d.revoked_at IS NULL
+       )`
+  )
+    .bind(usedAt, tokenRow.token_id, tokenHash)
+    .run();
+  if (changesFrom(claim) !== 1) {
+    throw new HttpError(401, "invalid_realtime_token", "Realtime token is invalid or expired");
+  }
+
+  return getAuthContextForSession(env, tokenRow.session_id);
+}
+
+async function getAuthContextForSession(env: Env, sessionId: string): Promise<AuthContext> {
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT
+      s.session_id, s.account_id AS session_account_id, s.device_id AS session_device_id,
+      s.refresh_token_hash, s.created_at AS session_created_at, s.expires_at,
+      s.last_used_at AS session_last_used_at, s.revoked_at AS session_revoked_at, s.risk_state,
+      a.account_id, a.status, a.display_name, a.email, a.phone, a.policy_id,
+      a.default_principal_id, a.activated_at, a.suspended_at, a.deletion_state,
+      a.created_at AS account_created_at, a.updated_at AS account_updated_at,
+      p.principal_id, p.principal_type, p.display_name AS principal_display_name,
+      p.avatar_ref, p.status AS principal_status, p.owner_principal_id,
+      p.created_at AS principal_created_at, p.revoked_at AS principal_revoked_at,
+      d.device_id, d.platform, d.device_label, d.credential_fingerprint,
+      d.credential_version, d.public_key_package, d.notification_capability,
+      d.client_version, d.protocol_version, d.created_at AS device_created_at,
+      d.last_seen_at, d.revoked_at AS device_revoked_at, d.revocation_reason
+    FROM sessions s
+    JOIN accounts a ON a.account_id = s.account_id
+    JOIN devices d ON d.device_id = s.device_id
+    JOIN principals p ON p.principal_id = d.principal_id
+    WHERE s.session_id = ?
+      AND s.revoked_at IS NULL
+      AND s.expires_at > CURRENT_TIMESTAMP
+      AND d.revoked_at IS NULL`
+  )
+    .bind(sessionId)
+    .first<AuthContextRecord>();
+  if (!row) {
+    throw new HttpError(401, "invalid_realtime_token", "Realtime token session is invalid or expired");
+  }
+  if (row.status !== "active") {
+    throw new HttpError(403, "account_not_active", "Account is not active");
+  }
+  return authContextFromRow(row, await getActiveAdminRoles(env, String(row.account_id)));
+}
+
+function authContextFromRow(row: AuthContextRecord, roles: string[]): AuthContext {
   return {
     account: {
       account_id: String(row.account_id),

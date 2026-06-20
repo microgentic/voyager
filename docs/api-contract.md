@@ -88,8 +88,9 @@ The startup sequence is:
 2. Store the returned `sessionToken`
 3. `GET /v1/app/bootstrap?limit=100`
 4. Hydrate identity, roles, rooms, and pending messages from the bootstrap payload
-5. Open `GET /v1/realtime` for foreground event hints
-6. Defer supporting reads such as principals, room invitations, and sidebar collections until after first paint
+5. `POST /v1/realtime/token`
+6. Open `GET /v1/realtime` with the returned short-lived token for foreground event hints
+7. Defer supporting reads such as principals, room invitations, and sidebar collections until after first paint
 
 `GET /v1/me`, `GET /v1/rooms`, and `GET /v1/sync` remain supported for compatibility and recovery.
 
@@ -130,6 +131,7 @@ Bootstrap response:
 | `POST` | `/v1/auth/password/change` | `{ ok: true }` |
 | `POST` | `/v1/auth/password/reset/complete` | `{ account, principal, device, sessionToken }` |
 | `GET` | `/v1/me` | `{ account, principal, device, roles }` |
+| `POST` | `/v1/realtime/token` | `{ realtimeToken, expiresAt }` |
 | `GET` | `/v1/sessions` | `{ sessions }` |
 | `DELETE` | `/v1/sessions/{sessionId}` | `{ ok: true }` |
 | `GET` | `/v1/devices` | `{ devices }` |
@@ -225,10 +227,27 @@ The request/review workflow is current. Real hosted AI runtimes remain deferred.
 
 ## Realtime Contract
 
+Clients mint a short-lived socket token before opening the WebSocket:
+
+```http
+POST /v1/realtime/token
+Authorization: Bearer <sessionToken>
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "realtimeToken": "vgr_...",
+  "expiresAt": "2026-06-20 00:00:00"
+}
+```
+
 `GET /v1/realtime` upgrades to a WebSocket. Browser and WebView clients authenticate with subprotocols:
 
 ```ts
-new WebSocket(url, ["voyager.realtime.v1", sessionToken]);
+new WebSocket(url, ["voyager.realtime.v1", realtimeToken]);
 ```
 
 The server responds with the selected protocol:
@@ -238,6 +257,8 @@ voyager.realtime.v1
 ```
 
 Realtime events are hints only. Clients must recover authoritative state through `GET /v1/rooms/{roomId}`, `GET /v1/rooms/{roomId}/messages`, or `GET /v1/sync`.
+
+Realtime tokens are one-use, short-lived socket credentials bound to the issuing account, session, device, and principal. Revoked sessions, expired sessions, revoked devices, inactive accounts, expired tokens, and reused tokens cannot open the socket. Clients should request a fresh realtime token for every reconnect attempt.
 
 Ready event:
 
@@ -286,8 +307,6 @@ Room sync event:
   "serverSequence": 42
 }
 ```
-
-Short-lived realtime socket tokens are future hardening. The current subprotocol session-token model is practical for browser-compatible WebSocket auth.
 
 ## Admin And Dev-Only Endpoints
 
@@ -426,7 +445,7 @@ The local backend smoke test validates the most important stable response shapes
 npm run smoke:backend:local
 ```
 
-Those assertions cover common error payloads, auth results, bootstrap, sync, rooms, room invitations, messages, realtime `room.message` events, key packages, attachments, sidebar collections, and agent request surfaces. They are intentionally additive-friendly: new fields are allowed, but missing or renamed contract fields fail the smoke run.
+Those assertions cover common error payloads, auth results, bootstrap, sync, rooms, room invitations, messages, realtime token minting, realtime `room.message` events, key packages, attachments, sidebar collections, and agent request surfaces. They are intentionally additive-friendly: new fields are allowed, but missing or renamed contract fields fail the smoke run.
 
 ## Future-Sensitive Work
 
@@ -435,6 +454,5 @@ The following are deliberately outside this freeze:
 - Conversation Durable Object sequencing and mutation serialization.
 - MLS/E2EE wire payload semantics beyond opaque transport fields.
 - Push notification provider contracts.
-- Short-lived realtime socket tokens.
 - Production hosted AI agent runtime APIs.
 - Billing, paid plans, app store distribution, and production updater contracts.

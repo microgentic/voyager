@@ -30,6 +30,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
+  { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/invitations", stability: "stable/current" },
   { method: "GET", path: "/v1/room-invitations", stability: "stable/current" },
   { method: "POST", path: "/v1/room-invitations/{roomInvitationId}/accept", stability: "stable/current" },
@@ -199,6 +200,12 @@ export function assertRealtimeRoomMessageEvent(payload, context) {
   string(value.envelopeId, `${context}.envelopeId`);
   number(value.serverSequence, `${context}.serverSequence`);
   string(value.senderDeviceId, `${context}.senderDeviceId`);
+}
+
+export function assertRealtimeTokenResponse(payload, context) {
+  const value = success(payload, context);
+  string(value.realtimeToken, `${context}.realtimeToken`);
+  string(value.expiresAt, `${context}.expiresAt`);
 }
 
 export function assertEndpointCatalog() {

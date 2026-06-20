@@ -359,6 +359,11 @@ export interface BootstrapStatus {
 	bootstrapConfigured: boolean;
 }
 
+export interface RealtimeTokenResult {
+	realtimeToken: string;
+	expiresAt: string;
+}
+
 export interface RealtimeReadyEvent {
 	type: 'ready';
 	accountId: string;
