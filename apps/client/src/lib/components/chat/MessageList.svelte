@@ -52,6 +52,7 @@
 	let atBottom = $state(true);
 	let prevCount = 0;
 	let prevRoom = '';
+	let bottomSettleTimers: number[] = [];
 
 	function onScroll(): void {
 		const el = scrollEl;
@@ -63,8 +64,24 @@
 		await tick();
 		const el = scrollEl;
 		if (!el) return;
-		el.scrollTo({ top: el.scrollHeight, behavior });
+		if (behavior === 'auto') {
+			el.scrollTop = el.scrollHeight;
+		} else {
+			el.scrollTo({ top: el.scrollHeight, behavior });
+		}
 		atBottom = true;
+	}
+
+	function clearBottomSettleTimers(): void {
+		for (const timer of bottomSettleTimers) window.clearTimeout(timer);
+		bottomSettleTimers = [];
+	}
+
+	function settleToBottom(): void {
+		clearBottomSettleTimers();
+		for (const delay of [0, 50, 120, 220, 360, 520, 760]) {
+			bottomSettleTimers.push(window.setTimeout(() => void toBottom('auto'), delay));
+		}
 	}
 
 	function inputHasFocus(): boolean {
@@ -74,21 +91,36 @@
 
 	onMount(() => {
 		const viewport = window.visualViewport;
-		if (!viewport) return undefined;
+		const viewportHeight = () => Math.min(viewport?.height ?? window.innerHeight, window.innerHeight);
 
-		let previousHeight = viewport.height;
+		let previousHeight = viewportHeight();
 		const keepLatestVisible = () => {
-			const height = viewport.height;
-			const keyboardOpened = height < previousHeight - 24;
+			const height = viewportHeight();
+			const heightChanged = Math.abs(height - previousHeight) > 1;
 			previousHeight = height;
-			if (keyboardOpened && inputHasFocus()) void toBottom('auto');
+			if (heightChanged && inputHasFocus()) settleToBottom();
+		};
+		const keepLatestVisibleAfterFocus = (event: FocusEvent | Event) => {
+			if (event.type === 'voyager:composer-focus') {
+				settleToBottom();
+				return;
+			}
+			const target = event.target;
+			if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) settleToBottom();
 		};
 
-		viewport.addEventListener('resize', keepLatestVisible);
-		viewport.addEventListener('scroll', keepLatestVisible);
+		viewport?.addEventListener('resize', keepLatestVisible);
+		viewport?.addEventListener('scroll', keepLatestVisible);
+		window.addEventListener('resize', keepLatestVisible);
+		document.addEventListener('focusin', keepLatestVisibleAfterFocus);
+		document.addEventListener('voyager:composer-focus', keepLatestVisibleAfterFocus);
 		return () => {
-			viewport.removeEventListener('resize', keepLatestVisible);
-			viewport.removeEventListener('scroll', keepLatestVisible);
+			clearBottomSettleTimers();
+			viewport?.removeEventListener('resize', keepLatestVisible);
+			viewport?.removeEventListener('scroll', keepLatestVisible);
+			window.removeEventListener('resize', keepLatestVisible);
+			document.removeEventListener('focusin', keepLatestVisibleAfterFocus);
+			document.removeEventListener('voyager:composer-focus', keepLatestVisibleAfterFocus);
 		};
 	});
 
