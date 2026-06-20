@@ -17,6 +17,8 @@ The client uses `GET /v1/app/bootstrap?limit=100` as the first authenticated dat
 
 The app layout consumes the bootstrap payload, hydrates the room list, ingests pending messages, starts realtime, and starts polling without immediately repeating `/v1/sync`. Non-critical lists, such as principals, invitations, and sidebar collections, load after first paint.
 
+The canonical API shape for this startup path is documented in `docs/api-contract.md`.
+
 Existing endpoints remain available for compatibility:
 
 - `GET /v1/me`
@@ -65,4 +67,3 @@ Do not treat this as the final global performance architecture. Remaining candid
 - D1 read replication after duplicate reads and unnecessary auth writes stay reduced.
 - Conversation Durable Object sequencing for future room mutation ownership, not startup speed.
 - Password-hash/passkey strategy review only after login timing data is collected; do not lower PBKDF2 cost as a quick speed fix.
-- API contract freeze after the bootstrap shape and startup waterfall have been verified on web, desktop, and mobile.

@@ -1,17 +1,9 @@
 import { api } from '$lib/api';
+import type { RealtimeEvent } from '$lib/api/types';
 import { auth } from './auth.svelte';
 import { sync } from './sync.svelte';
 
 type RealtimeState = 'idle' | 'connecting' | 'connected' | 'retrying';
-
-interface RealtimeEvent {
-	type?: string;
-	eventId?: string;
-	roomId?: string;
-	envelopeId?: string;
-	serverSequence?: number;
-	createdAt?: string;
-}
 
 class RealtimeStore {
 	active = $state(false);

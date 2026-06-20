@@ -3,6 +3,16 @@
 // attachment blobs and key-package `package` fields as opaque; those meanings
 // live on the client (see $lib/protocol/codec).
 
+export type ApiSuccess<T extends Record<string, unknown> = Record<string, unknown>> = { ok: true } & T;
+
+export interface ApiErrorBody {
+	ok: false;
+	error: string;
+	message: string;
+	requestId: string;
+	details?: unknown;
+}
+
 export type AccountStatus =
 	| 'invited'
 	| 'active'
@@ -342,7 +352,43 @@ export interface Paginated<T> {
 	nextCursor: string | null;
 }
 
+export type CursorPage<T> = Paginated<T>;
+
 export interface BootstrapStatus {
 	bootstrapped: boolean;
 	bootstrapConfigured: boolean;
 }
+
+export interface RealtimeReadyEvent {
+	type: 'ready';
+	accountId: string;
+	principalId: string;
+	deviceId: string;
+	createdAt: string;
+}
+
+export interface RealtimePongEvent {
+	type: 'pong';
+	id: string | null;
+	createdAt: string;
+}
+
+export interface RealtimeRoomMessageEvent {
+	type: 'room.message';
+	eventId: string;
+	createdAt: string;
+	roomId: string;
+	envelopeId: string;
+	serverSequence: number;
+	senderDeviceId: string;
+}
+
+export interface RealtimeRoomSyncEvent {
+	type: 'room.sync';
+	eventId: string;
+	createdAt: string;
+	roomId?: string;
+	serverSequence?: number;
+}
+
+export type RealtimeEvent = RealtimeReadyEvent | RealtimePongEvent | RealtimeRoomMessageEvent | RealtimeRoomSyncEvent;

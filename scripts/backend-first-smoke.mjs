@@ -37,6 +37,20 @@ async function expectFailure(path, options, status) {
   return payload;
 }
 
+function assertApiErrorShape(payload, context) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`${context} did not return a JSON error object: ${JSON.stringify(payload)}`);
+  }
+  if (payload.ok !== false) {
+    throw new Error(`${context} error payload did not set ok=false: ${JSON.stringify(payload)}`);
+  }
+  for (const field of ["error", "message", "requestId"]) {
+    if (typeof payload[field] !== "string" || payload[field].length === 0) {
+      throw new Error(`${context} error payload missing string ${field}: ${JSON.stringify(payload)}`);
+    }
+  }
+}
+
 function auth(token) {
   return { authorization: `Bearer ${token}` };
 }
@@ -293,7 +307,7 @@ const relogin = await api("/v1/auth/password/login", {
 if (relogin.device.deviceId !== login.device.deviceId) throw new Error("login did not reuse the supplied device ID");
 userHeaders = auth(relogin.sessionToken);
 
-await expectFailure("/v1/app/bootstrap", {}, 401);
+assertApiErrorShape(await expectFailure("/v1/app/bootstrap", {}, 401), "unauthenticated bootstrap");
 
 await expectFailure(`/v1/devices/${owner.device.deviceId}/revoke`, {
   method: "POST",
@@ -655,11 +669,23 @@ if (!directTiming.includes("message;dur=") || !directTiming.includes("realtime;d
 const directMessage = directMessageResult.payload;
 
 const realtimeEvent = await realtimeWatcher.wait;
+if (realtimeEvent.roomId !== direct.room.roomId) {
+  throw new Error("realtime event did not reference the sent room");
+}
+if (typeof realtimeEvent.eventId !== "string" || realtimeEvent.eventId.length === 0) {
+  throw new Error("realtime event did not include an event id");
+}
+if (typeof realtimeEvent.createdAt !== "string" || realtimeEvent.createdAt.length === 0) {
+  throw new Error("realtime event did not include a creation timestamp");
+}
 if (realtimeEvent.envelopeId !== directMessage.message.envelopeId) {
   throw new Error("realtime event did not reference the sent message envelope");
 }
 if (realtimeEvent.serverSequence !== directMessage.message.serverSequence) {
   throw new Error("realtime event did not reference the sent message sequence");
+}
+if (realtimeEvent.senderDeviceId !== owner.device.deviceId) {
+  throw new Error("realtime event did not reference the sender device");
 }
 
 const synced = await api("/v1/sync", { headers: userHeaders });
@@ -730,11 +756,17 @@ const groupMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
 });
 
 const groupRealtimeEvent = await groupRealtimeWatcher.wait;
+if (groupRealtimeEvent.roomId !== group.room.roomId) {
+  throw new Error("group realtime event did not reference the sent room");
+}
 if (groupRealtimeEvent.envelopeId !== groupMessage.message.envelopeId) {
   throw new Error("group realtime event did not reference the sent message envelope");
 }
 if (groupRealtimeEvent.serverSequence !== groupMessage.message.serverSequence) {
   throw new Error("group realtime event did not reference the sent message sequence");
+}
+if (groupRealtimeEvent.senderDeviceId !== owner.device.deviceId) {
+  throw new Error("group realtime event did not reference the sender device");
 }
 
 await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
