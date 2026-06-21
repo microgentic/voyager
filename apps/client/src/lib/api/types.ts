@@ -147,6 +147,9 @@ export interface MessageEnvelope {
 	editCount: number;
 	forwardedFrom: MessageForwardedFrom | null;
 	deletedForEveryone: MessageDeletedForEveryone;
+	threadRootEnvelopeId: string | null;
+	alsoSentToRoom: boolean;
+	threadSummary: MessageThreadSummary | null;
 	receiptSummary: MessageReceiptSummary;
 	reactions: MessageReactionSummary[];
 	pin: MessagePinSummary;
@@ -154,6 +157,13 @@ export interface MessageEnvelope {
 
 export interface MessageForwardedFrom {
 	forwardedByPrincipalId: string;
+}
+
+export interface MessageThreadSummary {
+	replyCount: number;
+	lastReplyEnvelopeId: string | null;
+	lastReplySenderPrincipalId: string | null;
+	lastReplyAt: string | null;
 }
 
 export interface MessageDeletedForEveryone {
@@ -391,6 +401,15 @@ export interface ForwardMessageInput extends SendMessageInput {
 	targetRoomId: string;
 }
 
+export interface ThreadReplyInput extends SendMessageInput {
+	alsoSendToRoom?: boolean;
+}
+
+export interface ThreadView {
+	root: MessageEnvelope;
+	replies: MessageEnvelope[];
+}
+
 export interface EditMessageInput {
 	ciphertext: string;
 	protocolType: ProtocolType;
@@ -453,4 +472,21 @@ export interface RealtimeRoomSyncEvent {
 	serverSequence?: number;
 }
 
-export type RealtimeEvent = RealtimeReadyEvent | RealtimePongEvent | RealtimeRoomMessageEvent | RealtimeRoomSyncEvent;
+export interface RealtimeRoomThreadEvent {
+	type: 'room.thread';
+	eventId: string;
+	createdAt: string;
+	roomId: string;
+	envelopeId: string;
+	serverSequence: number;
+	senderDeviceId: string;
+	rootEnvelopeId: string;
+	alsoSentToRoom: boolean;
+}
+
+export type RealtimeEvent =
+	| RealtimeReadyEvent
+	| RealtimePongEvent
+	| RealtimeRoomMessageEvent
+	| RealtimeRoomSyncEvent
+	| RealtimeRoomThreadEvent;

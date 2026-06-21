@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { ArrowDown, CheckSquare, Copy, Forward, Hand, Info, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Trash2, X } from '@lucide/svelte';
+	import { ArrowDown, CheckSquare, Copy, Forward, Hand, Info, MessagesSquare, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Trash2, X } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, rooms, toasts, type ChatMessage } from '$lib/stores';
 	import MessageBubble from './MessageBubble.svelte';
@@ -14,12 +14,14 @@
 		room,
 		searchOpen = $bindable(false),
 		onReply,
-		onEdit
+		onEdit,
+		onOpenThread
 	}: {
 		room: Room;
 		searchOpen?: boolean;
 		onReply?: (message: ChatMessage) => void;
 		onEdit?: (message: ChatMessage) => void;
+		onOpenThread?: (rootEnvelopeId: string) => void;
 	} = $props();
 
 	const GROUP_GAP_MS = 5 * 60 * 1000;
@@ -169,6 +171,22 @@
 		closeActionMenu();
 		selectedKeys = [];
 		onReply?.(message);
+	}
+
+	function canReplyInThread(message: ChatMessage): boolean {
+		return (
+			Boolean(onOpenThread) &&
+			Boolean(message.envelopeId) &&
+			message.delivery === 'sent' &&
+			!message.deletedForEveryone.deleted &&
+			!message.threadRootEnvelopeId
+		);
+	}
+
+	function openThreadFor(message: ChatMessage): void {
+		closeActionMenu();
+		selectedKeys = [];
+		if (message.envelopeId) onOpenThread?.(message.envelopeId);
 	}
 
 	function editMessage(message: ChatMessage): void {
@@ -503,6 +521,7 @@
 						isLastOfGroup={row.last}
 						selected={selectedKeys.includes(row.message.key)}
 						{selectionMode}
+						{onOpenThread}
 						onActionRequest={openActionMenu}
 						onToggleSelect={toggleSelected}
 					/>
@@ -545,6 +564,16 @@
 				>
 					<Reply class="h-4 w-4 opacity-80" />
 					<span>Reply</span>
+				</button>
+			{/if}
+			{#if canReplyInThread(actionMenu.message)}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+					onclick={() => openThreadFor(actionMenu!.message)}
+				>
+					<MessagesSquare class="h-4 w-4 opacity-80" />
+					<span>Reply in thread</span>
 				</button>
 			{/if}
 			{#if actionMenu.message.mine && actionMenu.message.delivery === 'sent' && !actionMenu.message.content.undecodable && !actionMenu.message.deletedForEveryone.deleted}

@@ -175,6 +175,8 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `POST` | `/v1/rooms/{roomId}/messages/delete` | `{ deleted: { scope, envelopeIds } }` |
 | `PATCH` | `/v1/rooms/{roomId}/messages/{envelopeId}` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/forward` | `{ message }` |
+| `GET` | `/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread` | `{ thread: { root, replies } }` |
+| `POST` | `/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/reactions` | `{ message }` |
 | `DELETE` | `/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/pin` | `{ message }` |
@@ -219,6 +221,14 @@ Message responses include additive edit and delivery metadata:
     "deletedAt": null,
     "deletedByPrincipalId": null,
     "reason": null
+  },
+  "threadRootEnvelopeId": null,
+  "alsoSentToRoom": false,
+  "threadSummary": {
+    "replyCount": 3,
+    "lastReplyEnvelopeId": "msg_...",
+    "lastReplySenderPrincipalId": "prn_...",
+    "lastReplyAt": "2026-06-21 12:00:00"
   }
 }
 ```
@@ -226,6 +236,8 @@ Message responses include additive edit and delivery metadata:
 `receiptSummary.status` is the client-facing mirror signal: `sent`, `delivered`, or `read`. Receipt rows remain per-device internally, and the compact status advances when at least one recipient device reaches the delivered/read state; use the numeric counts for detailed delivery diagnostics. `PATCH /v1/rooms/{roomId}/messages/{envelopeId}` lets the original sender replace the current opaque payload for an active, non-expired message. The previous opaque payload is preserved in `message_edits`; the active message keeps the same `envelopeId` and `serverSequence`.
 
 `POST /v1/rooms/{roomId}/messages/{envelopeId}/forward` is a client-mediated forward: the client re-encodes the displayable content for `targetRoomId`, and the backend validates that the source message is visible to the caller and not deleted-for-everyone. Forward provenance is server-asserted and can only be set through this route — a normal `POST /v1/rooms/{roomId}/messages` cannot mark a message as forwarded. The new target-room envelope's public `forwardedFrom` exposes only `forwardedByPrincipalId`; the source room, envelope, and original sender are retained in D1 and the audit log for traceability but are not exposed to target-room members. D1 remains authoritative and the source ciphertext is never interpreted by the backend.
+
+Threads are a same-room sub-timeline anchored on a root message. A thread reply is an ordinary message envelope whose server-asserted `threadRootEnvelopeId` points at the root; `alsoSentToRoom` marks replies that are also broadcast into the main room timeline. `GET /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread` returns `{ root, replies }` (the root may be a tombstone yet still anchor existing replies). `POST /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread` accepts a normal send body plus an optional `"alsoSendToRoom": true` and creates the reply through the `ConversationCoordinator`. Thread metadata is server-asserted and can only be set through the thread route — a normal `POST /v1/rooms/{roomId}/messages` ignores `threadRootEnvelopeId`/`alsoSentToRoom`. The main timeline (`GET /messages`, `/v1/sync`, `/v1/app/bootstrap`) returns normal messages plus only the thread replies that were also sent to the room. `threadSummary` is computed on read for the current viewer (so replies hidden with delete-for-me are excluded) and is `null` until the first visible reply. New replies are rejected once the root is deleted-for-everyone, but existing replies remain readable. Thread roots are top-level messages only — threads do not nest. New thread replies and later mutations to existing thread replies emit `room.thread` realtime hints; clients recover authoritative state by refetching the thread endpoint.
 
 Reactions are room message metadata. `POST /reactions` accepts `{ "reaction": "👍" }` and is idempotent per `(message, principal)`: a caller has one active reaction per message, and posting a different reaction replaces the previous one. `DELETE /reactions/{reaction}` removes only the caller's matching active reaction. Message `reactions[].reactedByMe` is viewer-specific; counts are room-wide.
 

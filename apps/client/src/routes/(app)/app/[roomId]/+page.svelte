@@ -1,23 +1,39 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { MessageSquareX } from '@lucide/svelte';
-	import { rooms, messages, sync } from '$lib/stores';
+	import { rooms, messages, sync, ui } from '$lib/stores';
 	import type { ChatMessage } from '$lib/stores';
 	import RoomHeader from '$lib/components/chat/RoomHeader.svelte';
 	import MessageList from '$lib/components/chat/MessageList.svelte';
 	import Composer from '$lib/components/chat/Composer.svelte';
+	import ThreadPane from '$lib/components/chat/ThreadPane.svelte';
 	import RoomDetails from '$lib/components/rooms/RoomDetails.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 
 	const roomId = $derived(page.params.roomId ?? '');
 	const room = $derived(rooms.get(roomId));
+	// The open thread lives in the URL so refresh, back, and deep links work.
+	const threadRootId = $derived(page.url.searchParams.get('thread'));
 	let notFound = $state(false);
 	let showDetails = $state(false);
 	let searchOpen = $state(false);
 	let replyTo = $state<ChatMessage | null>(null);
 	let editingMessage = $state<ChatMessage | null>(null);
+
+	function openThread(rootEnvelopeId: string): void {
+		const url = new URL(page.url);
+		url.searchParams.set('thread', rootEnvelopeId);
+		void goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+	}
+
+	function closeThread(): void {
+		const url = new URL(page.url);
+		url.searchParams.delete('thread');
+		void goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+	}
 
 	function startReply(message: ChatMessage): void {
 		editingMessage = null;
@@ -66,10 +82,21 @@
 </script>
 
 {#if room}
-	<div class="flex h-full min-h-0 flex-col">
-		<RoomHeader {room} onShowDetails={() => (showDetails = true)} onToggleSearch={() => (searchOpen = !searchOpen)} />
-		<MessageList {room} bind:searchOpen onReply={startReply} onEdit={startEdit} />
-		<Composer {room} {replyTo} {editingMessage} onCancelContext={clearComposerContext} onSent={clearComposerContext} />
+	<div class="relative flex h-full min-h-0">
+		<div class="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+			<RoomHeader {room} onShowDetails={() => (showDetails = true)} onToggleSearch={() => (searchOpen = !searchOpen)} />
+			<MessageList {room} bind:searchOpen onReply={startReply} onEdit={startEdit} onOpenThread={openThread} />
+			<Composer {room} {replyTo} {editingMessage} onCancelContext={clearComposerContext} onSent={clearComposerContext} />
+		</div>
+		{#if threadRootId}
+			<div
+				class={ui.isWide
+					? 'flex h-full min-h-0 w-[400px] shrink-0 flex-col border-l border-border bg-surface'
+					: 'absolute inset-0 z-40 flex min-h-0 flex-col bg-surface'}
+			>
+				<ThreadPane {room} rootEnvelopeId={threadRootId} onClose={closeThread} />
+			</div>
+		{/if}
 	</div>
 	<RoomDetails {room} bind:open={showDetails} />
 {:else if notFound}

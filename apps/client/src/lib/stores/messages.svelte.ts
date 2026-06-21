@@ -8,6 +8,7 @@ import type {
 	MessageReactionSummary,
 	MessageReceiptSummary,
 	MessageState,
+	MessageThreadSummary,
 	ProtocolType
 } from '$lib/api/types';
 import { messageCodec, type DecodedMessage, type MessageContent } from '$lib/protocol/codec';
@@ -31,6 +32,9 @@ export interface ChatMessage {
 	editCount: number;
 	forwardedFrom: MessageForwardedFrom | null;
 	deletedForEveryone: MessageDeletedForEveryone;
+	threadRootEnvelopeId: string | null;
+	alsoSentToRoom: boolean;
+	threadSummary: MessageThreadSummary | null;
 	receiptSummary: MessageReceiptSummary;
 	reactions: MessageReactionSummary[];
 	pin: MessagePinSummary;
@@ -79,8 +83,24 @@ function deletedContent(): DecodedMessage {
 	};
 }
 
+/** Upsert a message into a list, matching an existing entry by envelope or idempotency key. */
+function upsertMessage(list: ChatMessage[], message: ChatMessage): ChatMessage[] {
+	const next = [...list];
+	const idx = next.findIndex(
+		(e) =>
+			(e.envelopeId && e.envelopeId === message.envelopeId) ||
+			(e.idempotencyKey && e.idempotencyKey === message.idempotencyKey)
+	);
+	if (idx >= 0) next[idx] = message;
+	else next.push(message);
+	return next;
+}
+
 class MessagesStore {
 	byRoom = $state<Record<string, ChatMessage[]>>({});
+	// Thread replies live here, keyed by root envelope id, so thread-only replies
+	// never enter the main timeline (byRoom) or its unread counts.
+	threads = $state<Record<string, ChatMessage[]>>({});
 	lastReadSeq = $state<Record<string, number>>(loadReadState());
 	loadedRooms = new SvelteSet<string>();
 	loadingRoom = $state<string | null>(null);
@@ -94,6 +114,7 @@ class MessagesStore {
 
 	reset(): void {
 		this.byRoom = {};
+		this.threads = {};
 		this.lastReadSeq = {};
 		this.cursor = {};
 		this.acked.clear();
@@ -149,6 +170,9 @@ class MessagesStore {
 				deletedByPrincipalId: null,
 				reason: null
 			},
+			threadRootEnvelopeId: env.threadRootEnvelopeId ?? null,
+			alsoSentToRoom: env.alsoSentToRoom ?? false,
+			threadSummary: env.threadSummary ?? null,
 			receiptSummary: env.receiptSummary ?? { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
 			reactions: env.reactions ?? [],
 			pin: env.pin ?? { pinned: false, pinnedAt: null, pinnedByPrincipalId: null },
@@ -160,9 +184,9 @@ class MessagesStore {
 		};
 	}
 
-	async ingest(envelopes: MessageEnvelope[]): Promise<void> {
-		if (!envelopes.length) return;
-		const decoded = await Promise.all(
+	private async decodeEnvelopes(envelopes: MessageEnvelope[]): Promise<ChatMessage[]> {
+		if (!envelopes.length) return [];
+		return Promise.all(
 			envelopes.map(async (env) =>
 				this.toChatMessage(
 					env,
@@ -172,28 +196,64 @@ class MessagesStore {
 				)
 			)
 		);
-		const next = { ...this.byRoom };
-		const grouped = new Map<string, ChatMessage[]>();
+	}
+
+	async ingest(envelopes: MessageEnvelope[]): Promise<void> {
+		const decoded = await this.decodeEnvelopes(envelopes);
+		if (!decoded.length) return;
+		this.applyMessages(decoded);
+	}
+
+	/**
+	 * Fan a decoded batch into the right stores. Normal messages and thread roots
+	 * land in the main timeline; thread replies land in their thread, and replies
+	 * that were also sent to the room land in both. Only main-timeline messages
+	 * advance the room cursor that drives forward pulls.
+	 */
+	private applyMessages(decoded: ChatMessage[]): void {
+		const nextRooms = { ...this.byRoom };
+		const nextThreads = { ...this.threads };
+		const touchedRooms = new Set<string>();
+		const touchedThreads = new Set<string>();
 		for (const m of decoded) {
-			const arr = grouped.get(m.roomId) ?? [];
-			arr.push(m);
-			grouped.set(m.roomId, arr);
-		}
-		for (const [roomId, incoming] of grouped) {
-			const existing = next[roomId] ? [...next[roomId]] : [];
-			for (const m of incoming) {
-				const idx = existing.findIndex(
-					(e) =>
-						(e.envelopeId && e.envelopeId === m.envelopeId) ||
-						(e.idempotencyKey && e.idempotencyKey === m.idempotencyKey)
-				);
-				if (idx >= 0) existing[idx] = m;
-				else existing.push(m);
-				this.cursor[roomId] = Math.max(this.cursor[roomId] ?? 0, m.serverSequence);
+			const isReply = Boolean(m.threadRootEnvelopeId);
+			if (!isReply || m.alsoSentToRoom) {
+				nextRooms[m.roomId] = upsertMessage(nextRooms[m.roomId] ?? [], m);
+				touchedRooms.add(m.roomId);
+				this.cursor[m.roomId] = Math.max(this.cursor[m.roomId] ?? 0, m.serverSequence);
 			}
-			next[roomId] = sortMessages(existing);
+			if (isReply && m.threadRootEnvelopeId) {
+				const root = m.threadRootEnvelopeId;
+				nextThreads[root] = upsertMessage(nextThreads[root] ?? [], m);
+				touchedThreads.add(root);
+			}
 		}
-		this.byRoom = next;
+		for (const roomId of touchedRooms) nextRooms[roomId] = sortMessages(nextRooms[roomId]);
+		for (const root of touchedThreads) nextThreads[root] = sortMessages(nextThreads[root]);
+		if (touchedRooms.size) this.byRoom = nextRooms;
+		if (touchedThreads.size) this.threads = nextThreads;
+	}
+
+	threadList(rootEnvelopeId: string): ChatMessage[] {
+		return this.threads[rootEnvelopeId] ?? [];
+	}
+
+	/** Load (or refresh) a thread: its root summary into the main timeline and its replies into the thread store. */
+	async openThread(roomId: string, rootEnvelopeId: string): Promise<void> {
+		const view = await api.getThread(roomId, rootEnvelopeId);
+		const [root, ...replies] = await this.decodeEnvelopes([view.root, ...view.replies]);
+		if (root) this.applyMessages([root]);
+		this.applyMessages(replies);
+		this.reconcileThread(rootEnvelopeId, replies);
+	}
+
+	/** Refresh a thread after a realtime hint without disturbing optimistic state. */
+	async syncThread(roomId: string, rootEnvelopeId: string): Promise<void> {
+		try {
+			await this.openThread(roomId, rootEnvelopeId);
+		} catch {
+			/* transient; next hint or manual reopen retries */
+		}
 	}
 
 	/** Pull everything after our cursor (forward-only; the backend has no before-cursor yet). */
@@ -248,6 +308,9 @@ class MessagesStore {
 			editCount: 0,
 			forwardedFrom: null,
 			deletedForEveryone: { deleted: false, deletedAt: null, deletedByPrincipalId: null, reason: null },
+			threadRootEnvelopeId: null,
+			alsoSentToRoom: false,
+			threadSummary: null,
 			receiptSummary: { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
 			reactions: [],
 			pin: { pinned: false, pinnedAt: null, pinnedByPrincipalId: null },
@@ -378,9 +441,154 @@ class MessagesStore {
 		return this.findByEnvelopeId(targetRoomId, envelope.envelopeId) ?? null;
 	}
 
+	async replyInThread(
+		roomId: string,
+		rootEnvelopeId: string,
+		content: MessageContent,
+		alsoSendToRoom: boolean
+	): Promise<void> {
+		const principalId = auth.principal?.principalId;
+		if (!principalId) throw new Error('Not authenticated');
+		const key = idempotencyKey();
+		const createdAt = new Date().toISOString();
+		const optimistic: ChatMessage = {
+			key: localId('msg'),
+			envelopeId: null,
+			idempotencyKey: key,
+			roomId,
+			senderPrincipalId: principalId,
+			senderDeviceId: auth.device?.deviceId ?? null,
+			serverSequence: 0,
+			serverReceivedAt: null,
+			clientCreatedAt: createdAt,
+			editedAt: null,
+			editCount: 0,
+			forwardedFrom: null,
+			deletedForEveryone: { deleted: false, deletedAt: null, deletedByPrincipalId: null, reason: null },
+			threadRootEnvelopeId: rootEnvelopeId,
+			alsoSentToRoom: alsoSendToRoom,
+			threadSummary: null,
+			receiptSummary: { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
+			reactions: [],
+			pin: { pinned: false, pinnedAt: null, pinnedByPrincipalId: null },
+			state: 'local',
+			protocolType: messageCodec.protocolType,
+			content: {
+				schemaVersion: 1,
+				contentType: content.contentType,
+				body: content.body,
+				replyToMessageId: null,
+				attachments: content.attachments ?? [],
+				senderPrincipalId: principalId,
+				createdAt,
+				undecodable: false
+			},
+			mine: true,
+			delivery: 'sending'
+		};
+		this.applyMessages([optimistic]);
+		try {
+			const encoded = await messageCodec.encode(content, { senderPrincipalId: principalId, createdAt });
+			const envelope = await api.replyInThread(roomId, rootEnvelopeId, {
+				idempotencyKey: key,
+				ciphertext: encoded.ciphertext,
+				protocolType: encoded.protocolType,
+				clientCreatedAt: createdAt,
+				attachmentIds: content.attachments?.map((a) => a.attachmentId),
+				alsoSendToRoom
+			});
+			await this.ingest([envelope]);
+			// Refresh the root summary so the main-timeline root reflects the new count.
+			void this.syncThread(roomId, rootEnvelopeId);
+		} catch (error) {
+			this.setThreadDelivery(rootEnvelopeId, key, 'failed', alsoSendToRoom ? roomId : null);
+			throw error;
+		}
+	}
+
+	private setThreadDelivery(
+		rootEnvelopeId: string,
+		idemKey: string,
+		delivery: Delivery,
+		roomId: string | null
+	): void {
+		const patch = (list: ChatMessage[]): ChatMessage[] => {
+			const idx = list.findIndex((m) => m.idempotencyKey === idemKey);
+			if (idx < 0) return list;
+			const copy = [...list];
+			copy[idx] = { ...copy[idx], delivery };
+			return copy;
+		};
+		if (this.threads[rootEnvelopeId]) {
+			this.threads = { ...this.threads, [rootEnvelopeId]: patch(this.threads[rootEnvelopeId]) };
+		}
+		if (roomId && this.byRoom[roomId]) {
+			this.byRoom = { ...this.byRoom, [roomId]: patch(this.byRoom[roomId]) };
+		}
+	}
+
+	private reconcileThread(rootEnvelopeId: string, serverReplies: ChatMessage[]): void {
+		const serverEnvelopeIds = new Set(serverReplies.map((m) => m.envelopeId).filter(Boolean));
+		const serverIdempotencyKeys = new Set(serverReplies.map((m) => m.idempotencyKey).filter(Boolean));
+		const optimistic = this.threadList(rootEnvelopeId).filter((m) => {
+			if (m.delivery === 'sent' && m.envelopeId) return false;
+			if (m.envelopeId && serverEnvelopeIds.has(m.envelopeId)) return false;
+			if (m.idempotencyKey && serverIdempotencyKeys.has(m.idempotencyKey)) return false;
+			return true;
+		});
+		this.threads = {
+			...this.threads,
+			[rootEnvelopeId]: sortMessages([...serverReplies, ...optimistic])
+		};
+	}
+
+	private threadRootsForEnvelopeIds(roomId: string, envelopeIds: string[]): string[] {
+		const ids = new Set(envelopeIds);
+		const roots = new Set<string>();
+		for (const message of this.list(roomId)) {
+			if (!message.envelopeId || !ids.has(message.envelopeId)) continue;
+			if (message.threadRootEnvelopeId) roots.add(message.threadRootEnvelopeId);
+		}
+		for (const [rootEnvelopeId, list] of Object.entries(this.threads)) {
+			if (
+				list.some(
+					(message) =>
+						message.roomId === roomId && message.envelopeId && ids.has(message.envelopeId)
+				)
+			) {
+				roots.add(rootEnvelopeId);
+			}
+		}
+		return Array.from(roots);
+	}
+
 	async retry(message: ChatMessage): Promise<void> {
 		if (message.delivery !== 'failed') return;
-		// Drop the failed placeholder and resend its content.
+		// Drop the failed placeholder and resend its content through the right path.
+		if (message.threadRootEnvelopeId) {
+			const root = message.threadRootEnvelopeId;
+			this.threads = {
+				...this.threads,
+				[root]: this.threadList(root).filter((m) => m.key !== message.key)
+			};
+			if (message.alsoSentToRoom) {
+				this.byRoom = {
+					...this.byRoom,
+					[message.roomId]: this.list(message.roomId).filter((m) => m.key !== message.key)
+				};
+			}
+			await this.replyInThread(
+				message.roomId,
+				root,
+				{
+					contentType: message.content.contentType,
+					body: message.content.body,
+					attachments: message.content.attachments
+				},
+				message.alsoSentToRoom
+			);
+			return;
+		}
 		this.byRoom = {
 			...this.byRoom,
 			[message.roomId]: this.list(message.roomId).filter((m) => m.key !== message.key)
@@ -397,7 +605,9 @@ class MessagesStore {
 		const ids = Array.from(new Set(envelopeIds.filter(Boolean)));
 		if (!ids.length) return [];
 		const result = await api.deleteMessagesForMe(roomId, ids);
+		const threadRoots = this.threadRootsForEnvelopeIds(roomId, result.envelopeIds);
 		this.removeEnvelopeIds(roomId, result.envelopeIds);
+		for (const rootEnvelopeId of threadRoots) void this.syncThread(roomId, rootEnvelopeId);
 		return result.envelopeIds;
 	}
 
@@ -413,25 +623,33 @@ class MessagesStore {
 		const ids = new Set(envelopeIds);
 		if (!ids.size) return;
 		const deletedAt = new Date().toISOString();
-		this.byRoom = {
-			...this.byRoom,
-			[roomId]: this.list(roomId).map((message) =>
-				message.envelopeId && ids.has(message.envelopeId)
-					? {
-							...message,
-							content: deletedContent(),
-							deletedForEveryone: {
-								deleted: true,
-								deletedAt,
-								deletedByPrincipalId: auth.principal?.principalId ?? null,
-								reason: null
-							},
-							reactions: [],
-							pin: { pinned: false, pinnedAt: null, pinnedByPrincipalId: null }
-						}
-					: message
-			)
-		};
+		const tombstone = (message: ChatMessage): ChatMessage =>
+			message.envelopeId && ids.has(message.envelopeId)
+				? {
+						...message,
+						content: deletedContent(),
+						deletedForEveryone: {
+							deleted: true,
+							deletedAt,
+							deletedByPrincipalId: auth.principal?.principalId ?? null,
+							reason: null
+						},
+						reactions: [],
+						pin: { pinned: false, pinnedAt: null, pinnedByPrincipalId: null }
+					}
+				: message;
+		// A deleted message may be a main message, a thread root, or a thread reply
+		// (and an also-sent reply lives in both stores), so patch wherever it appears.
+		this.byRoom = { ...this.byRoom, [roomId]: this.list(roomId).map(tombstone) };
+		const nextThreads = { ...this.threads };
+		let changed = false;
+		for (const [root, list] of Object.entries(this.threads)) {
+			if (list.some((m) => m.envelopeId && ids.has(m.envelopeId))) {
+				nextThreads[root] = list.map(tombstone);
+				changed = true;
+			}
+		}
+		if (changed) this.threads = nextThreads;
 	}
 
 	removeEnvelopeIds(roomId: string, envelopeIds: string[]): void {
@@ -441,6 +659,16 @@ class MessagesStore {
 			...this.byRoom,
 			[roomId]: this.list(roomId).filter((m) => !m.envelopeId || !ids.has(m.envelopeId))
 		};
+		const nextThreads = { ...this.threads };
+		let changed = false;
+		for (const [rootEnvelopeId, list] of Object.entries(this.threads)) {
+			const filtered = list.filter((m) => !m.envelopeId || !ids.has(m.envelopeId));
+			if (filtered.length !== list.length) {
+				nextThreads[rootEnvelopeId] = filtered;
+				changed = true;
+			}
+		}
+		if (changed) this.threads = nextThreads;
 	}
 
 	removeKeys(roomId: string, keys: string[]): void {
@@ -478,6 +706,16 @@ class MessagesStore {
 			}
 		}
 		for (const m of this.list(roomId)) {
+			if (m.mine || !m.envelopeId || this.acked.has(m.envelopeId)) continue;
+			this.acked.add(m.envelopeId);
+			const envelopeId = m.envelopeId;
+			api.ackMessage(roomId, envelopeId, 'read').catch(() => this.acked.delete(envelopeId));
+		}
+	}
+
+	/** Acknowledge thread replies as read while a thread is open. */
+	markThreadRead(roomId: string, rootEnvelopeId: string): void {
+		for (const m of this.threadList(rootEnvelopeId)) {
 			if (m.mine || !m.envelopeId || this.acked.has(m.envelopeId)) continue;
 			this.acked.add(m.envelopeId);
 			const envelopeId = m.envelopeId;

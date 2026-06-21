@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock, CornerUpLeft, Pin, Forward, Trash2 } from '@lucide/svelte';
+	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock, CornerUpLeft, Pin, Forward, Trash2, MessagesSquare, ChevronRight, CornerDownRight } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, type ChatMessage } from '$lib/stores';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
@@ -16,8 +16,10 @@
 		isLastOfGroup,
 		selected = false,
 		selectionMode = false,
+		inThread = false,
 		onActionRequest,
-		onToggleSelect
+		onToggleSelect,
+		onOpenThread
 	}: {
 		message: ChatMessage;
 		room: Room;
@@ -25,9 +27,23 @@
 		isLastOfGroup: boolean;
 		selected?: boolean;
 		selectionMode?: boolean;
+		inThread?: boolean;
 		onActionRequest?: (message: ChatMessage, x: number, y: number) => void;
 		onToggleSelect?: (message: ChatMessage) => void;
+		onOpenThread?: (rootEnvelopeId: string) => void;
 	} = $props();
+
+	const roomLabel = $derived(room.type === 'direct' ? 'chat' : `#${room.name ?? 'room'}`);
+	// In the main timeline, a root with replies shows a thread summary; a reply
+	// that was also sent to the room shows a small "thread reply" affordance.
+	const threadSummary = $derived(!inThread ? message.threadSummary : null);
+	const threadReplyTime = $derived(formatClock(message.threadSummary?.lastReplyAt ?? null));
+	const lastReplySender = $derived(
+		message.threadSummary
+			? room.members.find((m) => m.principalId === message.threadSummary?.lastReplySenderPrincipalId)
+			: undefined
+	);
+	const showThreadReplyTag = $derived(!inThread && Boolean(message.threadRootEnvelopeId));
 
 	const mine = $derived(message.mine);
 	const isGroup = $derived(room.type === 'group');
@@ -180,6 +196,30 @@
 				</div>
 			{/if}
 
+			{#if inThread && message.alsoSentToRoom}
+				<div class={cn('mb-1 flex items-center gap-1 text-[11px] font-semibold', mine ? 'text-white/75' : 'text-muted')}>
+					<CornerDownRight class="h-3 w-3" />
+					<span>Also sent to {roomLabel}</span>
+				</div>
+			{/if}
+
+			{#if showThreadReplyTag}
+				<button
+					type="button"
+					onclick={(event) => {
+						event.stopPropagation();
+						if (message.threadRootEnvelopeId) onOpenThread?.(message.threadRootEnvelopeId);
+					}}
+					class={cn(
+						'mb-1 flex items-center gap-1 text-[11px] font-semibold underline-offset-2 hover:underline',
+						mine ? 'text-white/80' : 'text-primary'
+					)}
+				>
+					<CornerDownRight class="h-3 w-3" />
+					<span>Thread reply</span>
+				</button>
+			{/if}
+
 			{#if showName}
 				<div class="mb-0.5 flex items-center gap-1 text-[13px] font-semibold" style="color:{nameColor(message.senderPrincipalId)}">
 					{senderName}
@@ -273,6 +313,25 @@
 					</button>
 				{/each}
 			</div>
+		{/if}
+		{#if threadSummary && onOpenThread}
+			<button
+				type="button"
+				onclick={() => message.envelopeId && onOpenThread?.(message.envelopeId)}
+				class={cn(
+					'mt-1 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-2.5 py-1.5 text-xs font-semibold text-primary transition hover:bg-surface-3',
+					mine ? 'self-end' : 'self-start'
+				)}
+			>
+				{#if lastReplySender}
+					<Avatar name={lastReplySender.displayName} seed={lastReplySender.principalId} size="xs" />
+				{:else}
+					<MessagesSquare class="h-4 w-4" />
+				{/if}
+				<span>{threadSummary.replyCount} {threadSummary.replyCount === 1 ? 'reply' : 'replies'}</span>
+				{#if threadReplyTime}<span class="font-normal text-faint">· last reply {threadReplyTime}</span>{/if}
+				<ChevronRight class="h-3.5 w-3.5 text-faint" />
+			</button>
 		{/if}
 	</div>
 </div>

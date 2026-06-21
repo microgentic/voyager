@@ -31,6 +31,8 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
   { method: "PATCH", path: "/v1/rooms/{roomId}/messages/{envelopeId}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/forward", stability: "stable/current" },
+  { method: "GET", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions", stability: "stable/current" },
   { method: "DELETE", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/pin", stability: "stable/current" },
@@ -142,6 +144,15 @@ export function assertMessagesResponse(payload, context) {
   array(value.messages, `${context}.messages`).forEach((message, index) => assertMessage(message, `${context}.messages[${index}]`));
 }
 
+export function assertThreadResponse(payload, context) {
+  const value = success(payload, context);
+  const thread = object(value.thread, `${context}.thread`);
+  assertMessage(thread.root, `${context}.thread.root`);
+  array(thread.replies, `${context}.thread.replies`).forEach((reply, index) =>
+    assertMessage(reply, `${context}.thread.replies[${index}]`)
+  );
+}
+
 export function assertDeleteMessagesResponse(payload, context) {
   const value = success(payload, context);
   const deleted = object(value.deleted, `${context}.deleted`);
@@ -216,6 +227,19 @@ export function assertRealtimeRoomMessageEvent(payload, context) {
   string(value.envelopeId, `${context}.envelopeId`);
   number(value.serverSequence, `${context}.serverSequence`);
   string(value.senderDeviceId, `${context}.senderDeviceId`);
+}
+
+export function assertRealtimeRoomThreadEvent(payload, context) {
+  const value = object(payload, context);
+  literal(value.type, "room.thread", `${context}.type`);
+  string(value.eventId, `${context}.eventId`);
+  string(value.createdAt, `${context}.createdAt`);
+  string(value.roomId, `${context}.roomId`);
+  string(value.envelopeId, `${context}.envelopeId`);
+  number(value.serverSequence, `${context}.serverSequence`);
+  string(value.senderDeviceId, `${context}.senderDeviceId`);
+  string(value.rootEnvelopeId, `${context}.rootEnvelopeId`);
+  boolean(value.alsoSentToRoom, `${context}.alsoSentToRoom`);
 }
 
 export function assertRealtimeTokenResponse(payload, context) {
@@ -335,6 +359,9 @@ function assertMessage(value, context) {
   number(message.editCount, `${context}.editCount`);
   assertForwardedFrom(message.forwardedFrom, `${context}.forwardedFrom`);
   assertDeletedForEveryone(message.deletedForEveryone, `${context}.deletedForEveryone`);
+  nullableString(message.threadRootEnvelopeId, `${context}.threadRootEnvelopeId`);
+  boolean(message.alsoSentToRoom, `${context}.alsoSentToRoom`);
+  assertThreadSummary(message.threadSummary, `${context}.threadSummary`);
   assertReceiptSummary(message.receiptSummary, `${context}.receiptSummary`);
   assertReactionSummary(message.reactions, `${context}.reactions`);
   assertMessagePin(message.pin, `${context}.pin`);
@@ -349,6 +376,15 @@ function assertForwardedFrom(value, context) {
   if (value === null) return;
   const forwarded = object(value, context);
   string(forwarded.forwardedByPrincipalId, `${context}.forwardedByPrincipalId`);
+}
+
+function assertThreadSummary(value, context) {
+  if (value === null) return;
+  const summary = object(value, context);
+  number(summary.replyCount, `${context}.replyCount`);
+  nullableString(summary.lastReplyEnvelopeId, `${context}.lastReplyEnvelopeId`);
+  nullableString(summary.lastReplySenderPrincipalId, `${context}.lastReplySenderPrincipalId`);
+  nullableString(summary.lastReplyAt, `${context}.lastReplyAt`);
 }
 
 function assertDeletedForEveryone(value, context) {

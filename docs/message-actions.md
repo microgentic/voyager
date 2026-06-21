@@ -1,4 +1,4 @@
-# Message Actions, Status, Reply, Edit, Reactions, Pinning, Forwarding, Search, And Deletion
+# Message Actions, Status, Reply, Edit, Reactions, Pinning, Forwarding, Search, Threads, And Deletion
 
 These PRs add the first Telegram-style message action layer without changing the
 message-send, realtime, or sync source-of-truth model.
@@ -16,6 +16,7 @@ message-send, realtime, or sync source-of-truth model.
   - Select;
   - Edit for sent current-user messages;
   - Forward for displayable sent messages;
+  - Reply in thread for top-level messages;
   - Pin or unpin where the current member has permission;
   - Retry send for failed local outgoing messages;
   - Message info;
@@ -79,6 +80,26 @@ message-send, realtime, or sync source-of-truth model.
     everyone;
   - the message row and `serverSequence` remain, while clients render a
     tombstone.
+- Threads are a same-room sub-timeline, available in every room (direct,
+  group, channel):
+  - a thread reply is an ordinary message envelope whose server-asserted
+    `threadRootEnvelopeId` points at the root; thread metadata can only be set
+    through the `/thread` route, never a normal send body;
+  - "Reply in thread" opens a right-side pane on desktop and a full-screen
+    drawer on mobile; the open thread is encoded in the URL (`?thread=`);
+  - the composer offers "Also send to #room", which sets `alsoSentToRoom` on
+    the single reply envelope (no duplicate row) so it appears in both the
+    thread and the main timeline;
+  - the main timeline returns normal messages plus only the replies that were
+    also sent to the room; thread-only replies never leak into room history,
+    `/v1/sync`, or unread counts;
+  - roots carry a viewer-aware `threadSummary` (reply count + last reply)
+    computed on read, excluding replies hidden from that account;
+  - replies are full messages: edit, reactions, forward, and deletion behave the
+    same as in the main timeline, and tombstoning a reply tombstones it in both
+    places when it was also sent to the room;
+  - new replies are rejected once the root is deleted-for-everyone, but existing
+    replies remain readable under the tombstoned root.
 
 ## Backend Shape
 
@@ -155,8 +176,37 @@ Forwarding does not make the backend decrypt or reinterpret content. The client
 chooses what can be rendered, re-encodes it for the target room, and the backend
 stores source metadata on the new envelope.
 
+`GET /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread`
+
+Returns `{ thread: { root, replies } }`. Supports `after`/`limit` for replies.
+The root is returned even when it is a tombstone so the pane can show context.
+
+`POST /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread`
+
+```json
+{
+  "idempotencyKey": "client-generated-key",
+  "protocolType": "opaque-test",
+  "ciphertext": "opaque-client-payload",
+  "clientCreatedAt": "2026-06-21T12:00:00.000Z",
+  "alsoSendToRoom": true
+}
+```
+
+Reuses the send pipeline through the `ConversationCoordinator`. The root and
+`alsoSendToRoom` intent are server-asserted from the route and threaded to the
+send path internally, so a normal send cannot fabricate thread metadata. New
+thread replies and later mutations to existing thread replies emit `room.thread`
+realtime hints carrying the root id so clients refresh the root summary in place
+(its `serverSequence` does not move) and pull the reply into the main timeline
+only when it was also sent there.
+
 ## Deferred
 
 - Server-side plaintext search. This remains out of scope because message
   content is client-owned and future MLS/E2EE work should not introduce
   server-readable indexes by accident.
+- Threads inbox/sidebar, thread subscriptions, thread-specific unread counts and
+  notifications, and search across unloaded thread replies. The first thread PR
+  delivers the core same-room thread experience; these Slack-scale extras are
+  follow-ups.

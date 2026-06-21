@@ -1,7 +1,7 @@
 import { publicAccount } from "../http";
 import type { AuthContext, Env } from "../types";
 import type { AppBootstrapResult, JsonObject } from "./internal-types";
-import { messageSelectColumns } from "./messages";
+import { messageSelectBindValues, messageSelectColumns } from "./messages";
 import { listRooms } from "./rooms";
 import { durationSince, numberParam } from "./utils";
 import { publicDevice, publicMessage, publicPrincipal } from "./serializers";
@@ -63,6 +63,7 @@ export async function listPendingMessages(
        AND dr.status = 'pending'
        AND me.expires_at > CURRENT_TIMESTAMP
        AND me.state != 'purged'
+       AND (me.thread_root_envelope_id IS NULL OR me.also_sent_to_room = 1)
        AND NOT EXISTS (
          SELECT 1
          FROM message_visibility mv
@@ -73,7 +74,7 @@ export async function listPendingMessages(
      LIMIT ?`,
   )
     .bind(
-      auth.principal.principal_id,
+      ...messageSelectBindValues(auth),
       auth.device.device_id,
       auth.account.account_id,
       limit,
