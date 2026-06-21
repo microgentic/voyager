@@ -40,21 +40,32 @@ export async function createCall(
     );
   }
 
-  await env.CONTROL_DB.prepare(
-    `INSERT INTO calls (
-      call_id, room_id, call_type, status, created_by_account_id,
-      created_by_principal_id, created_by_device_id
-    ) VALUES (?, ?, ?, 'ringing', ?, ?, ?)`,
-  )
-    .bind(
-      callId,
-      roomId,
-      callType,
-      auth.account.account_id,
-      auth.principal.principal_id,
-      auth.device.device_id,
+  try {
+    await env.CONTROL_DB.prepare(
+      `INSERT INTO calls (
+        call_id, room_id, call_type, status, created_by_account_id,
+        created_by_principal_id, created_by_device_id
+      ) VALUES (?, ?, ?, 'ringing', ?, ?, ?)`,
     )
-    .run();
+      .bind(
+        callId,
+        roomId,
+        callType,
+        auth.account.account_id,
+        auth.principal.principal_id,
+        auth.device.device_id,
+      )
+      .run();
+  } catch (error) {
+    if (isLiveCallConstraintError(error)) {
+      throw new HttpError(
+        409,
+        "call_already_live",
+        "A live call already exists in this room",
+      );
+    }
+    throw error;
+  }
 
   for (const member of memberships) {
     const isCreator = member.principal_id === auth.principal.principal_id;
@@ -395,6 +406,14 @@ async function assertNoLiveCallInRoom(env: Env, roomId: string): Promise<void> {
   }
 }
 
+function isLiveCallConstraintError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /unique constraint failed/i.test(message) &&
+    /idx_calls_one_live_per_room|calls\.room_id/i.test(message)
+  );
+}
+
 function parseCallType(body: Record<string, unknown>): CallType {
   const value = stringField(body, "callType", { required: true, max: 20 });
   if (value !== "audio" && value !== "video") {
@@ -606,7 +625,11 @@ async function endCall(
     .run();
   await env.CONTROL_DB.prepare(
     `UPDATE call_participants
-     SET status = CASE WHEN status IN ('invited', 'ringing', 'joining') THEN 'missed' ELSE status END,
+     SET status = CASE
+           WHEN status IN ('invited', 'ringing', 'joining') THEN 'missed'
+           WHEN status = 'connected' THEN 'left'
+           ELSE status
+         END,
          left_at = CASE WHEN left_at IS NULL AND status = 'connected' THEN CURRENT_TIMESTAMP ELSE left_at END,
          muted_at = CASE WHEN status = 'connected' THEN NULL ELSE muted_at END,
          updated_at = CURRENT_TIMESTAMP

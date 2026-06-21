@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS call_participants (
   account_id TEXT NOT NULL REFERENCES accounts(account_id),
   principal_id TEXT NOT NULL REFERENCES principals(principal_id),
   device_id TEXT REFERENCES devices(device_id),
-  role TEXT NOT NULL DEFAULT 'participant',
+  role TEXT NOT NULL DEFAULT 'participant' CHECK (role IN ('participant', 'moderator')),
   status TEXT NOT NULL CHECK (status IN ('invited', 'ringing', 'joining', 'connected', 'left', 'declined', 'missed', 'failed')),
   joined_at TEXT,
   left_at TEXT,

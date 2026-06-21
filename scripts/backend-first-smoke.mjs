@@ -785,6 +785,29 @@ if (endedCall.call.status !== "ended" || !endedCall.call.endedAt || endedCall.ca
   throw new Error("call did not end after all connected participants left");
 }
 
+const declineOnlyCall = await api(`/v1/rooms/${direct.room.roomId}/calls`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { callType: "audio" }
+});
+assertCallResponse(declineOnlyCall, "POST /v1/rooms/{roomId}/calls decline coverage");
+const declinedCall = await api(`/v1/calls/${declineOnlyCall.call.callId}/decline`, {
+  method: "POST",
+  headers: userHeaders
+});
+assertCallResponse(declinedCall, "POST /v1/calls/{callId}/decline");
+if (declinedCall.call.status !== "declined" || !declinedCall.call.endedAt || declinedCall.call.endedReason !== "declined") {
+  throw new Error("declining the only callee did not end the direct call as declined");
+}
+const declinedCaller = declinedCall.call.participants.find((participant) => participant.principalId === owner.principal.principalId);
+const declinedCallee = declinedCall.call.participants.find((participant) => participant.principalId === accepted.principal.principalId);
+if (!declinedCaller || declinedCaller.status !== "left" || !declinedCaller.leftAt) {
+  throw new Error("declined call did not mark the caller as left");
+}
+if (!declinedCallee || declinedCallee.status !== "declined" || !declinedCallee.leftAt) {
+  throw new Error("declined call did not preserve the callee decline state");
+}
+
 const revokedCallLogin = await api("/v1/auth/password/login", {
   method: "POST",
   json: {
