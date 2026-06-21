@@ -173,12 +173,31 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `GET` | `/v1/rooms/{roomId}/messages` | `{ messages }` |
 | `POST` | `/v1/rooms/{roomId}/messages` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/delete` | `{ deleted: { scope, envelopeIds } }` |
+| `PATCH` | `/v1/rooms/{roomId}/messages/{envelopeId}` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/ack` | `{ receipt }` |
 | `GET` | `/v1/sync` | `{ sync: { rooms, roomsNextCursor, pendingMessages } }` |
 
 Group creation rejects initial `memberPrincipalIds`. Human members join through room invitations. Agent principals may be added through the explicit member endpoint.
 
 Message sends require an `idempotencyKey`, `protocolType`, and opaque `ciphertext`. `serverSequence` is assigned by the backend. `GET /v1/rooms/{roomId}/messages` supports forward reads with `after` and `limit`.
+
+Message responses include additive edit and delivery metadata:
+
+```json
+{
+  "editedAt": null,
+  "editCount": 0,
+  "receiptSummary": {
+    "total": 1,
+    "pending": 0,
+    "delivered": 1,
+    "read": 0,
+    "status": "delivered"
+  }
+}
+```
+
+`receiptSummary.status` is the client-facing mirror signal: `sent`, `delivered`, or `read`. Receipt rows remain per-device internally, and the compact status advances when at least one recipient device reaches the delivered/read state; use the numeric counts for detailed delivery diagnostics. `PATCH /v1/rooms/{roomId}/messages/{envelopeId}` lets the original sender replace the current opaque payload for an active, non-expired message. The previous opaque payload is preserved in `message_edits`; the active message keeps the same `envelopeId` and `serverSequence`.
 
 Message deletion currently supports delete-for-me only:
 
@@ -268,7 +287,7 @@ The server responds with the selected protocol:
 voyager.realtime.v1
 ```
 
-Realtime events are hints only. Clients must recover authoritative state through `GET /v1/rooms/{roomId}`, `GET /v1/rooms/{roomId}/messages`, or `GET /v1/sync`.
+Realtime events are hints only. Clients must recover authoritative state through `GET /v1/rooms/{roomId}`, `GET /v1/rooms/{roomId}/messages`, or `GET /v1/sync`. When a room hint carries `serverSequence`, foreground clients should fetch the exact message window with `GET /v1/rooms/{roomId}/messages?after={serverSequence - 1}&limit=1`; broader overlap/sync remains the fallback for sequence-less hints and missed events.
 
 Realtime tokens are one-use, short-lived socket credentials bound to the issuing account, session, device, and principal. Revoked sessions, expired sessions, revoked devices, inactive accounts, expired tokens, and reused tokens cannot open the socket. Clients should request a fresh realtime token for every reconnect attempt.
 
@@ -318,6 +337,7 @@ Room sync event:
   "eventId": "uuid",
   "createdAt": "2026-06-20T00:00:00.000Z",
   "roomId": "room_...",
+  "envelopeId": "msg_...",
   "serverSequence": 42
 }
 ```
@@ -390,6 +410,22 @@ curl -sS "$BASE_URL/v1/rooms/$ROOM_ID/messages" \
 ```
 
 If the same idempotency key is retried for the same room and sender device, the API returns the existing message instead of creating a duplicate.
+
+### Edit A Message
+
+```bash
+curl -sS "$BASE_URL/v1/rooms/$ROOM_ID/messages/$ENVELOPE_ID" \
+  -X PATCH \
+  -H "authorization: Bearer $SESSION_TOKEN" \
+  -H 'content-type: application/json' \
+  --data '{
+    "protocolType": "opaque-test",
+    "ciphertext": "opaque-client-payload-edited",
+    "clientEditedAt": "2026-06-21T12:00:00.000Z"
+  }'
+```
+
+Only the sending principal may edit the message. The response returns the updated envelope with the same `envelopeId` and `serverSequence`.
 
 ### Delete Messages For Me
 

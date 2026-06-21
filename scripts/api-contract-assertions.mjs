@@ -29,6 +29,7 @@ export const endpointStabilityCatalog = [
   { method: "GET", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
+  { method: "PATCH", path: "/v1/rooms/{roomId}/messages/{envelopeId}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
@@ -323,11 +324,23 @@ function assertMessage(value, context) {
   number(message.serverSequence, `${context}.serverSequence`);
   string(message.serverReceivedAt, `${context}.serverReceivedAt`);
   string(message.expiresAt, `${context}.expiresAt`);
+  nullableString(message.editedAt, `${context}.editedAt`);
+  number(message.editCount, `${context}.editCount`);
+  assertReceiptSummary(message.receiptSummary, `${context}.receiptSummary`);
   enumValue(
     message.state,
     ["accepted", "available", "partially_acknowledged", "fully_acknowledged", "expired", "purged"],
     `${context}.state`
   );
+}
+
+function assertReceiptSummary(value, context) {
+  const summary = object(value, context);
+  number(summary.total, `${context}.total`);
+  number(summary.pending, `${context}.pending`);
+  number(summary.delivered, `${context}.delivered`);
+  number(summary.read, `${context}.read`);
+  enumValue(summary.status, ["sent", "delivered", "read"], `${context}.status`);
 }
 
 function assertRoomInvitation(value, context) {

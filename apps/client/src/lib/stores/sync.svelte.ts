@@ -21,7 +21,7 @@ class SyncStore {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private inFlight = false;
 	private fullQueued = false;
-	private queuedRoomIds = new Set<string>();
+	private queuedRooms = new Map<string, Set<number>>();
 	private visibilityBound = false;
 
 	constructor() {
@@ -42,7 +42,7 @@ class SyncStore {
 		this.timer = null;
 		this.activeRoomId = null;
 		this.fullQueued = false;
-		this.queuedRoomIds.clear();
+		this.queuedRooms.clear();
 	}
 
 	setActiveRoom(roomId: string | null): void {
@@ -57,8 +57,11 @@ class SyncStore {
 
 	/** Fetch one room immediately after a realtime event without waiting for the polling cadence. */
 	pokeRoomNow(roomId: string, serverSequence?: number): void {
-		if (serverSequence !== undefined && messages.maxSeq(roomId) >= serverSequence) return;
-		this.queuedRoomIds.add(roomId);
+		const targets = this.queuedRooms.get(roomId) ?? new Set<number>();
+		if (serverSequence !== undefined && Number.isFinite(serverSequence) && serverSequence > 0) {
+			targets.add(serverSequence);
+		}
+		this.queuedRooms.set(roomId, targets);
 		void this.drain();
 	}
 
@@ -80,14 +83,17 @@ class SyncStore {
 		if (this.inFlight || auth.status !== 'authed') return;
 		this.inFlight = true;
 		try {
-			while (this.fullQueued || this.queuedRoomIds.size > 0) {
+			while (this.fullQueued || this.queuedRooms.size > 0) {
 				const runFull = this.fullQueued;
-				const roomIds = [...this.queuedRoomIds];
+				const roomTargets = [...this.queuedRooms.entries()].map(([roomId, targets]) => ({
+					roomId,
+					targets: [...targets]
+				}));
 				this.fullQueued = false;
-				this.queuedRoomIds.clear();
+				this.queuedRooms.clear();
 				if (runFull) await this.runFullSync().catch(() => undefined);
-				for (const roomId of roomIds) {
-					await this.runRoomSync(roomId).catch(() => undefined);
+				for (const { roomId, targets } of roomTargets) {
+					await this.runRoomSync(roomId, targets).catch(() => undefined);
 				}
 			}
 		} catch {
@@ -109,9 +115,15 @@ class SyncStore {
 		this.lastSyncDurationMs = Math.round(performance.now() - startedAt);
 	}
 
-	private async runRoomSync(roomId: string): Promise<void> {
+	private async runRoomSync(roomId: string, serverSequences: number[] = []): Promise<void> {
 		const startedAt = performance.now();
-		await Promise.all([rooms.refresh(roomId), messages.fetchNew(roomId)]);
+		const targets = [...new Set(serverSequences)].sort((a, b) => a - b);
+		await Promise.all([
+			rooms.refresh(roomId),
+			targets.length
+				? Promise.all(targets.map((serverSequence) => messages.fetchSequence(roomId, serverSequence)))
+				: messages.fetchNew(roomId, { overlap: 50 })
+		]);
 		this.lastRoomSyncedAt = new Date();
 		this.lastRoomSyncDurationMs = Math.round(performance.now() - startedAt);
 	}

@@ -664,6 +664,42 @@ export async function handleBackendFirstRoutes(
     return json({ ok: true, deleted });
   }
 
+  const editMessageMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)$/,
+    url.pathname,
+  );
+  if (editMessageMatch) {
+    requireMethod(request, "PATCH");
+    const mutation = await runMutationThroughConversationCoordinator(
+      env,
+      auth,
+      editMessageMatch[1],
+      requestId,
+      {
+        operation: "message.edit",
+        envelopeId: editMessageMatch[2],
+        body: await readJsonObject(request),
+      },
+    );
+    const message = requireCoordinatorResult(mutation.result);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.edit",
+      targetType: "message",
+      targetId: editMessageMatch[2],
+      requestId,
+      result: "success",
+      metadata: {
+        roomId: editMessageMatch[1],
+        sequence: message.serverSequence,
+      },
+    });
+    return json(
+      { ok: true, message },
+      { headers: mutationTimingHeaders("messageEdit", mutation.metrics) },
+    );
+  }
+
   const ackMessageMatch = routeParams(
     /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/ack$/,
     url.pathname,

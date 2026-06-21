@@ -141,6 +141,17 @@ export interface MessageEnvelope {
 	serverReceivedAt: string;
 	expiresAt: string;
 	state: MessageState;
+	editedAt: string | null;
+	editCount: number;
+	receiptSummary: MessageReceiptSummary;
+}
+
+export interface MessageReceiptSummary {
+	total: number;
+	pending: number;
+	delivered: number;
+	read: number;
+	status: 'sent' | 'delivered' | 'read';
 }
 
 export type ReceiptStatus = 'pending' | 'stored' | 'read';
@@ -347,6 +358,13 @@ export interface SendMessageInput {
 	attachmentIds?: string[];
 }
 
+export interface EditMessageInput {
+	ciphertext: string;
+	protocolType: ProtocolType;
+	clientEditedAt?: string;
+	attachmentIds?: string[];
+}
+
 export interface DeleteMessagesResult {
 	scope: 'for_me';
 	envelopeIds: string[];
@@ -398,6 +416,7 @@ export interface RealtimeRoomSyncEvent {
 	eventId: string;
 	createdAt: string;
 	roomId?: string;
+	envelopeId?: string;
 	serverSequence?: number;
 }
 

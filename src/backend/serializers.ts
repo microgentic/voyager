@@ -115,6 +115,16 @@ export function publicKeyPackage(row: Record<string, unknown>): JsonObject {
 }
 
 export function publicMessage(row: Record<string, unknown>): JsonObject {
+  const receiptTotal = Number(row.receipt_total ?? 0);
+  const receiptPending = Number(row.receipt_pending ?? 0);
+  const receiptDelivered = Number(row.receipt_delivered ?? 0);
+  const receiptRead = Number(row.receipt_read ?? 0);
+  const receiptStatus =
+    receiptRead > 0
+      ? "read"
+      : receiptDelivered > 0
+        ? "delivered"
+        : "sent";
   return {
     envelopeId: row.envelope_id,
     roomId: row.room_id,
@@ -130,6 +140,15 @@ export function publicMessage(row: Record<string, unknown>): JsonObject {
     serverReceivedAt: row.server_received_at,
     expiresAt: row.expires_at,
     state: row.state,
+    editedAt: row.edited_at ?? null,
+    editCount: Number(row.edit_count ?? 0),
+    receiptSummary: {
+      total: receiptTotal,
+      pending: receiptPending,
+      delivered: receiptDelivered,
+      read: receiptRead,
+      status: receiptStatus,
+    },
   };
 }
 

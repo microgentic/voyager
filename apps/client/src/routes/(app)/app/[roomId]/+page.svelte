@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { MessageSquareX } from '@lucide/svelte';
 	import { rooms, messages, sync } from '$lib/stores';
+	import type { ChatMessage } from '$lib/stores';
 	import RoomHeader from '$lib/components/chat/RoomHeader.svelte';
 	import MessageList from '$lib/components/chat/MessageList.svelte';
 	import Composer from '$lib/components/chat/Composer.svelte';
@@ -14,6 +15,23 @@
 	const room = $derived(rooms.get(roomId));
 	let notFound = $state(false);
 	let showDetails = $state(false);
+	let replyTo = $state<ChatMessage | null>(null);
+	let editingMessage = $state<ChatMessage | null>(null);
+
+	function startReply(message: ChatMessage): void {
+		editingMessage = null;
+		replyTo = message;
+	}
+
+	function startEdit(message: ChatMessage): void {
+		replyTo = null;
+		editingMessage = message;
+	}
+
+	function clearComposerContext(): void {
+		replyTo = null;
+		editingMessage = null;
+	}
 
 	// Only react to the roomId changing. Reads of rooms/messages stores are
 	// untracked so frequent sync updates don't re-run this (which would reset
@@ -21,9 +39,10 @@
 	$effect(() => {
 		const id = roomId;
 		untrack(() => {
-			notFound = false;
-			showDetails = false;
-			if (!id) return;
+				notFound = false;
+				showDetails = false;
+				clearComposerContext();
+				if (!id) return;
 			sync.setActiveRoom(id);
 			if (!rooms.get(id)) {
 				void rooms.refresh(id).then((r) => {
@@ -47,8 +66,8 @@
 {#if room}
 	<div class="flex h-full min-h-0 flex-col">
 		<RoomHeader {room} onShowDetails={() => (showDetails = true)} />
-		<MessageList {room} />
-		<Composer {room} />
+		<MessageList {room} onReply={startReply} onEdit={startEdit} />
+		<Composer {room} {replyTo} {editingMessage} onCancelContext={clearComposerContext} onSent={clearComposerContext} />
 	</div>
 	<RoomDetails {room} bind:open={showDetails} />
 {:else if notFound}

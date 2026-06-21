@@ -1,6 +1,7 @@
 import { publicAccount } from "../http";
 import type { AuthContext, Env } from "../types";
 import type { AppBootstrapResult, JsonObject } from "./internal-types";
+import { messageSelectColumns } from "./messages";
 import { listRooms } from "./rooms";
 import { durationSince, numberParam } from "./utils";
 import { publicDevice, publicMessage, publicPrincipal } from "./serializers";
@@ -55,7 +56,7 @@ export async function listPendingMessages(
   limit: number,
 ): Promise<JsonObject[]> {
   const result = await env.CONTROL_DB.prepare(
-    `SELECT me.*
+    `SELECT ${messageSelectColumns("me")}
      FROM delivery_receipts dr
      JOIN message_envelopes me ON me.envelope_id = dr.envelope_id
      WHERE dr.recipient_device_id = ?

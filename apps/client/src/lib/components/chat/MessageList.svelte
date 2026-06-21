@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { ArrowDown, CheckSquare, Copy, Hand, Info, RotateCcw, Trash2, X } from '@lucide/svelte';
+	import { ArrowDown, CheckSquare, Copy, Hand, Info, Pencil, Reply, RotateCcw, Trash2, X } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, rooms, toasts, type ChatMessage } from '$lib/stores';
 	import MessageBubble from './MessageBubble.svelte';
@@ -9,7 +9,15 @@
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import { parseServerDate, sameDay, formatDayDivider } from '$lib/utils/time';
 
-	let { room }: { room: Room } = $props();
+	let {
+		room,
+		onReply,
+		onEdit
+	}: {
+		room: Room;
+		onReply?: (message: ChatMessage) => void;
+		onEdit?: (message: ChatMessage) => void;
+	} = $props();
 
 	const GROUP_GAP_MS = 5 * 60 * 1000;
 
@@ -101,7 +109,7 @@
 
 	function clampMenuPosition(x: number, y: number): { x: number; y: number } {
 		const width = 224;
-		const height = 240;
+		const height = 320;
 		const margin = 10;
 		return {
 			x: Math.max(margin, Math.min(x, window.innerWidth - width - margin)),
@@ -131,6 +139,18 @@
 	function selectOnly(message: ChatMessage): void {
 		closeActionMenu();
 		selectedKeys = [message.key];
+	}
+
+	function replyTo(message: ChatMessage): void {
+		closeActionMenu();
+		selectedKeys = [];
+		onReply?.(message);
+	}
+
+	function editMessage(message: ChatMessage): void {
+		closeActionMenu();
+		selectedKeys = [];
+		onEdit?.(message);
 	}
 
 	function selectAll(): void {
@@ -344,6 +364,24 @@
 			class="fixed z-50 w-56 overflow-hidden rounded-xl border border-border bg-elevated p-1.5 text-sm shadow-pop"
 			style={`left: ${actionMenu.x}px; top: ${actionMenu.y}px;`}
 		>
+			<button
+				type="button"
+				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+				onclick={() => replyTo(actionMenu!.message)}
+			>
+				<Reply class="h-4 w-4 opacity-80" />
+				<span>Reply</span>
+			</button>
+			{#if actionMenu.message.mine && actionMenu.message.delivery === 'sent' && !actionMenu.message.content.undecodable}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+					onclick={() => editMessage(actionMenu!.message)}
+				>
+					<Pencil class="h-4 w-4 opacity-80" />
+					<span>Edit</span>
+				</button>
+			{/if}
 			<button
 				type="button"
 				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
