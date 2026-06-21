@@ -24,10 +24,22 @@ export interface AttachmentRef {
 	attachmentId: string;
 	name: string;
 	mediaType: string;
+	mediaKind?: 'image' | 'video' | 'audio' | 'file' | 'unknown';
 	bytes: number;
 	sha256?: string | null;
+	durationMs?: number;
 	width?: number;
 	height?: number;
+	variants?: Partial<Record<'original' | 'preview' | 'thumbnail', AttachmentRefVariant>>;
+}
+
+export interface AttachmentRefVariant {
+	variant: 'original' | 'preview' | 'thumbnail';
+	bytes: number | null;
+	width: number | null;
+	height: number | null;
+	downloadPath: string;
+	mimeType?: string;
 }
 
 export interface MessageContent {

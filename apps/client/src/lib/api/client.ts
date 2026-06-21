@@ -118,7 +118,8 @@ export class VoyagerClient {
 		method: string,
 		path: string,
 		body: BodyInit | undefined,
-		contentType?: string
+		contentType?: string,
+		signal?: AbortSignal
 	): Promise<Response> {
 		const url = getApiBase() + path;
 		const headers: Record<string, string> = {};
@@ -126,8 +127,9 @@ export class VoyagerClient {
 		if (this.token) headers.authorization = `Bearer ${this.token}`;
 		let response: Response;
 		try {
-			response = await fetch(url, { method, headers, body });
+			response = await fetch(url, { method, headers, body, signal });
 		} catch (error) {
+			if ((error as Error)?.name === 'AbortError') throw error;
 			throw new ApiError(0, 'network_error', (error as Error)?.message ?? 'Network request failed');
 		}
 		if (!response.ok) {
@@ -593,15 +595,16 @@ export class VoyagerClient {
 
 	async uploadAttachmentBlob(
 		attachmentId: string,
-		bytes: ArrayBuffer | Uint8Array,
-		options: { variant?: AttachmentVariantName; contentType?: string } = {}
+		bytes: ArrayBuffer | Uint8Array | Blob,
+		options: { variant?: AttachmentVariantName; contentType?: string; signal?: AbortSignal } = {}
 	): Promise<Attachment> {
 		const query = options.variant ? `?variant=${encodeURIComponent(options.variant)}` : '';
 		const res = await this.requestBinary(
 			'PUT',
 			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob${query}`,
 			bytes as BodyInit,
-			options.contentType ?? 'application/octet-stream'
+			options.contentType ?? 'application/octet-stream',
+			options.signal
 		);
 		return (await res.json()).attachment as Attachment;
 	}
@@ -630,13 +633,15 @@ export class VoyagerClient {
 
 	async downloadAttachmentBlob(
 		attachmentId: string,
-		options: { variant?: AttachmentVariantName } = {}
+		options: { variant?: AttachmentVariantName; signal?: AbortSignal } = {}
 	): Promise<ArrayBuffer> {
 		const query = options.variant ? `?variant=${encodeURIComponent(options.variant)}` : '';
 		const res = await this.requestBinary(
 			'GET',
 			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob${query}`,
-			undefined
+			undefined,
+			undefined,
+			options.signal
 		);
 		return res.arrayBuffer();
 	}

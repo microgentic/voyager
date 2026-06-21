@@ -9,9 +9,18 @@ import type {
 	MessageReceiptSummary,
 	MessageState,
 	MessageThreadSummary,
-	ProtocolType
+	ProtocolType,
+	AttachmentMediaKind,
+	AttachmentVariant,
+	AttachmentVariantName
 } from '$lib/api/types';
-import { messageCodec, type DecodedMessage, type MessageContent } from '$lib/protocol/codec';
+import {
+	messageCodec,
+	type AttachmentRef,
+	type AttachmentRefVariant,
+	type DecodedMessage,
+	type MessageContent
+} from '$lib/protocol/codec';
 import { idempotencyKey, localId } from '$lib/utils/id';
 import { parseServerDate } from '$lib/utils/time';
 import { auth } from './auth.svelte';
@@ -48,6 +57,15 @@ export interface ChatMessage {
 const READ_KEY = 'voyager.read';
 const PAGE = 200;
 
+interface DownloadedAttachmentVariant {
+	variant: AttachmentVariantName;
+	blob: Blob;
+	mimeType: string;
+	bytes: number;
+	width: number | null;
+	height: number | null;
+}
+
 function loadReadState(): Record<string, number> {
 	try {
 		return JSON.parse(localStorage.getItem(READ_KEY) ?? '{}');
@@ -68,6 +86,25 @@ function sortMessages(list: ChatMessage[]): ChatMessage[] {
 		const bt = parseServerDate(b.clientCreatedAt ?? b.serverReceivedAt)?.getTime() ?? 0;
 		return at - bt;
 	});
+}
+
+function mediaKindFromMime(mimeType: string): AttachmentMediaKind {
+	if (mimeType.startsWith('image/')) return 'image';
+	if (mimeType.startsWith('video/')) return 'video';
+	if (mimeType.startsWith('audio/')) return 'audio';
+	if (mimeType) return 'file';
+	return 'unknown';
+}
+
+function attachmentVariantRef(variant: AttachmentVariant, mimeType?: string): AttachmentRefVariant {
+	return {
+		variant: variant.variant,
+		bytes: variant.bytes,
+		width: variant.width,
+		height: variant.height,
+		downloadPath: variant.downloadPath,
+		mimeType
+	};
 }
 
 function deletedContent(): DecodedMessage {
@@ -456,23 +493,157 @@ class MessagesStore {
 		}
 		const createdAt = new Date().toISOString();
 		const key = idempotencyKey();
-		const encoded = await messageCodec.encode(
-			{
-				contentType: message.content.contentType,
-				body: message.content.body,
-				attachments: []
-			},
-			{ senderPrincipalId: principalId, createdAt }
-		);
-		const envelope = await api.forwardMessage(message.roomId, message.envelopeId, {
-			targetRoomId,
-			idempotencyKey: key,
-			ciphertext: encoded.ciphertext,
-			protocolType: encoded.protocolType,
-			clientCreatedAt: createdAt
+		const clonedAttachments: AttachmentRef[] = [];
+		let messageCreated = false;
+		try {
+			clonedAttachments.push(
+				...(await this.cloneAttachmentsForRoom(message.content.attachments ?? [], targetRoomId))
+			);
+			const encoded = await messageCodec.encode(
+				{
+					contentType: message.content.contentType,
+					body: message.content.body,
+					attachments: clonedAttachments
+				},
+				{ senderPrincipalId: principalId, createdAt }
+			);
+			const envelope = await api.forwardMessage(message.roomId, message.envelopeId, {
+				targetRoomId,
+				idempotencyKey: key,
+				ciphertext: encoded.ciphertext,
+				protocolType: encoded.protocolType,
+				clientCreatedAt: createdAt,
+				attachmentIds: clonedAttachments.map((attachment) => attachment.attachmentId)
+			});
+			messageCreated = true;
+			await this.ingest([envelope]);
+			return this.findByEnvelopeId(targetRoomId, envelope.envelopeId) ?? null;
+		} catch (error) {
+			if (!messageCreated) {
+				await Promise.allSettled(
+					clonedAttachments.map((attachment) => api.deleteAttachment(attachment.attachmentId))
+				);
+			}
+			throw error;
+		}
+	}
+
+	private async cloneAttachmentsForRoom(
+		attachments: AttachmentRef[],
+		targetRoomId: string
+	): Promise<AttachmentRef[]> {
+		if (!attachments.length) return [];
+		const cloned: AttachmentRef[] = [];
+		try {
+			for (const attachment of attachments) {
+				cloned.push(await this.cloneAttachmentForRoom(attachment, targetRoomId));
+			}
+			return cloned;
+		} catch (error) {
+			await Promise.allSettled(
+				cloned.map((attachment) => api.deleteAttachment(attachment.attachmentId))
+			);
+			throw error;
+		}
+	}
+
+	private async cloneAttachmentForRoom(
+		attachment: AttachmentRef,
+		targetRoomId: string
+	): Promise<AttachmentRef> {
+		const variants = await this.downloadAttachmentVariants(attachment);
+		const expectedBytes = variants.reduce((sum, item) => sum + item.bytes, 0);
+		const original = variants.find((item) => item.variant === 'original') ?? variants[0];
+		const mediaKind = attachment.mediaKind ?? mediaKindFromMime(attachment.mediaType);
+		const allocated = await api.allocateAttachment(targetRoomId, {
+			expectedBytes: Math.max(1, expectedBytes),
+			contentCategory: mediaKind,
+			originalFilename: attachment.name,
+			declaredMimeType: attachment.mediaType || original.mimeType,
+			mediaKind,
+			width: attachment.width,
+			height: attachment.height,
+			durationMs: attachment.durationMs,
+			variantManifest: {
+				forwardedFromAttachmentId: attachment.attachmentId,
+				variants: Object.fromEntries(
+					variants.map((item) => [
+						item.variant,
+						{
+							bytes: item.bytes,
+							mimeType: item.mimeType,
+							width: item.width,
+							height: item.height
+						}
+					])
+				)
+			}
 		});
-		await this.ingest([envelope]);
-		return this.findByEnvelopeId(targetRoomId, envelope.envelopeId) ?? null;
+		let latest = allocated;
+		try {
+			for (const variant of variants) {
+				latest = await api.uploadAttachmentBlob(allocated.attachmentId, variant.blob, {
+					variant: variant.variant,
+					contentType: variant.mimeType
+				});
+			}
+			latest = await api.completeAttachment(allocated.attachmentId, {
+				ciphertextBytes: original.bytes,
+				originalFilename: attachment.name,
+				declaredMimeType: attachment.mediaType || original.mimeType,
+				mediaKind,
+				width: attachment.width,
+				height: attachment.height,
+				durationMs: attachment.durationMs,
+				variantManifest: {
+					forwardedFromAttachmentId: attachment.attachmentId
+				}
+			});
+		} catch (error) {
+			void api.deleteAttachment(allocated.attachmentId).catch(() => undefined);
+			throw error;
+		}
+		const mimeTypes = new Map(variants.map((item) => [item.variant, item.mimeType]));
+		const refVariants: AttachmentRef['variants'] = {
+			original: attachmentVariantRef(latest.variants.original, mimeTypes.get('original'))
+		};
+		if (latest.variants.preview) {
+			refVariants.preview = attachmentVariantRef(latest.variants.preview, mimeTypes.get('preview'));
+		}
+		if (latest.variants.thumbnail) {
+			refVariants.thumbnail = attachmentVariantRef(latest.variants.thumbnail, mimeTypes.get('thumbnail'));
+		}
+		return {
+			...attachment,
+			attachmentId: latest.attachmentId,
+			mediaKind,
+			bytes: latest.variants.original.bytes ?? original.bytes,
+			width: latest.width ?? attachment.width,
+			height: latest.height ?? attachment.height,
+			durationMs: latest.durationMs ?? attachment.durationMs,
+			variants: refVariants
+		};
+	}
+
+	private async downloadAttachmentVariants(attachment: AttachmentRef): Promise<DownloadedAttachmentVariant[]> {
+		const names: AttachmentVariantName[] = ['original'];
+		if (attachment.variants?.preview) names.push('preview');
+		if (attachment.variants?.thumbnail) names.push('thumbnail');
+		const variants: DownloadedAttachmentVariant[] = [];
+		for (const variant of names) {
+			const buffer = await api.downloadAttachmentBlob(attachment.attachmentId, { variant });
+			const source = attachment.variants?.[variant];
+			const mimeType = source?.mimeType ?? attachment.mediaType ?? 'application/octet-stream';
+			variants.push({
+				variant,
+				blob: new Blob([buffer], { type: mimeType }),
+				mimeType,
+				bytes: buffer.byteLength,
+				width: source?.width ?? (variant === 'original' ? (attachment.width ?? null) : null),
+				height: source?.height ?? (variant === 'original' ? (attachment.height ?? null) : null)
+			});
+		}
+		return variants;
 	}
 
 	async replyInThread(
