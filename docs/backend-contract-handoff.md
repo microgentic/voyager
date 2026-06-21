@@ -9,6 +9,7 @@ Related docs:
 - `docs/phase-1-control-plane.md`
 - `docs/pr4-final-hardening.md`
 - `docs/realtime-messaging-handoff.md`
+- `docs/backend-source-layout.md`
 
 ## 1. Project Backend Report
 
@@ -17,6 +18,8 @@ Voyager is currently implemented as a Cloudflare-hosted, backend-first secure co
 The active backend does not try to decrypt user content. Messages are stored as opaque encrypted envelopes with routing metadata, retention timestamps, room sequence numbers, and delivery receipts. Attachments are uploaded as opaque blobs, tracked by metadata, and only become message-referenced after the sender explicitly references them in an encrypted envelope.
 
 The backend is designed to let development proceed without app stores, push providers, paid services, live agent runtimes, billing systems, custom domains, or signing infrastructure. That means clients can be developed against HTTP contracts, curl, and smoke scripts first. Realtime, push, mobile packaging, and production assurance work can be layered in later without replacing the core account, room, message, attachment, and admin models.
+
+Source organization is documented in `docs/backend-source-layout.md`. The active backend route handler and Conversation Durable Object are now exported through a small `src/backend.ts` barrel, with route orchestration, Conversation DO coordination, backend-private types, serializers, shared utilities, and domain operations separated under `src/backend/`.
 
 ## 2. Current Backend Capability
 

@@ -21,6 +21,10 @@ import {
   assertSidebarCollectionResponse,
   assertSyncResponse
 } from "./api-contract-assertions.mjs";
+import { assertRouteInventory } from "./route-inventory-check.mjs";
+
+assertEndpointCatalog();
+assertRouteInventory();
 
 const baseUrl = process.env.BASE_URL ?? "http://localhost:8787";
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
@@ -167,8 +171,6 @@ async function expectRealtimeConnectFailure(token, timeoutMs = 5_000) {
     });
   });
 }
-
-assertEndpointCatalog();
 
 const health = await api("/health");
 if (!health.ok) throw new Error("health check failed");

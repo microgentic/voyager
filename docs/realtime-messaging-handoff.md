@@ -28,7 +28,7 @@ This is intentionally the **foreground mailbox/session layer**, not the read sou
   - `handleRealtimeConnect()` routes an authenticated account to its mailbox.
   - `notifyRoomRealtime()` resolves active room account memberships and fan-outs an event to each non-null account mailbox.
 - `src/index.ts` exposes `GET /v1/realtime` as a WebSocket upgrade endpoint.
-- `src/backend.ts` routes `POST /v1/rooms/{roomId}/messages` through the room's `ConversationCoordinator`, then emits a `room.message` realtime event only after message insert, delivery receipt creation, attachment reference updates, and room bump succeed.
+- `src/backend/routes.ts` and `src/backend/conversation-coordinator.ts` route `POST /v1/rooms/{roomId}/messages` through the room's `ConversationCoordinator`, then emit a `room.message` realtime event only after message insert, delivery receipt creation, attachment reference updates, and room bump succeed.
 - Idempotent duplicate message sends return the existing message. Same-room duplicates also re-emit a lightweight realtime hint so a sender retry can recover if the first hint failed after the durable write.
 - Conversation-routed writes include `Server-Timing` metrics for the coordinator hop, queue wait, and operation time. The Worker logs `conversation.do.message` and `conversation.do.mutation` for development observability.
 
