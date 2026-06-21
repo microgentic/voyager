@@ -1132,6 +1132,28 @@ if (forgedForward.message.forwardedFrom !== null) {
   throw new Error("normal send must not accept forwardedFrom metadata from the request body");
 }
 
+// The internal forwardSource channel must not be reachable from the public body
+// either: a nested forwardSource object on a normal send is ignored because it
+// is only read from the Conversation DO request envelope, never the message body.
+const forgedNestedForward = await api(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `forge-forward-nested-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "nested-forward-source-should-not-be-forwarded",
+    forwardSource: {
+      roomId: direct.room.roomId,
+      envelopeId: directMessage.message.envelopeId,
+      senderPrincipalId: owner.principal.principalId
+    }
+  }
+});
+assertMessageResponse(forgedNestedForward, "POST /v1/rooms/{roomId}/messages nested forwardSource");
+if (forgedNestedForward.message.forwardedFrom !== null) {
+  throw new Error("normal send must not accept a nested forwardSource object from the request body");
+}
+
 const duplicatePayload = {
   idempotencyKey: `dup-${suffix}`,
   protocolType: "opaque-test",
