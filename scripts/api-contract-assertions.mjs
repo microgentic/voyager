@@ -28,6 +28,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/ownership-transfers/{transferId}/accept", stability: "stable/current" },
   { method: "GET", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
@@ -133,6 +134,15 @@ export function assertPaginatedRoomsResponse(payload, context) {
 export function assertMessagesResponse(payload, context) {
   const value = success(payload, context);
   array(value.messages, `${context}.messages`).forEach((message, index) => assertMessage(message, `${context}.messages[${index}]`));
+}
+
+export function assertDeleteMessagesResponse(payload, context) {
+  const value = success(payload, context);
+  const deleted = object(value.deleted, `${context}.deleted`);
+  literal(deleted.scope, "for_me", `${context}.deleted.scope`);
+  array(deleted.envelopeIds, `${context}.deleted.envelopeIds`).forEach((envelopeId, index) =>
+    string(envelopeId, `${context}.deleted.envelopeIds[${index}]`)
+  );
 }
 
 export function assertMessageResponse(payload, context) {

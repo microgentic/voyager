@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { ArrowDown, Hand } from '@lucide/svelte';
+	import { ArrowDown, CheckSquare, Copy, Hand, Info, RotateCcw, Trash2, X } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
-	import { messages, rooms, type ChatMessage } from '$lib/stores';
+	import { messages, rooms, toasts, type ChatMessage } from '$lib/stores';
 	import MessageBubble from './MessageBubble.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import { parseServerDate, sameDay, formatDayDivider } from '$lib/utils/time';
 
 	let { room }: { room: Room } = $props();
@@ -52,7 +54,15 @@
 	let atBottom = $state(true);
 	let prevCount = 0;
 	let prevRoom = '';
+	let selectionRoom = '';
+	let selectedKeys = $state<string[]>([]);
+	let actionMenu = $state<{ message: ChatMessage; x: number; y: number } | null>(null);
+	let deleteConfirmOpen = $state(false);
+	let deleting = $state(false);
 	let bottomSettleTimers: number[] = [];
+
+	const selectedMessages = $derived(list.filter((message) => selectedKeys.includes(message.key)));
+	const selectionMode = $derived(selectedKeys.length > 0);
 
 	function onScroll(): void {
 		const el = scrollEl;
@@ -87,6 +97,104 @@
 	function inputHasFocus(): boolean {
 		const active = document.activeElement;
 		return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+	}
+
+	function clampMenuPosition(x: number, y: number): { x: number; y: number } {
+		const width = 224;
+		const height = 240;
+		const margin = 10;
+		return {
+			x: Math.max(margin, Math.min(x, window.innerWidth - width - margin)),
+			y: Math.max(margin, Math.min(y, window.innerHeight - height - margin))
+		};
+	}
+
+	function openActionMenu(message: ChatMessage, x: number, y: number): void {
+		if (selectionMode) {
+			toggleSelected(message);
+			return;
+		}
+		actionMenu = { message, ...clampMenuPosition(x, y) };
+	}
+
+	function closeActionMenu(): void {
+		actionMenu = null;
+	}
+
+	function toggleSelected(message: ChatMessage): void {
+		closeActionMenu();
+		selectedKeys = selectedKeys.includes(message.key)
+			? selectedKeys.filter((key) => key !== message.key)
+			: [...selectedKeys, message.key];
+	}
+
+	function selectOnly(message: ChatMessage): void {
+		closeActionMenu();
+		selectedKeys = [message.key];
+	}
+
+	function selectAll(): void {
+		selectedKeys = list.map((message) => message.key);
+	}
+
+	function cancelSelection(): void {
+		selectedKeys = [];
+		closeActionMenu();
+	}
+
+	function messageText(message: ChatMessage): string {
+		if (message.content.undecodable) return '';
+		return message.content.body.trim();
+	}
+
+	async function copyMessages(items: ChatMessage[]): Promise<void> {
+		const text = items.map(messageText).filter(Boolean).join('\n\n');
+		if (!text) {
+			toasts.info('No displayable text to copy.');
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(text);
+			toasts.success(items.length === 1 ? 'Message copied.' : `${items.length} messages copied.`);
+		} catch {
+			toasts.error('Could not copy messages.');
+		}
+	}
+
+	function showMessageInfo(message: ChatMessage): void {
+		const sequence = message.serverSequence > 0 ? `Sequence ${message.serverSequence}` : 'Not sent yet';
+		const status = message.delivery === 'failed' ? 'failed' : message.delivery === 'sending' ? 'sending' : message.state;
+		toasts.info(`${sequence} · ${status}`, 'Message info');
+		closeActionMenu();
+	}
+
+	function requestDelete(items: ChatMessage[]): void {
+		if (!items.length) return;
+		closeActionMenu();
+		selectedKeys = items.map((message) => message.key);
+		deleteConfirmOpen = true;
+	}
+
+	async function deleteSelected(): Promise<void> {
+		const items = selectedMessages;
+		if (!items.length) {
+			deleteConfirmOpen = false;
+			return;
+		}
+		const envelopeIds = items.map((message) => message.envelopeId).filter((id): id is string => Boolean(id));
+		const localKeys = items.filter((message) => !message.envelopeId).map((message) => message.key);
+		deleting = true;
+		try {
+			if (envelopeIds.length) await messages.deleteForMe(room.roomId, envelopeIds);
+			if (localKeys.length) messages.removeKeys(room.roomId, localKeys);
+			toasts.success(items.length === 1 ? 'Message deleted for you.' : `${items.length} messages deleted for you.`);
+			selectedKeys = [];
+			deleteConfirmOpen = false;
+		} catch {
+			toasts.error('Could not delete messages.');
+		} finally {
+			deleting = false;
+		}
 	}
 
 	onMount(() => {
@@ -144,9 +252,45 @@
 			}
 		});
 	});
+
+	$effect(() => {
+		const id = room.roomId;
+		untrack(() => {
+			if (id !== selectionRoom) {
+				selectionRoom = id;
+				selectedKeys = [];
+				actionMenu = null;
+			}
+		});
+	});
 </script>
 
 <div class="relative min-h-0 flex-1 select-none">
+	{#if selectionMode}
+		<div
+			class="absolute inset-x-2 top-2 z-30 flex items-center gap-2 rounded-xl border border-border bg-elevated/95 p-2 text-sm shadow-pop backdrop-blur sm:inset-x-4"
+		>
+			<div class="min-w-0 flex-1 font-semibold text-foreground">
+				{selectedKeys.length} selected
+			</div>
+			<Button variant="ghost" size="sm" onclick={() => void copyMessages(selectedMessages)}>
+				<Copy class="h-4 w-4" />
+				Copy
+			</Button>
+			<Button variant="ghost" size="sm" onclick={selectAll} disabled={selectedKeys.length === list.length}>
+				<CheckSquare class="h-4 w-4" />
+				All
+			</Button>
+			<Button variant="ghost" size="sm" class="text-danger" onclick={() => requestDelete(selectedMessages)}>
+				<Trash2 class="h-4 w-4" />
+				Delete
+			</Button>
+			<Button variant="ghost" size="icon-sm" onclick={cancelSelection} aria-label="Cancel selection">
+				<X class="h-4 w-4" />
+			</Button>
+		</div>
+	{/if}
+
 	<div
 		bind:this={scrollEl}
 		onscroll={onScroll}
@@ -179,11 +323,76 @@
 						{room}
 						isFirstOfGroup={row.first}
 						isLastOfGroup={row.last}
+						selected={selectedKeys.includes(row.message.key)}
+						{selectionMode}
+						onActionRequest={openActionMenu}
+						onToggleSelect={toggleSelected}
 					/>
 				{/if}
 			{/each}
 		{/if}
 	</div>
+
+	{#if actionMenu}
+		<button
+			type="button"
+			class="fixed inset-0 z-40 cursor-default bg-transparent"
+			aria-label="Close message actions"
+			onclick={closeActionMenu}
+		></button>
+		<div
+			class="fixed z-50 w-56 overflow-hidden rounded-xl border border-border bg-elevated p-1.5 text-sm shadow-pop"
+			style={`left: ${actionMenu.x}px; top: ${actionMenu.y}px;`}
+		>
+			<button
+				type="button"
+				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+				onclick={() => void copyMessages([actionMenu!.message]).then(closeActionMenu)}
+			>
+				<Copy class="h-4 w-4 opacity-80" />
+				<span>Copy</span>
+			</button>
+			<button
+				type="button"
+				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+				onclick={() => selectOnly(actionMenu!.message)}
+			>
+				<CheckSquare class="h-4 w-4 opacity-80" />
+				<span>Select</span>
+			</button>
+			{#if actionMenu.message.delivery === 'failed'}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+					onclick={() => {
+						const message = actionMenu!.message;
+						closeActionMenu();
+						void messages.retry(message);
+					}}
+				>
+					<RotateCcw class="h-4 w-4 opacity-80" />
+					<span>Retry send</span>
+				</button>
+			{/if}
+			<button
+				type="button"
+				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+				onclick={() => showMessageInfo(actionMenu!.message)}
+			>
+				<Info class="h-4 w-4 opacity-80" />
+				<span>Message info</span>
+			</button>
+			<div class="my-1 h-px bg-border"></div>
+			<button
+				type="button"
+				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-danger transition hover:bg-danger-soft"
+				onclick={() => requestDelete([actionMenu!.message])}
+			>
+				<Trash2 class="h-4 w-4 opacity-80" />
+				<span>Delete for me</span>
+			</button>
+		</div>
+	{/if}
 
 	{#if !atBottom && list.length > 0}
 		<button
@@ -201,4 +410,14 @@
 			{/if}
 		</button>
 	{/if}
+
+	<ConfirmDialog
+		bind:open={deleteConfirmOpen}
+		title="Delete for you?"
+		message="The selected messages will stay visible to other room members."
+		confirmLabel="Delete"
+		danger
+		loading={deleting}
+		onConfirm={deleteSelected}
+	/>
 </div>

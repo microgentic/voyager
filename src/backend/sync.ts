@@ -62,10 +62,16 @@ export async function listPendingMessages(
        AND dr.status = 'pending'
        AND me.expires_at > CURRENT_TIMESTAMP
        AND me.state != 'purged'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM message_visibility mv
+         WHERE mv.envelope_id = me.envelope_id
+           AND mv.account_id = ?
+       )
      ORDER BY me.server_received_at ASC
      LIMIT ?`,
   )
-    .bind(auth.device.device_id, limit)
+    .bind(auth.device.device_id, auth.account.account_id, limit)
     .all<Record<string, unknown>>();
   return (result.results ?? []).map(publicMessage);
 }

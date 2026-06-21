@@ -19,6 +19,7 @@ import {
   createGroupRoom,
   createSidebarCollection,
   deleteAttachment,
+  deleteMessagesForMe,
   deleteSidebarCollection,
   deleteSidebarCollectionItem,
   downloadAttachmentBlob,
@@ -632,6 +633,35 @@ export async function handleBackendFirstRoutes(
         { status: 201, headers: sendMessageTimingHeaders(metrics) },
       );
     }
+  }
+
+  const deleteMessagesMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/delete$/,
+    url.pathname,
+  );
+  if (deleteMessagesMatch) {
+    requireMethod(request, "POST");
+    const deleted = await deleteMessagesForMe(
+      env,
+      auth,
+      deleteMessagesMatch[1],
+      await readJsonObject(request),
+    );
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.delete_for_me",
+      targetType: "room",
+      targetId: deleteMessagesMatch[1],
+      requestId,
+      result: "success",
+      metadata: {
+        envelopeIds: deleted.envelopeIds,
+        count: Array.isArray(deleted.envelopeIds)
+          ? deleted.envelopeIds.length
+          : undefined,
+      },
+    });
+    return json({ ok: true, deleted });
   }
 
   const ackMessageMatch = routeParams(

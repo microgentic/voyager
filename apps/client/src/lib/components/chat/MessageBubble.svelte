@@ -13,12 +13,20 @@
 		message,
 		room,
 		isFirstOfGroup,
-		isLastOfGroup
+		isLastOfGroup,
+		selected = false,
+		selectionMode = false,
+		onActionRequest,
+		onToggleSelect
 	}: {
 		message: ChatMessage;
 		room: Room;
 		isFirstOfGroup: boolean;
 		isLastOfGroup: boolean;
+		selected?: boolean;
+		selectionMode?: boolean;
+		onActionRequest?: (message: ChatMessage, x: number, y: number) => void;
+		onToggleSelect?: (message: ChatMessage) => void;
 	} = $props();
 
 	const mine = $derived(message.mine);
@@ -38,10 +46,82 @@
 				: renderPlainText(message.content.body)
 	);
 	const time = $derived(formatClock(message.serverReceivedAt ?? message.clientCreatedAt));
+
+	let longPressTimer: number | undefined;
+	let pointerStart: { x: number; y: number } | null = null;
+
+	function clearLongPress(): void {
+		if (longPressTimer !== undefined) {
+			window.clearTimeout(longPressTimer);
+			longPressTimer = undefined;
+		}
+		pointerStart = null;
+	}
+
+	function openActions(event: MouseEvent | PointerEvent): void {
+		onActionRequest?.(message, event.clientX, event.clientY);
+	}
+
+	function handleContextMenu(event: MouseEvent): void {
+		event.preventDefault();
+		openActions(event);
+	}
+
+	function handleClick(event: MouseEvent): void {
+		if (!selectionMode) return;
+		event.preventDefault();
+		onToggleSelect?.(message);
+	}
+
+	function handleKeydown(event: KeyboardEvent): void {
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		if (selectionMode) {
+			event.preventDefault();
+			onToggleSelect?.(message);
+			return;
+		}
+		const target = event.currentTarget;
+		if (target instanceof HTMLElement) {
+			const rect = target.getBoundingClientRect();
+			onActionRequest?.(message, rect.left + rect.width / 2, rect.top + rect.height / 2);
+		}
+	}
+
+	function handlePointerDown(event: PointerEvent): void {
+		if (event.pointerType === 'mouse' || selectionMode) return;
+		pointerStart = { x: event.clientX, y: event.clientY };
+		longPressTimer = window.setTimeout(() => {
+			openActions(event);
+			clearLongPress();
+		}, 520);
+	}
+
+	function handlePointerMove(event: PointerEvent): void {
+		if (!pointerStart) return;
+		const moved = Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y);
+		if (moved > 10) clearLongPress();
+	}
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions: message rows use custom context-menu and long-press gestures. -->
 <div
-	class={cn('flex w-full min-w-0 select-none gap-2 px-3 sm:px-4', mine ? 'justify-end' : 'justify-start', isLastOfGroup ? 'mb-2' : 'mb-0.5')}
+	role="button"
+	tabindex="0"
+	oncontextmenu={handleContextMenu}
+	onclick={handleClick}
+	onkeydown={handleKeydown}
+	onpointerdown={handlePointerDown}
+	onpointermove={handlePointerMove}
+	onpointerup={clearLongPress}
+	onpointercancel={clearLongPress}
+	onpointerleave={clearLongPress}
+	class={cn(
+		'flex w-full min-w-0 select-none gap-2 px-3 outline-none transition-colors sm:px-4',
+		mine ? 'justify-end' : 'justify-start',
+		isLastOfGroup ? 'mb-2' : 'mb-0.5',
+		selectionMode && 'cursor-pointer',
+		selected && 'bg-primary-soft/45'
+	)}
 >
 	{#if !mine}
 		<div class="w-8 shrink-0 self-end">
@@ -61,7 +141,8 @@
 						? 'rounded-2xl bg-agent-soft text-foreground ring-1 ring-agent/25'
 						: 'rounded-2xl bg-bubble-in text-bubble-in-foreground',
 				// flatten the tail corner on the last bubble of a group
-				isLastOfGroup && (mine ? 'rounded-br-md' : 'rounded-bl-md')
+				isLastOfGroup && (mine ? 'rounded-br-md' : 'rounded-bl-md'),
+				selected && 'ring-2 ring-primary/70'
 			)}
 		>
 			{#if showName}

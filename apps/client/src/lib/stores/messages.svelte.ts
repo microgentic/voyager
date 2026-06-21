@@ -233,6 +233,32 @@ class MessagesStore {
 		});
 	}
 
+	async deleteForMe(roomId: string, envelopeIds: string[]): Promise<string[]> {
+		const ids = Array.from(new Set(envelopeIds.filter(Boolean)));
+		if (!ids.length) return [];
+		const result = await api.deleteMessagesForMe(roomId, ids);
+		this.removeEnvelopeIds(roomId, result.envelopeIds);
+		return result.envelopeIds;
+	}
+
+	removeEnvelopeIds(roomId: string, envelopeIds: string[]): void {
+		const ids = new Set(envelopeIds);
+		if (!ids.size) return;
+		this.byRoom = {
+			...this.byRoom,
+			[roomId]: this.list(roomId).filter((m) => !m.envelopeId || !ids.has(m.envelopeId))
+		};
+	}
+
+	removeKeys(roomId: string, keys: string[]): void {
+		const keySet = new Set(keys);
+		if (!keySet.size) return;
+		this.byRoom = {
+			...this.byRoom,
+			[roomId]: this.list(roomId).filter((m) => !keySet.has(m.key))
+		};
+	}
+
 	private setDelivery(roomId: string, idemKey: string, delivery: Delivery): void {
 		const list = this.list(roomId);
 		const idx = list.findIndex((m) => m.idempotencyKey === idemKey);

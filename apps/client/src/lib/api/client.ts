@@ -7,6 +7,7 @@ import type {
 	AuthResult,
 	BootstrapResult,
 	BootstrapStatus,
+	DeleteMessagesResult,
 	DeliveryReceipt,
 	Device,
 	DeviceInput,
@@ -407,6 +408,15 @@ export class VoyagerClient {
 			{ json: { ...input } }
 		);
 		return res.message;
+	}
+
+	async deleteMessagesForMe(roomId: string, envelopeIds: string[]): Promise<DeleteMessagesResult> {
+		const res = await this.request<{ deleted: DeleteMessagesResult }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/delete`,
+			{ json: { scope: 'for_me', envelopeIds } }
+		);
+		return res.deleted;
 	}
 
 	async ackMessage(

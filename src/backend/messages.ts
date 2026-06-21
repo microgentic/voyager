@@ -191,15 +191,100 @@ export async function listRoomMessages(
   const after = numberParam(url, "after", 0, Number.MAX_SAFE_INTEGER, 0);
   const limit = numberParam(url, "limit", 1, 200, 50);
   const result = await env.CONTROL_DB.prepare(
-    `SELECT *
-     FROM message_envelopes
-     WHERE room_id = ? AND server_sequence > ? AND state != 'purged' AND expires_at > CURRENT_TIMESTAMP
+    `SELECT me.*
+     FROM message_envelopes me
+     WHERE me.room_id = ?
+       AND me.server_sequence > ?
+       AND me.state != 'purged'
+       AND me.expires_at > CURRENT_TIMESTAMP
+       AND NOT EXISTS (
+         SELECT 1
+         FROM message_visibility mv
+         WHERE mv.envelope_id = me.envelope_id
+           AND mv.account_id = ?
+       )
      ORDER BY server_sequence ASC
      LIMIT ?`,
   )
-    .bind(roomId, after, limit)
+    .bind(roomId, after, auth.account.account_id, limit)
     .all<Record<string, unknown>>();
   return (result.results ?? []).map(publicMessage);
+}
+
+export async function deleteMessagesForMe(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  await requireRoomMembership(env, auth, roomId);
+  const scope = stringField(body, "scope", { required: true, max: 20 });
+  if (scope !== "for_me") {
+    throw new HttpError(
+      400,
+      "invalid_delete_scope",
+      "Only delete-for-me is supported",
+    );
+  }
+
+  const envelopeIds = uniqueStrings(
+    stringArrayField(body, "envelopeIds", {
+      required: true,
+      maxItems: 100,
+    }),
+  );
+  if (!envelopeIds.length) {
+    throw new HttpError(
+      400,
+      "missing_field",
+      "Missing required field: envelopeIds",
+    );
+  }
+
+  const placeholders = envelopeIds.map(() => "?").join(", ");
+  const existing = await env.CONTROL_DB.prepare(
+    `SELECT envelope_id
+     FROM message_envelopes
+     WHERE room_id = ?
+       AND envelope_id IN (${placeholders})
+       AND state != 'purged'`,
+  )
+    .bind(roomId, ...envelopeIds)
+    .all<{ envelope_id: string }>();
+  const existingIds = new Set(
+    (existing.results ?? []).map((row) => row.envelope_id),
+  );
+  if (existingIds.size !== envelopeIds.length) {
+    throw new HttpError(404, "message_not_found", "Message not found");
+  }
+
+  await env.CONTROL_DB.prepare(
+    `INSERT OR IGNORE INTO message_visibility (
+       visibility_id, envelope_id, room_id, account_id, principal_id, reason
+     )
+     SELECT
+       'msgvis_' || lower(hex(randomblob(18))),
+       envelope_id,
+       room_id,
+       ?,
+       ?,
+       'delete_for_me'
+     FROM message_envelopes
+     WHERE room_id = ?
+       AND envelope_id IN (${placeholders})`,
+  )
+    .bind(
+      auth.account.account_id,
+      auth.principal.principal_id,
+      roomId,
+      ...envelopeIds,
+    )
+    .run();
+
+  return {
+    scope: "for_me",
+    envelopeIds,
+  };
 }
 
 export async function acknowledgeMessage(
