@@ -15,6 +15,7 @@ export const endpointStabilityCatalog = [
   { method: "GET", path: "/v1/principals", stability: "stable/current" },
   { method: "GET", path: "/v1/principals/{principalId}/devices", stability: "stable/current" },
   { method: "GET", path: "/v1/rooms", stability: "stable/current" },
+  { method: "GET", path: "/v1/threads", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/direct", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/groups", stability: "stable/current" },
   { method: "GET", path: "/v1/rooms/{roomId}", stability: "stable/current" },
@@ -33,6 +34,8 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/forward", stability: "stable/current" },
   { method: "GET", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/read", stability: "stable/current" },
+  { method: "PATCH", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/subscription", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions", stability: "stable/current" },
   { method: "DELETE", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/pin", stability: "stable/current" },
@@ -151,6 +154,20 @@ export function assertThreadResponse(payload, context) {
   array(thread.replies, `${context}.thread.replies`).forEach((reply, index) =>
     assertMessage(reply, `${context}.thread.replies[${index}]`)
   );
+  nullableString(thread.olderCursor, `${context}.thread.olderCursor`);
+}
+
+export function assertThreadsResponse(payload, context) {
+  const value = success(payload, context);
+  array(value.items, `${context}.items`).forEach((item, index) =>
+    assertThreadInboxItem(item, `${context}.items[${index}]`)
+  );
+  nullableString(value.nextCursor, `${context}.nextCursor`);
+}
+
+export function assertThreadStateResponse(payload, context) {
+  const value = success(payload, context);
+  assertThreadState(value.threadState, `${context}.threadState`);
 }
 
 export function assertDeleteMessagesResponse(payload, context) {
@@ -385,6 +402,27 @@ function assertThreadSummary(value, context) {
   nullableString(summary.lastReplyEnvelopeId, `${context}.lastReplyEnvelopeId`);
   nullableString(summary.lastReplySenderPrincipalId, `${context}.lastReplySenderPrincipalId`);
   nullableString(summary.lastReplyAt, `${context}.lastReplyAt`);
+}
+
+function assertThreadInboxItem(value, context) {
+  const item = object(value, context);
+  assertRoom(item.room, `${context}.room`);
+  assertMessage(item.root, `${context}.root`);
+  boolean(item.following, `${context}.following`);
+  boolean(item.muted, `${context}.muted`);
+  number(item.unreadCount, `${context}.unreadCount`);
+  number(item.lastReadSequence, `${context}.lastReadSequence`);
+  string(item.updatedAt, `${context}.updatedAt`);
+}
+
+function assertThreadState(value, context) {
+  const state = object(value, context);
+  string(state.rootEnvelopeId, `${context}.rootEnvelopeId`);
+  string(state.roomId, `${context}.roomId`);
+  boolean(state.following, `${context}.following`);
+  boolean(state.muted, `${context}.muted`);
+  number(state.lastReadSequence, `${context}.lastReadSequence`);
+  string(state.updatedAt, `${context}.updatedAt`);
 }
 
 function assertDeletedForEveryone(value, context) {

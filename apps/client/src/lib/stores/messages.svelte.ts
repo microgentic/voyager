@@ -101,6 +101,7 @@ class MessagesStore {
 	// Thread replies live here, keyed by root envelope id, so thread-only replies
 	// never enter the main timeline (byRoom) or its unread counts.
 	threads = $state<Record<string, ChatMessage[]>>({});
+	threadOlderCursors = $state<Record<string, string | null>>({});
 	lastReadSeq = $state<Record<string, number>>(loadReadState());
 	loadedRooms = new SvelteSet<string>();
 	loadingRoom = $state<string | null>(null);
@@ -115,6 +116,7 @@ class MessagesStore {
 	reset(): void {
 		this.byRoom = {};
 		this.threads = {};
+		this.threadOlderCursors = {};
 		this.lastReadSeq = {};
 		this.cursor = {};
 		this.acked.clear();
@@ -238,13 +240,28 @@ class MessagesStore {
 		return this.threads[rootEnvelopeId] ?? [];
 	}
 
+	threadOlderCursor(rootEnvelopeId: string): string | null {
+		return this.threadOlderCursors[rootEnvelopeId] ?? null;
+	}
+
 	/** Load (or refresh) a thread: its root summary into the main timeline and its replies into the thread store. */
 	async openThread(roomId: string, rootEnvelopeId: string): Promise<void> {
 		const view = await api.getThread(roomId, rootEnvelopeId);
 		const [root, ...replies] = await this.decodeEnvelopes([view.root, ...view.replies]);
 		if (root) this.applyMessages([root]);
 		this.applyMessages(replies);
-		this.reconcileThread(rootEnvelopeId, replies);
+		this.threadOlderCursors = { ...this.threadOlderCursors, [rootEnvelopeId]: view.olderCursor };
+		this.reconcileThread(rootEnvelopeId, replies, view.olderCursor);
+	}
+
+	async loadOlderThreadReplies(roomId: string, rootEnvelopeId: string): Promise<void> {
+		const before = this.threadOlderCursor(rootEnvelopeId);
+		if (!before) return;
+		const view = await api.getThread(roomId, rootEnvelopeId, { before, limit: PAGE });
+		const [root, ...replies] = await this.decodeEnvelopes([view.root, ...view.replies]);
+		if (root) this.applyMessages([root]);
+		this.applyMessages(replies);
+		this.threadOlderCursors = { ...this.threadOlderCursors, [rootEnvelopeId]: view.olderCursor };
 	}
 
 	/** Refresh a thread after a realtime hint without disturbing optimistic state. */
@@ -527,10 +544,24 @@ class MessagesStore {
 		}
 	}
 
-	private reconcileThread(rootEnvelopeId: string, serverReplies: ChatMessage[]): void {
+	private reconcileThread(
+		rootEnvelopeId: string,
+		serverReplies: ChatMessage[],
+		olderCursor: string | null
+	): void {
 		const serverEnvelopeIds = new Set(serverReplies.map((m) => m.envelopeId).filter(Boolean));
 		const serverIdempotencyKeys = new Set(serverReplies.map((m) => m.idempotencyKey).filter(Boolean));
+		const oldestReturned = olderCursor ? Number(olderCursor) : null;
 		const optimistic = this.threadList(rootEnvelopeId).filter((m) => {
+			if (
+				oldestReturned !== null &&
+				Number.isFinite(oldestReturned) &&
+				m.delivery === 'sent' &&
+				m.serverSequence > 0 &&
+				m.serverSequence < oldestReturned
+			) {
+				return true;
+			}
 			if (m.delivery === 'sent' && m.envelopeId) return false;
 			if (m.envelopeId && serverEnvelopeIds.has(m.envelopeId)) return false;
 			if (m.idempotencyKey && serverIdempotencyKeys.has(m.idempotencyKey)) return false;

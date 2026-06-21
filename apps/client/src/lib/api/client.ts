@@ -30,6 +30,8 @@ import type {
 	SidebarCollection,
 	SyncResult,
 	ThreadReplyInput,
+	ThreadInboxItem,
+	ThreadState,
 	ThreadView
 } from './types';
 
@@ -445,12 +447,45 @@ export class VoyagerClient {
 		return res.message;
 	}
 
-	async getThread(roomId: string, rootEnvelopeId: string): Promise<ThreadView> {
+	async listThreads(params: { limit?: number; cursor?: string | null } = {}): Promise<Paginated<ThreadInboxItem>> {
+		const res = await this.request<{ items: ThreadInboxItem[]; nextCursor: string | null }>('GET', '/v1/threads', {
+			query: { limit: params.limit, cursor: params.cursor ?? undefined }
+		});
+		return { items: res.items, nextCursor: res.nextCursor };
+	}
+
+	async getThread(
+		roomId: string,
+		rootEnvelopeId: string,
+		params: { limit?: number; after?: number; before?: string | number | null } = {}
+	): Promise<ThreadView> {
 		const res = await this.request<{ thread: ThreadView }>(
 			'GET',
-			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(rootEnvelopeId)}/thread`
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(rootEnvelopeId)}/thread`,
+			{ query: { limit: params.limit, after: params.after, before: params.before ?? undefined } }
 		);
 		return res.thread;
+	}
+
+	async markThreadRead(roomId: string, rootEnvelopeId: string): Promise<ThreadState> {
+		const res = await this.request<{ threadState: ThreadState }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(rootEnvelopeId)}/thread/read`
+		);
+		return res.threadState;
+	}
+
+	async updateThreadSubscription(
+		roomId: string,
+		rootEnvelopeId: string,
+		input: { following?: boolean; muted?: boolean }
+	): Promise<ThreadState> {
+		const res = await this.request<{ threadState: ThreadState }>(
+			'PATCH',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(rootEnvelopeId)}/thread/subscription`,
+			{ json: { ...input } }
+		);
+		return res.threadState;
 	}
 
 	async replyInThread(

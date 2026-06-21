@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { Copy, Forward, MessagesSquare, Pencil, Search, Trash2, X } from '@lucide/svelte';
+	import { ChevronUp, Copy, Forward, MessagesSquare, Pencil, Search, Trash2, X } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
-	import { messages, rooms, toasts, type ChatMessage } from '$lib/stores';
+	import { messages, rooms, threads, toasts, type ChatMessage } from '$lib/stores';
 	import MessageBubble from './MessageBubble.svelte';
 	import Composer from './Composer.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -26,9 +26,11 @@
 
 	const root = $derived(messages.findByEnvelopeId(room.roomId, rootEnvelopeId));
 	const replies = $derived(messages.threadList(rootEnvelopeId));
+	const olderCursor = $derived(messages.threadOlderCursor(rootEnvelopeId));
 	const rootDeleted = $derived(Boolean(root?.deletedForEveryone.deleted));
 
 	let loading = $state(true);
+	let loadingOlder = $state(false);
 	let scrollEl = $state<HTMLDivElement>();
 	let editingReply = $state<ChatMessage | null>(null);
 	let actionMenu = $state<{ message: ChatMessage; x: number; y: number } | null>(null);
@@ -72,12 +74,15 @@
 	// Mark replies read while the thread is on screen.
 	$effect(() => {
 		const count = replies.length;
-		if (rootEnvelopeId && count >= 0) messages.markThreadRead(room.roomId, rootEnvelopeId);
+		if (rootEnvelopeId && count >= 0) {
+			messages.markThreadRead(room.roomId, rootEnvelopeId);
+			void threads.markRead(room.roomId, rootEnvelopeId).catch(() => undefined);
+		}
 	});
 
 	// Keep the newest reply in view as the thread grows.
 	$effect(() => {
-		if (replies.length) void scrollToBottom();
+		if (replies.length && !loadingOlder) void scrollToBottom();
 	});
 
 	onMount(() => void scrollToBottom());
@@ -85,6 +90,22 @@
 	async function scrollToBottom(): Promise<void> {
 		await tick();
 		if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+	}
+
+	async function loadOlder(): Promise<void> {
+		if (!olderCursor || loadingOlder || !scrollEl) return;
+		loadingOlder = true;
+		const previousHeight = scrollEl.scrollHeight;
+		const previousTop = scrollEl.scrollTop;
+		try {
+			await messages.loadOlderThreadReplies(room.roomId, rootEnvelopeId);
+			await tick();
+			if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight - previousHeight + previousTop;
+		} catch {
+			toasts.error('Could not load older replies.');
+		} finally {
+			loadingOlder = false;
+		}
 	}
 
 	function clampMenuPosition(x: number, y: number): { x: number; y: number } {
@@ -254,6 +275,13 @@
 				</span>
 				<div class="h-px flex-1 bg-border"></div>
 			</div>
+			{#if olderCursor}
+				<div class="flex justify-center px-4 pb-2">
+					<Button size="sm" variant="ghost" loading={loadingOlder} onclick={loadOlder}>
+						<ChevronUp class="h-4 w-4" /> Older replies
+					</Button>
+				</div>
+			{/if}
 			{#each replies as reply (reply.key)}
 				<MessageBubble message={reply} {room} isFirstOfGroup isLastOfGroup inThread onActionRequest={openActionMenu} />
 			{/each}

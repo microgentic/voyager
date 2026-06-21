@@ -22,7 +22,9 @@ import {
   assertRoomResponse,
   assertSidebarCollectionResponse,
   assertSyncResponse,
-  assertThreadResponse
+  assertThreadResponse,
+  assertThreadStateResponse,
+  assertThreadsResponse
 } from "./api-contract-assertions.mjs";
 import { assertRouteInventory } from "./route-inventory-check.mjs";
 
@@ -1287,6 +1289,48 @@ if (threadView.thread.root.envelopeId !== threadRootId) {
 }
 if (!threadView.thread.replies.some((message) => message.envelopeId === threadReply.message.envelopeId)) {
   throw new Error("thread endpoint did not include the reply");
+}
+if (threadView.thread.olderCursor !== null) {
+  throw new Error("single-page thread unexpectedly returned an older cursor");
+}
+
+const ownerThreads = await api("/v1/threads?limit=20", { headers: ownerHeaders });
+assertThreadsResponse(ownerThreads, "GET /v1/threads");
+if (!ownerThreads.items.some((item) => item.root.envelopeId === threadRootId && item.following === true)) {
+  throw new Error("thread inbox did not include the participated thread");
+}
+const ownerThreadRead = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread/read`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertThreadStateResponse(ownerThreadRead, "POST /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/read");
+if (
+  ownerThreadRead.threadState.rootEnvelopeId !== threadRootId ||
+  ownerThreadRead.threadState.lastReadSequence < threadReply.message.serverSequence
+) {
+  throw new Error("thread read state did not advance to the visible reply");
+}
+const ownerThreadUnfollow = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread/subscription`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: { following: false }
+});
+assertThreadStateResponse(ownerThreadUnfollow, "PATCH /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/subscription unfollow");
+const ownerThreadsAfterUnfollow = await api("/v1/threads?limit=20", { headers: ownerHeaders });
+assertThreadsResponse(ownerThreadsAfterUnfollow, "GET /v1/threads after unfollow");
+if (ownerThreadsAfterUnfollow.items.some((item) => item.root.envelopeId === threadRootId)) {
+  throw new Error("unfollowed thread remained in the thread inbox");
+}
+const ownerThreadRefollow = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread/subscription`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: { following: true }
+});
+assertThreadStateResponse(ownerThreadRefollow, "PATCH /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/subscription follow");
+const ownerThreadsAfterRefollow = await api("/v1/threads?limit=20", { headers: ownerHeaders });
+assertThreadsResponse(ownerThreadsAfterRefollow, "GET /v1/threads after follow");
+if (!ownerThreadsAfterRefollow.items.some((item) => item.root.envelopeId === threadRootId)) {
+  throw new Error("refollowed thread did not return to the thread inbox");
 }
 
 const threadMutationRealtimeToken = await api("/v1/realtime/token", {

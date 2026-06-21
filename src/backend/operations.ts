@@ -1,6 +1,7 @@
 export * from "./identity";
 export * from "./rooms";
 export * from "./messages";
+export * from "./threads";
 export * from "./sync";
 export * from "./attachments";
 export * from "./sidebar";
