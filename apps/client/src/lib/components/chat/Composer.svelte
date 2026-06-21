@@ -206,6 +206,8 @@
 		const target = pending.find((item) => item.id === id);
 		if (!target) return;
 		if (target.localPreviewUrl) URL.revokeObjectURL(target.localPreviewUrl);
+		const staleAttachmentId = target.ref?.attachmentId ?? target.attachmentId;
+		if (staleAttachmentId) void api.deleteAttachment(staleAttachmentId).catch(() => undefined);
 		const controller = new AbortController();
 		patchPending(id, {
 			attachmentId: undefined,

@@ -32,8 +32,9 @@
 	const viewerUrl = $derived(viewerVariant ? urls[viewerVariant] : null);
 
 	function selectVariant(preference: AttachmentVariantName[]): AttachmentVariantName {
+		if (!attachment.variants) return 'original';
 		for (const variant of preference) {
-			if (!attachment.variants || attachment.variants[variant]) return variant;
+			if (attachment.variants[variant]) return variant;
 		}
 		return 'original';
 	}
