@@ -1296,8 +1296,12 @@ if (threadView.thread.olderCursor !== null) {
 
 const ownerThreads = await api("/v1/threads?limit=20", { headers: ownerHeaders });
 assertThreadsResponse(ownerThreads, "GET /v1/threads");
-if (!ownerThreads.items.some((item) => item.root.envelopeId === threadRootId && item.following === true)) {
+const ownerThreadItem = ownerThreads.items.find((item) => item.root.envelopeId === threadRootId);
+if (!ownerThreadItem || ownerThreadItem.following !== true) {
   throw new Error("thread inbox did not include the participated thread");
+}
+if (ownerThreadItem.updatedAt !== threadReply.message.serverReceivedAt) {
+  throw new Error("thread inbox activity timestamp did not use the latest reply time");
 }
 const ownerThreadRead = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread/read`, {
   method: "POST",
@@ -1309,6 +1313,12 @@ if (
   ownerThreadRead.threadState.lastReadSequence < threadReply.message.serverSequence
 ) {
   throw new Error("thread read state did not advance to the visible reply");
+}
+const ownerThreadsAfterRead = await api("/v1/threads?limit=20", { headers: ownerHeaders });
+assertThreadsResponse(ownerThreadsAfterRead, "GET /v1/threads after read");
+const ownerThreadItemAfterRead = ownerThreadsAfterRead.items.find((item) => item.root.envelopeId === threadRootId);
+if (!ownerThreadItemAfterRead || ownerThreadItemAfterRead.updatedAt !== threadReply.message.serverReceivedAt) {
+  throw new Error("thread read state should not change thread inbox activity time");
 }
 const ownerThreadUnfollow = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread/subscription`, {
   method: "PATCH",
@@ -1494,6 +1504,33 @@ const directThreadReply = await api(`/v1/rooms/${direct.room.roomId}/messages/${
   json: { idempotencyKey: `direct-thread-reply-${suffix}`, protocolType: "opaque-test", ciphertext: "direct-thread-reply" }
 });
 assertMessageResponse(directThreadReply, "POST direct thread reply");
+const secondDirectThreadReply = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { idempotencyKey: `direct-thread-reply-2-${suffix}`, protocolType: "opaque-test", ciphertext: "direct-thread-reply-2" }
+});
+assertMessageResponse(secondDirectThreadReply, "POST second direct thread reply");
+const directThreadNewestPage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread?limit=1`, {
+  headers: ownerHeaders
+});
+assertThreadResponse(directThreadNewestPage, "GET direct thread newest page");
+if (
+  directThreadNewestPage.thread.olderCursor === null ||
+  directThreadNewestPage.thread.replies.length !== 1 ||
+  directThreadNewestPage.thread.replies[0].envelopeId !== secondDirectThreadReply.message.envelopeId
+) {
+  throw new Error("thread newest-page pagination did not return the expected older cursor");
+}
+const directThreadOlderPage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread?limit=1&before=${directThreadNewestPage.thread.olderCursor}`, {
+  headers: ownerHeaders
+});
+assertThreadResponse(directThreadOlderPage, "GET direct thread older page");
+if (
+  directThreadOlderPage.thread.replies.length !== 1 ||
+  directThreadOlderPage.thread.replies[0].envelopeId !== directThreadReply.message.envelopeId
+) {
+  throw new Error("thread older-page pagination did not return the previous reply");
+}
 const directThreadView = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread`, {
   headers: ownerHeaders
 });

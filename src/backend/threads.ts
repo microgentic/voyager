@@ -20,7 +20,7 @@ interface ThreadStateRow {
   room_id: string;
   account_id: string;
   principal_id: string;
-  following: number;
+  following: number | null;
   muted: number;
   last_read_sequence: number;
   created_at: string;
@@ -35,10 +35,24 @@ export async function listThreads(
   const page = pageParams(url, { defaultLimit: 50, maxLimit: 100 });
   const rows = await env.CONTROL_DB.prepare(
     `SELECT ${messageSelectColumns("root")},
-       COALESCE(ts.following, 1) AS thread_following,
+       CASE
+         WHEN ts.following = 1 THEN 1
+         WHEN ts.following = 0 THEN 0
+         WHEN root.sender_account_id = ?
+           OR EXISTS (
+             SELECT 1
+             FROM message_envelopes tr
+             WHERE tr.thread_root_envelope_id = root.envelope_id
+               AND tr.room_id = root.room_id
+               AND tr.sender_account_id = ?
+               AND tr.state != 'purged'
+               AND tr.expires_at > CURRENT_TIMESTAMP
+           )
+           THEN 1
+         ELSE 0
+       END AS thread_following,
        COALESCE(ts.muted, 0) AS thread_muted,
        COALESCE(ts.last_read_sequence, 0) AS thread_last_read_sequence,
-       COALESCE(ts.updated_at, root.server_received_at) AS thread_state_updated_at,
        (SELECT COUNT(*)
         FROM message_envelopes tr
         WHERE tr.thread_root_envelope_id = root.envelope_id
@@ -88,7 +102,7 @@ export async function listThreads(
        AND (
          ts.following = 1
          OR (
-           ts.thread_state_id IS NULL
+           (ts.thread_state_id IS NULL OR ts.following IS NULL)
            AND (
              root.sender_account_id = ?
              OR EXISTS (
@@ -108,6 +122,8 @@ export async function listThreads(
   )
     .bind(
       ...messageSelectBindValues(auth),
+      auth.account.account_id,
+      auth.account.account_id,
       auth.account.account_id,
       auth.account.account_id,
       auth.account.account_id,
@@ -134,7 +150,7 @@ export async function listThreads(
         muted: Boolean(row.thread_muted),
         unreadCount: Number(row.thread_unread_count ?? 0),
         lastReadSequence: Number(row.thread_last_read_sequence ?? 0),
-        updatedAt: row.thread_state_updated_at ?? row.server_received_at,
+        updatedAt: row.thread_last_reply_at ?? row.server_received_at,
       },
     ];
   });
@@ -168,7 +184,7 @@ export async function markThreadRead(
   const existing = await getThreadState(env, auth, rootEnvelopeId);
   return publicThreadState(
     await upsertThreadState(env, auth, roomId, rootEnvelopeId, {
-      following: existing ? Boolean(existing.following) : true,
+      following: existing?.following ?? null,
       muted: existing ? Boolean(existing.muted) : false,
       lastReadSequence: maxSequence,
     }),
@@ -195,7 +211,7 @@ export async function updateThreadSubscription(
   const existing = await getThreadState(env, auth, rootEnvelopeId);
   return publicThreadState(
     await upsertThreadState(env, auth, roomId, rootEnvelopeId, {
-      following: following ?? (existing ? Boolean(existing.following) : true),
+      following: following ?? existing?.following ?? null,
       muted: muted ?? (existing ? Boolean(existing.muted) : false),
       lastReadSequence: existing?.last_read_sequence ?? 0,
     }),
@@ -258,12 +274,17 @@ async function upsertThreadState(
   roomId: string,
   rootEnvelopeId: string,
   input: {
-    following?: boolean;
+    following?: boolean | number | null;
     muted?: boolean;
     lastReadSequence?: number;
   },
 ): Promise<ThreadStateRow> {
-  const following = input.following === false ? 0 : 1;
+  const following =
+    input.following === null || input.following === undefined
+      ? null
+      : input.following === false || input.following === 0
+        ? 0
+        : 1;
   const muted = input.muted === true ? 1 : 0;
   const lastReadSequence = Math.max(0, Math.floor(input.lastReadSequence ?? 0));
   const state = await env.CONTROL_DB.prepare(

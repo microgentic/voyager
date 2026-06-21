@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS thread_states (
   room_id TEXT NOT NULL REFERENCES rooms(room_id),
   account_id TEXT NOT NULL REFERENCES accounts(account_id),
   principal_id TEXT NOT NULL REFERENCES principals(principal_id),
-  following INTEGER NOT NULL DEFAULT 1,
+  -- NULL means "default": show if the account participates in the thread.
+  -- 1 explicitly follows; 0 explicitly unfollows.
+  following INTEGER DEFAULT NULL,
   muted INTEGER NOT NULL DEFAULT 0,
   last_read_sequence INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

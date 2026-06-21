@@ -54,9 +54,7 @@ class ThreadsStore {
 						...item,
 						unreadCount: 0,
 						lastReadSequence: state.lastReadSequence,
-						following: state.following,
-						muted: state.muted,
-						updatedAt: state.updatedAt
+						muted: state.muted
 					}
 				: item
 		);
@@ -67,7 +65,7 @@ class ThreadsStore {
 		this.items = this.items
 			.map((item) =>
 				item.root.envelopeId === rootEnvelopeId
-					? { ...item, following: state.following, muted: state.muted, updatedAt: state.updatedAt }
+					? { ...item, following: state.following, muted: state.muted }
 					: item
 			)
 			.filter((item) => item.following);

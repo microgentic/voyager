@@ -265,12 +265,29 @@ class MessagesStore {
 	}
 
 	/** Refresh a thread after a realtime hint without disturbing optimistic state. */
-	async syncThread(roomId: string, rootEnvelopeId: string): Promise<void> {
+	async syncThread(roomId: string, rootEnvelopeId: string, serverSequence?: number | null): Promise<void> {
 		try {
 			await this.openThread(roomId, rootEnvelopeId);
+			if (serverSequence && serverSequence > 0) {
+				await this.refreshThreadSequence(roomId, rootEnvelopeId, serverSequence);
+			}
 		} catch {
 			/* transient; next hint or manual reopen retries */
 		}
+	}
+
+	private async refreshThreadSequence(
+		roomId: string,
+		rootEnvelopeId: string,
+		serverSequence: number
+	): Promise<void> {
+		const view = await api.getThread(roomId, rootEnvelopeId, {
+			after: Math.max(0, serverSequence - 1),
+			limit: 1
+		});
+		const [root, ...replies] = await this.decodeEnvelopes([view.root, ...view.replies]);
+		if (root) this.applyMessages([root]);
+		this.applyMessages(replies);
 	}
 
 	/** Pull everything after our cursor (forward-only; the backend has no before-cursor yet). */
