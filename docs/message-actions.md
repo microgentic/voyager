@@ -23,6 +23,8 @@ message-send, realtime, or sync source-of-truth model.
   - Cancel.
 - Delete-for-me is backend-backed:
   - the backend writes per-account visibility rows;
+  - matching pending delivery receipts for that account are marked `stored` so
+    hidden messages do not remain in the pending delivery queue;
   - message envelopes remain durable D1 history;
   - other room members still see the message;
   - the deleting account no longer receives the hidden envelopes from room

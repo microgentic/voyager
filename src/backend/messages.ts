@@ -258,28 +258,41 @@ export async function deleteMessagesForMe(
     throw new HttpError(404, "message_not_found", "Message not found");
   }
 
-  await env.CONTROL_DB.prepare(
-    `INSERT OR IGNORE INTO message_visibility (
-       visibility_id, envelope_id, room_id, account_id, principal_id, reason
-     )
-     SELECT
-       'msgvis_' || lower(hex(randomblob(18))),
-       envelope_id,
-       room_id,
-       ?,
-       ?,
-       'delete_for_me'
-     FROM message_envelopes
-     WHERE room_id = ?
-       AND envelope_id IN (${placeholders})`,
-  )
-    .bind(
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `INSERT OR IGNORE INTO message_visibility (
+         visibility_id, envelope_id, room_id, account_id, principal_id, reason
+       )
+       SELECT
+         'msgvis_' || lower(hex(randomblob(18))),
+         envelope_id,
+         room_id,
+         ?,
+         ?,
+         'delete_for_me'
+       FROM message_envelopes
+       WHERE room_id = ?
+         AND envelope_id IN (${placeholders})`,
+    ).bind(
       auth.account.account_id,
       auth.principal.principal_id,
       roomId,
       ...envelopeIds,
-    )
-    .run();
+    ),
+    env.CONTROL_DB.prepare(
+      `UPDATE delivery_receipts
+       SET status = 'stored',
+           stored_at = COALESCE(stored_at, CURRENT_TIMESTAMP)
+       WHERE room_id = ?
+         AND recipient_account_id = ?
+         AND status = 'pending'
+         AND envelope_id IN (${placeholders})`,
+    ).bind(roomId, auth.account.account_id, ...envelopeIds),
+  ]);
+
+  await Promise.all(
+    envelopeIds.map((envelopeId) => updateMessageReceiptState(env, envelopeId)),
+  );
 
   return {
     scope: "for_me",
