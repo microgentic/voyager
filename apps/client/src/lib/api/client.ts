@@ -429,6 +429,39 @@ export class VoyagerClient {
 		return res.message;
 	}
 
+	async addReaction(roomId: string, envelopeId: string, reaction: string): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(envelopeId)}/reactions`,
+			{ json: { reaction } }
+		);
+		return res.message;
+	}
+
+	async removeReaction(roomId: string, envelopeId: string, reaction: string): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'DELETE',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(envelopeId)}/reactions/${encodeURIComponent(reaction)}`
+		);
+		return res.message;
+	}
+
+	async pinMessage(roomId: string, envelopeId: string): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(envelopeId)}/pin`
+		);
+		return res.message;
+	}
+
+	async unpinMessage(roomId: string, envelopeId: string): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'DELETE',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(envelopeId)}/pin`
+		);
+		return res.message;
+	}
+
 	async ackMessage(
 		roomId: string,
 		envelopeId: string,

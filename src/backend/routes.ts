@@ -664,6 +664,117 @@ export async function handleBackendFirstRoutes(
     return json({ ok: true, deleted });
   }
 
+  const messageReactionDeleteMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/reactions\/([^/]+)$/,
+    url.pathname,
+  );
+  if (messageReactionDeleteMatch) {
+    requireMethod(request, "DELETE");
+    const reaction = decodeURIComponent(messageReactionDeleteMatch[3]);
+    const mutation = await runMutationThroughConversationCoordinator(
+      env,
+      auth,
+      messageReactionDeleteMatch[1],
+      requestId,
+      {
+        operation: "message.reaction.delete",
+        envelopeId: messageReactionDeleteMatch[2],
+        body: { reaction },
+      },
+    );
+    const message = requireCoordinatorResult(mutation.result);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.reaction.delete",
+      targetType: "message",
+      targetId: messageReactionDeleteMatch[2],
+      requestId,
+      result: "success",
+      metadata: { roomId: messageReactionDeleteMatch[1], reaction },
+    });
+    return json(
+      { ok: true, message },
+      { headers: mutationTimingHeaders("messageReactionDelete", mutation.metrics) },
+    );
+  }
+
+  const messageReactionsMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/reactions$/,
+    url.pathname,
+  );
+  if (messageReactionsMatch) {
+    requireMethod(request, "POST");
+    const body = await readJsonObject(request);
+    const mutation = await runMutationThroughConversationCoordinator(
+      env,
+      auth,
+      messageReactionsMatch[1],
+      requestId,
+      {
+        operation: "message.reaction.set",
+        envelopeId: messageReactionsMatch[2],
+        body,
+      },
+    );
+    const message = requireCoordinatorResult(mutation.result);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.reaction.set",
+      targetType: "message",
+      targetId: messageReactionsMatch[2],
+      requestId,
+      result: "success",
+      metadata: { roomId: messageReactionsMatch[1], reaction: body.reaction },
+    });
+    return json(
+      { ok: true, message },
+      { headers: mutationTimingHeaders("messageReactionSet", mutation.metrics) },
+    );
+  }
+
+  const messagePinMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/pin$/,
+    url.pathname,
+  );
+  if (messagePinMatch) {
+    if (request.method !== "POST" && request.method !== "DELETE") requireMethod(request, "POST");
+    const operation =
+      request.method === "POST"
+        ? "message.pin"
+        : request.method === "DELETE"
+          ? "message.unpin"
+          : "message.pin";
+    const mutation = await runMutationThroughConversationCoordinator(
+      env,
+      auth,
+      messagePinMatch[1],
+      requestId,
+      {
+        operation,
+        envelopeId: messagePinMatch[2],
+      },
+    );
+    const message = requireCoordinatorResult(mutation.result);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: operation,
+      targetType: "message",
+      targetId: messagePinMatch[2],
+      requestId,
+      result: "success",
+      metadata: { roomId: messagePinMatch[1] },
+    });
+    return json(
+      { ok: true, message },
+      {
+        headers: mutationTimingHeaders(
+          request.method === "POST" ? "messagePin" : "messageUnpin",
+          mutation.metrics,
+        ),
+      },
+    );
+  }
+
   const editMessageMatch = routeParams(
     /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)$/,
     url.pathname,

@@ -15,15 +15,19 @@ import {
   addRoomMember,
   archiveRoom,
   createRoomInvitation,
+  deleteMessageReaction,
   declineRoomInvitation,
   durationSince,
   editMessageEnvelope,
   leaveRoom,
+  pinMessage,
   proposeOwnershipTransfer,
   removeRoomMember,
   requireActiveRoom,
   requireRoomInvitationInRoom,
   sendMessageEnvelope,
+  setMessageReaction,
+  unpinMessage,
   updateRoom,
   updateRoomMemberRole,
 } from "./operations";
@@ -222,6 +226,7 @@ export function parseConversationMutationRequest(
     body: optionalObject(body, "body"),
     envelopeId: stringField(body, "envelopeId", { max: 80 }),
     principalId: stringField(body, "principalId", { max: 80 }),
+    reaction: stringField(body, "reaction", { max: 64 }),
     roomInvitationId: stringField(body, "roomInvitationId", { max: 80 }),
     transferId: stringField(body, "transferId", { max: 80 }),
   };
@@ -245,6 +250,12 @@ export function requiredMutationField(
     throw new HttpError(400, "missing_field", `Missing required field: ${key}`);
   }
   return value;
+}
+
+export function optionalMutationBody(
+  payload: ConversationMutationRequest,
+): Record<string, unknown> {
+  return payload.body ?? {};
 }
 
 export function requireCoordinatorResult(
@@ -282,6 +293,36 @@ export async function runConversationMutation(
         payload.roomId,
         requiredMutationField(payload, "envelopeId"),
         requiredMutationBody(payload),
+      );
+    case "message.reaction.set":
+      return setMessageReaction(
+        env,
+        payload.auth,
+        payload.roomId,
+        requiredMutationField(payload, "envelopeId"),
+        requiredMutationBody(payload),
+      );
+    case "message.reaction.delete":
+      return deleteMessageReaction(
+        env,
+        payload.auth,
+        payload.roomId,
+        requiredMutationField(payload, "envelopeId"),
+        optionalMutationBody(payload),
+      );
+    case "message.pin":
+      return pinMessage(
+        env,
+        payload.auth,
+        payload.roomId,
+        requiredMutationField(payload, "envelopeId"),
+      );
+    case "message.unpin":
+      return unpinMessage(
+        env,
+        payload.auth,
+        payload.roomId,
+        requiredMutationField(payload, "envelopeId"),
       );
     case "room.member.add":
       await requireActiveRoom(env, payload.roomId);

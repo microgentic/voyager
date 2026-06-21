@@ -21,6 +21,8 @@ export function publicRoom(room: RoomRow): JsonObject {
     createdAt: room.created_at,
     updatedAt: room.updated_at,
     archivedAt: room.archived_at,
+    pinnedMessageCount: Number(room.pinned_message_count ?? 0),
+    latestPinnedMessageId: room.latest_pinned_message_id ?? null,
   };
 }
 
@@ -125,6 +127,7 @@ export function publicMessage(row: Record<string, unknown>): JsonObject {
       : receiptDelivered > 0
         ? "delivered"
         : "sent";
+  const reactions = normalizeReactionSummary(row.reaction_summary);
   return {
     envelopeId: row.envelope_id,
     roomId: row.room_id,
@@ -149,7 +152,34 @@ export function publicMessage(row: Record<string, unknown>): JsonObject {
       read: receiptRead,
       status: receiptStatus,
     },
+    reactions,
+    pin: {
+      pinned: Boolean(row.pinned_at),
+      pinnedAt: row.pinned_at ?? null,
+      pinnedByPrincipalId: row.pinned_by_principal_id ?? null,
+    },
   };
+}
+
+function normalizeReactionSummary(value: unknown): JsonObject[] {
+  const parsed = parseJson(value);
+  if (!Array.isArray(parsed)) return [];
+  const summary: JsonObject[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const reaction = (entry as Record<string, unknown>).reaction;
+    const count = (entry as Record<string, unknown>).count;
+    const reactedByMe = (entry as Record<string, unknown>).reactedByMe;
+    if (typeof reaction !== "string") continue;
+    summary.push({
+      reaction,
+      count: Number(count ?? 0),
+      reactedByMe: Boolean(reactedByMe),
+    });
+  }
+  return summary;
 }
 
 export function publicAttachment(attachment: AttachmentRow): JsonObject {

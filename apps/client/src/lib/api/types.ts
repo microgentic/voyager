@@ -108,6 +108,8 @@ export interface Room {
 	createdAt: string;
 	updatedAt: string;
 	archivedAt: string | null;
+	pinnedMessageCount: number;
+	latestPinnedMessageId: string | null;
 	members: Membership[];
 }
 
@@ -144,6 +146,8 @@ export interface MessageEnvelope {
 	editedAt: string | null;
 	editCount: number;
 	receiptSummary: MessageReceiptSummary;
+	reactions: MessageReactionSummary[];
+	pin: MessagePinSummary;
 }
 
 export interface MessageReceiptSummary {
@@ -152,6 +156,18 @@ export interface MessageReceiptSummary {
 	delivered: number;
 	read: number;
 	status: 'sent' | 'delivered' | 'read';
+}
+
+export interface MessageReactionSummary {
+	reaction: string;
+	count: number;
+	reactedByMe: boolean;
+}
+
+export interface MessagePinSummary {
+	pinned: boolean;
+	pinnedAt: string | null;
+	pinnedByPrincipalId: string | null;
 }
 
 export type ReceiptStatus = 'pending' | 'stored' | 'read';

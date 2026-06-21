@@ -72,7 +72,12 @@ export async function listPendingMessages(
      ORDER BY me.server_received_at ASC
      LIMIT ?`,
   )
-    .bind(auth.device.device_id, auth.account.account_id, limit)
+    .bind(
+      auth.principal.principal_id,
+      auth.device.device_id,
+      auth.account.account_id,
+      limit,
+    )
     .all<Record<string, unknown>>();
   return (result.results ?? []).map(publicMessage);
 }

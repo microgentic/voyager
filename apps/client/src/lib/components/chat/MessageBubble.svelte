@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock, CornerUpLeft } from '@lucide/svelte';
+	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock, CornerUpLeft, Pin } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, type ChatMessage } from '$lib/stores';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
@@ -108,6 +108,13 @@
 		const moved = Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y);
 		if (moved > 10) clearLongPress();
 	}
+
+	async function toggleReaction(event: MouseEvent, reaction: string): Promise<void> {
+		event.preventDefault();
+		event.stopPropagation();
+		if (selectionMode) return;
+		await messages.toggleReaction(message, reaction).catch(() => undefined);
+	}
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions: message rows use custom context-menu and long-press gestures. -->
@@ -152,6 +159,13 @@
 				selected && 'ring-2 ring-primary/70'
 			)}
 		>
+			{#if message.pin.pinned}
+				<div class={cn('mb-1 flex items-center gap-1 text-[11px] font-semibold', mine ? 'text-white/75' : 'text-primary')}>
+					<Pin class="h-3 w-3 fill-current" />
+					<span>Pinned</span>
+				</div>
+			{/if}
+
 			{#if showName}
 				<div class="mb-0.5 flex items-center gap-1 text-[13px] font-semibold" style="color:{nameColor(message.senderPrincipalId)}">
 					{senderName}
@@ -222,6 +236,26 @@
 				{/if}
 			</div>
 		</div>
+		{#if message.reactions.length}
+			<div class={cn('mt-1 flex max-w-full flex-wrap gap-1', mine ? 'justify-end pr-1' : 'justify-start pl-1')}>
+				{#each message.reactions as reaction (reaction.reaction)}
+					<button
+						type="button"
+						class={cn(
+							'flex h-6 items-center gap-1 rounded-full border px-2 text-xs font-semibold shadow-xs transition',
+							reaction.reactedByMe
+								? 'border-primary/45 bg-primary-soft text-primary'
+								: 'border-border bg-surface-2 text-muted hover:text-foreground'
+						)}
+						aria-label={`Toggle ${reaction.reaction} reaction`}
+						onclick={(event) => void toggleReaction(event, reaction.reaction)}
+					>
+						<span>{reaction.reaction}</span>
+						<span>{reaction.count}</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
 	</div>
 </div>
 

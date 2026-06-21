@@ -722,6 +722,41 @@ if (declinedInvitation.invitation.status !== "declined") {
   throw new Error("declined room invitation did not return declined status");
 }
 
+const groupPinPermissionMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `group-pin-permission-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "encrypted-group-pin-permission-smoke-payload"
+  }
+});
+assertMessageResponse(groupPinPermissionMessage, "POST /v1/rooms/{roomId}/messages group pin permission");
+await expectFailure(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "POST",
+  headers: inviteeHeaders
+}, 403);
+const groupPinnedMessage = await api(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertMessageResponse(groupPinnedMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/pin group owner");
+if (!groupPinnedMessage.message.pin.pinned) {
+  throw new Error("group owner pin did not return active pin summary");
+}
+await expectFailure(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "DELETE",
+  headers: inviteeHeaders
+}, 403);
+const groupUnpinnedMessage = await api(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "DELETE",
+  headers: ownerHeaders
+});
+assertMessageResponse(groupUnpinnedMessage, "DELETE /v1/rooms/{roomId}/messages/{envelopeId}/pin group owner");
+if (groupUnpinnedMessage.message.pin.pinned) {
+  throw new Error("group owner unpin response still marked message as pinned");
+}
+
 const promotedMember = await api(`/v1/rooms/${group.room.roomId}/members/${accepted.principal.principalId}/role`, {
   method: "PATCH",
   headers: ownerHeaders,
@@ -959,6 +994,77 @@ await expectFailure(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.me
     ciphertext: "forbidden-edit-smoke-payload"
   }
 }, 403);
+
+const reactedDirectMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { reaction: "👍" }
+});
+assertMessageResponse(reactedDirectMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/reactions");
+const userReaction = reactedDirectMessage.message.reactions.find((reaction) => reaction.reaction === "👍");
+if (!userReaction || userReaction.count !== 1 || userReaction.reactedByMe !== true) {
+  throw new Error("reaction summary did not include current user reaction");
+}
+
+const replacedReactionMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { reaction: "❤️" }
+});
+assertMessageResponse(replacedReactionMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/reactions replacement");
+if (replacedReactionMessage.message.reactions.some((reaction) => reaction.reaction === "👍")) {
+  throw new Error("reaction replacement kept the previous reaction active");
+}
+const replacementReaction = replacedReactionMessage.message.reactions.find((reaction) => reaction.reaction === "❤️");
+if (!replacementReaction || replacementReaction.count !== 1 || replacementReaction.reactedByMe !== true) {
+  throw new Error("reaction replacement did not expose the new active reaction");
+}
+
+const ownerReactionView = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${directMessage.message.serverSequence - 1}&limit=1`, {
+  headers: ownerHeaders
+});
+assertMessagesResponse(ownerReactionView, "GET /v1/rooms/{roomId}/messages reaction owner view");
+const ownerReaction = ownerReactionView.messages[0]?.reactions.find((reaction) => reaction.reaction === "❤️");
+if (!ownerReaction || ownerReaction.count !== 1 || ownerReaction.reactedByMe !== false) {
+  throw new Error("reaction summary did not preserve viewer-specific reactedByMe");
+}
+
+const removedReaction = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions/${encodeURIComponent("❤️")}`, {
+  method: "DELETE",
+  headers: userHeaders
+});
+assertMessageResponse(removedReaction, "DELETE /v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}");
+if (removedReaction.message.reactions.some((reaction) => reaction.reaction === "❤️")) {
+  throw new Error("deleted reaction remained in message summary");
+}
+
+const pinnedDirectMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/pin`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertMessageResponse(pinnedDirectMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/pin");
+if (!pinnedDirectMessage.message.pin.pinned || pinnedDirectMessage.message.pin.pinnedByPrincipalId !== owner.principal.principalId) {
+  throw new Error("pin response did not include active pin summary");
+}
+const pinnedRoom = await api(`/v1/rooms/${direct.room.roomId}`, { headers: ownerHeaders });
+assertRoomResponse(pinnedRoom, "GET /v1/rooms/{roomId} after pin");
+if (pinnedRoom.room.pinnedMessageCount !== 1 || pinnedRoom.room.latestPinnedMessageId !== directMessage.message.envelopeId) {
+  throw new Error("room did not expose pinned message summary after pin");
+}
+
+const unpinnedDirectMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/pin`, {
+  method: "DELETE",
+  headers: userHeaders
+});
+assertMessageResponse(unpinnedDirectMessage, "DELETE /v1/rooms/{roomId}/messages/{envelopeId}/pin");
+if (unpinnedDirectMessage.message.pin.pinned) {
+  throw new Error("unpin response still marked message as pinned");
+}
+const unpinnedRoom = await api(`/v1/rooms/${direct.room.roomId}`, { headers: ownerHeaders });
+assertRoomResponse(unpinnedRoom, "GET /v1/rooms/{roomId} after unpin");
+if (unpinnedRoom.room.pinnedMessageCount !== 0 || unpinnedRoom.room.latestPinnedMessageId !== null) {
+  throw new Error("room did not clear pinned message summary after unpin");
+}
 
 const realtimeEvent = await realtimeWatcher.wait;
 assertRealtimeRoomMessageEvent(realtimeEvent, "GET /v1/realtime room.message");

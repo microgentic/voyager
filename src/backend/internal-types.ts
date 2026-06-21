@@ -42,6 +42,7 @@ export interface ConversationMutationRequest {
   body?: Record<string, unknown>;
   envelopeId?: string;
   principalId?: string;
+  reaction?: string;
   roomInvitationId?: string;
   transferId?: string;
 }
@@ -94,6 +95,8 @@ export interface RoomRow {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  pinned_message_count?: number;
+  latest_pinned_message_id?: string | null;
 }
 
 export interface MembershipRow {
