@@ -6,6 +6,13 @@ import { publicRoomWithMembers } from "./rooms";
 import { nextCursor, pageParams, runCounted } from "./utils";
 import { publicMaintenanceRun } from "./serializers";
 
+interface AttachmentObjectKeysRow {
+  object_key: string;
+  original_object_key: string | null;
+  preview_object_key: string | null;
+  thumbnail_object_key: string | null;
+}
+
 export async function listAdminRooms(env: Env, url: URL): Promise<JsonObject> {
   const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
   const status = url.searchParams.get("status");
@@ -56,6 +63,20 @@ export async function runCleanup(
   env: Env,
   auth: AuthContext,
 ): Promise<JsonObject> {
+  const expiredAttachmentRows = await env.CONTROL_DB.prepare(
+    `SELECT object_key, original_object_key, preview_object_key, thumbnail_object_key
+     FROM attachments
+     WHERE expires_at <= CURRENT_TIMESTAMP
+       AND state IN ('allocated', 'uploaded', 'referenced')`,
+  ).all<AttachmentObjectKeysRow>();
+  const expiredAttachmentObjectKeys = uniqueAttachmentObjectKeys(
+    expiredAttachmentRows.results ?? [],
+  );
+  await Promise.all(
+    expiredAttachmentObjectKeys.map((objectKey) =>
+      env.ATTACHMENTS_BUCKET.delete(objectKey),
+    ),
+  );
   const expiredMessages = await runCounted(
     env.CONTROL_DB.prepare(
       "UPDATE message_envelopes SET state = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND state NOT IN ('expired', 'purged')",
@@ -107,6 +128,7 @@ export async function runCleanup(
     revokedExpiredSessions,
     deletedRealtimeTokens,
     deletedRateLimits,
+    deletedAttachmentObjects: expiredAttachmentObjectKeys.length,
   };
   await env.CONTROL_DB.prepare(
     "INSERT INTO maintenance_runs (maintenance_run_id, action, actor_account_id, result, metadata_json) VALUES (?, 'cleanup', ?, 'success', ?)",
@@ -118,4 +140,17 @@ export async function runCleanup(
     )
     .run();
   return cleanup;
+}
+
+function uniqueAttachmentObjectKeys(rows: AttachmentObjectKeysRow[]): string[] {
+  return Array.from(
+    new Set(
+      rows.flatMap((row) => [
+        row.object_key,
+        row.original_object_key,
+        row.preview_object_key,
+        row.thumbnail_object_key,
+      ]).filter((key): key is string => typeof key === "string" && key.length > 0),
+    ),
+  );
 }

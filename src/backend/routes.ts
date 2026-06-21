@@ -40,6 +40,7 @@ import {
   listSidebarCollections,
   listThreads,
   mutationTimingHeaders,
+  parseAttachmentVariant,
   publishKeyPackage,
   readTimingHeaders,
   resolveForwardSource,
@@ -1051,6 +1052,7 @@ export async function handleBackendFirstRoutes(
         auth,
         attachmentBlobMatch[1],
         request,
+        parseAttachmentVariant(url.searchParams.get("variant")),
       );
       await audit(env, {
         actorAccountId: auth.account.account_id,
@@ -1063,7 +1065,12 @@ export async function handleBackendFirstRoutes(
       return json({ ok: true, attachment });
     }
     if (request.method === "GET") {
-      return downloadAttachmentBlob(env, auth, attachmentBlobMatch[1]);
+      return downloadAttachmentBlob(
+        env,
+        auth,
+        attachmentBlobMatch[1],
+        parseAttachmentVariant(url.searchParams.get("variant")),
+      );
     }
   }
 

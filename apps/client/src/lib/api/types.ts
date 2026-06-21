@@ -252,6 +252,17 @@ export type AttachmentState =
 	| 'deleted'
 	| 'quarantined_metadata';
 
+export type AttachmentMediaKind = 'image' | 'video' | 'audio' | 'file' | 'unknown';
+export type AttachmentVariantName = 'original' | 'preview' | 'thumbnail';
+
+export interface AttachmentVariant {
+	variant: AttachmentVariantName;
+	bytes: number | null;
+	width: number | null;
+	height: number | null;
+	downloadPath: string;
+}
+
 export interface Attachment {
 	attachmentId: string;
 	roomId: string;
@@ -264,6 +275,18 @@ export interface Attachment {
 	ciphertextSha256: string | null;
 	contentCategory: string | null;
 	retentionClass: string;
+	originalFilename: string | null;
+	declaredMimeType: string | null;
+	mediaKind: AttachmentMediaKind;
+	width: number | null;
+	height: number | null;
+	durationMs: number | null;
+	variants: {
+		original: AttachmentVariant;
+		preview?: AttachmentVariant;
+		thumbnail?: AttachmentVariant;
+	};
+	variantManifest: unknown;
 	expiresAt: string;
 	createdAt: string;
 	uploadedAt: string | null;

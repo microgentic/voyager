@@ -284,12 +284,56 @@ Room invitations are the human membership path. Reused, expired, declined, or re
 | Method | Path | Response |
 | --- | --- | --- |
 | `POST` | `/v1/rooms/{roomId}/attachments` | `{ attachment }` |
-| `PUT` | `/v1/attachments/{attachmentId}/blob` | binary upload response |
+| `PUT` | `/v1/attachments/{attachmentId}/blob` | `{ attachment }` |
+| `PUT` | `/v1/attachments/{attachmentId}/blob?variant=preview\|thumbnail\|original` | `{ attachment }` |
 | `GET` | `/v1/attachments/{attachmentId}/blob` | binary payload |
+| `GET` | `/v1/attachments/{attachmentId}/blob?variant=preview\|thumbnail\|original` | binary payload |
 | `POST` | `/v1/attachments/{attachmentId}/complete` | `{ attachment }` |
 | `DELETE` | `/v1/attachments/{attachmentId}` | `{ ok: true }` |
 
-Attachment bytes are opaque encrypted blobs from the backend perspective. R2 stores the blob; D1 stores metadata and state.
+Attachment bytes are opaque private blobs from the backend perspective. R2 stores the objects; D1 stores lifecycle state, media metadata, and variant references. `GET /blob` and `PUT /blob` without a query parameter default to the `original` variant for backward compatibility.
+
+Attachment metadata is additive and client-supplied:
+
+```json
+{
+  "attachmentId": "att_...",
+  "mediaKind": "image",
+  "originalFilename": "photo.webp",
+  "declaredMimeType": "image/webp",
+  "width": 1600,
+  "height": 1200,
+  "durationMs": null,
+  "variants": {
+    "original": {
+      "variant": "original",
+      "bytes": 734003,
+      "width": 1600,
+      "height": 1200,
+      "downloadPath": "/v1/attachments/att_.../blob?variant=original"
+    },
+    "preview": {
+      "variant": "preview",
+      "bytes": 142211,
+      "width": 1600,
+      "height": 1200,
+      "downloadPath": "/v1/attachments/att_.../blob?variant=preview"
+    },
+    "thumbnail": {
+      "variant": "thumbnail",
+      "bytes": 24190,
+      "width": null,
+      "height": null,
+      "downloadPath": "/v1/attachments/att_.../blob?variant=thumbnail"
+    }
+  },
+  "variantManifest": {}
+}
+```
+
+The backend does not generate thumbnails or inspect image plaintext in `/v1`; optimized variants are produced by the client and uploaded as separate authenticated R2 objects. Buckets remain private, downloads remain bearer-authenticated, and `Cache-Control` is `no-store`.
+
+Attachment allocation is limited by account policy bytes per attachment and by a per-device pending allocation cap. Maintenance cleanup expires old attachment rows and removes known R2 variant objects once their retention window has passed.
 
 ### Sidebar Collections
 

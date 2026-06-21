@@ -4,6 +4,8 @@ import type {
 	Account,
 	AgentRequest,
 	Attachment,
+	AttachmentMediaKind,
+	AttachmentVariantName,
 	AuthResult,
 	BootstrapResult,
 	BootstrapStatus,
@@ -568,7 +570,18 @@ export class VoyagerClient {
 
 	async allocateAttachment(
 		roomId: string,
-		input: { expectedBytes: number; contentCategory?: string; retentionClass?: string }
+		input: {
+			expectedBytes: number;
+			contentCategory?: string;
+			retentionClass?: string;
+			originalFilename?: string;
+			declaredMimeType?: string;
+			mediaKind?: AttachmentMediaKind;
+			width?: number;
+			height?: number;
+			durationMs?: number;
+			variantManifest?: unknown;
+		}
 	): Promise<Attachment> {
 		const res = await this.request<{ attachment: Attachment }>(
 			'POST',
@@ -578,18 +591,34 @@ export class VoyagerClient {
 		return res.attachment;
 	}
 
-	async uploadAttachmentBlob(attachmentId: string, bytes: ArrayBuffer | Uint8Array): Promise<void> {
-		await this.requestBinary(
+	async uploadAttachmentBlob(
+		attachmentId: string,
+		bytes: ArrayBuffer | Uint8Array,
+		options: { variant?: AttachmentVariantName; contentType?: string } = {}
+	): Promise<Attachment> {
+		const query = options.variant ? `?variant=${encodeURIComponent(options.variant)}` : '';
+		const res = await this.requestBinary(
 			'PUT',
-			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob`,
+			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob${query}`,
 			bytes as BodyInit,
-			'application/octet-stream'
+			options.contentType ?? 'application/octet-stream'
 		);
+		return (await res.json()).attachment as Attachment;
 	}
 
 	async completeAttachment(
 		attachmentId: string,
-		input: { ciphertextSha256?: string; ciphertextBytes?: number } = {}
+		input: {
+			ciphertextSha256?: string;
+			ciphertextBytes?: number;
+			originalFilename?: string;
+			declaredMimeType?: string;
+			mediaKind?: AttachmentMediaKind;
+			width?: number;
+			height?: number;
+			durationMs?: number;
+			variantManifest?: unknown;
+		} = {}
 	): Promise<Attachment> {
 		const res = await this.request<{ attachment: Attachment }>(
 			'POST',
@@ -599,10 +628,14 @@ export class VoyagerClient {
 		return res.attachment;
 	}
 
-	async downloadAttachmentBlob(attachmentId: string): Promise<ArrayBuffer> {
+	async downloadAttachmentBlob(
+		attachmentId: string,
+		options: { variant?: AttachmentVariantName } = {}
+	): Promise<ArrayBuffer> {
+		const query = options.variant ? `?variant=${encodeURIComponent(options.variant)}` : '';
 		const res = await this.requestBinary(
 			'GET',
-			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob`,
+			`/v1/attachments/${encodeURIComponent(attachmentId)}/blob${query}`,
 			undefined
 		);
 		return res.arrayBuffer();

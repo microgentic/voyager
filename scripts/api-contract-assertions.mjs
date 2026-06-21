@@ -507,11 +507,42 @@ function assertAttachment(value, context) {
   nullableString(attachment.ciphertextSha256, `${context}.ciphertextSha256`);
   nullableString(attachment.contentCategory, `${context}.contentCategory`);
   string(attachment.retentionClass, `${context}.retentionClass`);
+  nullableString(attachment.originalFilename, `${context}.originalFilename`);
+  nullableString(attachment.declaredMimeType, `${context}.declaredMimeType`);
+  enumValue(attachment.mediaKind, ["image", "video", "audio", "file", "unknown"], `${context}.mediaKind`);
+  if (attachment.width !== null) number(attachment.width, `${context}.width`);
+  if (attachment.height !== null) number(attachment.height, `${context}.height`);
+  if (attachment.durationMs !== null) number(attachment.durationMs, `${context}.durationMs`);
+  assertAttachmentVariants(attachment.variants, `${context}.variants`);
+  if (!("variantManifest" in attachment)) fail(`${context}.variantManifest is missing`);
   string(attachment.expiresAt, `${context}.expiresAt`);
   string(attachment.createdAt, `${context}.createdAt`);
   nullableString(attachment.uploadedAt, `${context}.uploadedAt`);
   nullableString(attachment.referencedAt, `${context}.referencedAt`);
   nullableString(attachment.deletedAt, `${context}.deletedAt`);
+}
+
+function assertAttachmentVariants(value, context) {
+  const variants = object(value, context);
+  assertAttachmentVariant(variants.original, `${context}.original`, "original");
+  if (variants.preview !== undefined) {
+    assertAttachmentVariant(variants.preview, `${context}.preview`, "preview");
+  }
+  if (variants.thumbnail !== undefined) {
+    assertAttachmentVariant(variants.thumbnail, `${context}.thumbnail`, "thumbnail");
+  }
+}
+
+function assertAttachmentVariant(value, context, expectedVariant) {
+  const variant = object(value, context);
+  enumValue(variant.variant, ["original", "preview", "thumbnail"], `${context}.variant`);
+  if (variant.variant !== expectedVariant) {
+    fail(`${context}.variant expected ${expectedVariant} but got ${variant.variant}`);
+  }
+  if (variant.bytes !== null) number(variant.bytes, `${context}.bytes`);
+  if (variant.width !== null) number(variant.width, `${context}.width`);
+  if (variant.height !== null) number(variant.height, `${context}.height`);
+  string(variant.downloadPath, `${context}.downloadPath`);
 }
 
 function assertSidebarCollection(value, context) {

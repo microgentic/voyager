@@ -1712,24 +1712,86 @@ if (!readMessage || readMessage.receiptSummary.status !== "read") {
 }
 
 const attachmentBody = new TextEncoder().encode("encrypted-smoke-blob");
+const attachmentPreviewBody = new TextEncoder().encode("preview-smoke-blob");
+const attachmentThumbnailBody = new TextEncoder().encode("thumbnail-smoke-blob");
 
 const attachment = await api(`/v1/rooms/${group.room.roomId}/attachments`, {
   method: "POST",
   headers: ownerHeaders,
-  json: { expectedBytes: attachmentBody.byteLength, contentCategory: "opaque-test" }
+  json: {
+    expectedBytes: 1024,
+    contentCategory: "image",
+    originalFilename: "smoke-image.webp",
+    declaredMimeType: "image/webp",
+    mediaKind: "image",
+    width: 640,
+    height: 480,
+    variantManifest: {
+      original: { encrypted: true },
+      preview: { maxDimension: 640 },
+      thumbnail: { maxDimension: 320 }
+    }
+  }
 });
 assertAttachmentResponse(attachment, "POST /v1/rooms/{roomId}/attachments");
+if (
+  attachment.attachment.mediaKind !== "image" ||
+  attachment.attachment.originalFilename !== "smoke-image.webp" ||
+  attachment.attachment.declaredMimeType !== "image/webp" ||
+  attachment.attachment.width !== 640 ||
+  attachment.attachment.height !== 480
+) {
+  throw new Error("attachment allocation did not preserve media metadata");
+}
 
-await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob`, {
+const uploadedOriginalAttachment = await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob`, {
   method: "PUT",
   headers: ownerHeaders,
   body: attachmentBody
 });
+assertAttachmentResponse(uploadedOriginalAttachment, "PUT /v1/attachments/{attachmentId}/blob original");
+if (uploadedOriginalAttachment.attachment.variants.original.bytes !== attachmentBody.byteLength) {
+  throw new Error("original attachment variant did not record uploaded bytes");
+}
+
+const uploadedPreviewAttachment = await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob?variant=preview`, {
+  method: "PUT",
+  headers: ownerHeaders,
+  body: attachmentPreviewBody
+});
+assertAttachmentResponse(uploadedPreviewAttachment, "PUT /v1/attachments/{attachmentId}/blob preview");
+if (
+  !uploadedPreviewAttachment.attachment.variants.preview ||
+  uploadedPreviewAttachment.attachment.variants.preview.bytes !== attachmentPreviewBody.byteLength
+) {
+  throw new Error("preview attachment variant did not record uploaded bytes");
+}
+
+const uploadedThumbnailAttachment = await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob?variant=thumbnail`, {
+  method: "PUT",
+  headers: ownerHeaders,
+  body: attachmentThumbnailBody
+});
+assertAttachmentResponse(uploadedThumbnailAttachment, "PUT /v1/attachments/{attachmentId}/blob thumbnail");
+if (
+  !uploadedThumbnailAttachment.attachment.variants.thumbnail ||
+  uploadedThumbnailAttachment.attachment.variants.thumbnail.bytes !== attachmentThumbnailBody.byteLength
+) {
+  throw new Error("thumbnail attachment variant did not record uploaded bytes");
+}
 
 const completedAttachment = await api(`/v1/attachments/${attachment.attachment.attachmentId}/complete`, {
   method: "POST",
   headers: ownerHeaders,
-  json: { ciphertextBytes: attachmentBody.byteLength, ciphertextSha256: "smoke-sha256-placeholder" }
+  json: {
+    ciphertextBytes: attachmentBody.byteLength,
+    ciphertextSha256: "smoke-sha256-placeholder",
+    variantManifest: {
+      original: { bytes: attachmentBody.byteLength },
+      preview: { bytes: attachmentPreviewBody.byteLength },
+      thumbnail: { bytes: attachmentThumbnailBody.byteLength }
+    }
+  }
 });
 assertAttachmentResponse(completedAttachment, "POST /v1/attachments/{attachmentId}/complete");
 
@@ -1781,6 +1843,17 @@ const downloaded = await api(`/v1/attachments/${attachment.attachment.attachment
   headers: userHeaders
 });
 if (downloaded !== "encrypted-smoke-blob") throw new Error("attachment download mismatch");
+const downloadedPreview = await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob?variant=preview`, {
+  headers: userHeaders
+});
+if (downloadedPreview !== "preview-smoke-blob") throw new Error("attachment preview download mismatch");
+const downloadedThumbnail = await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob?variant=thumbnail`, {
+  headers: userHeaders
+});
+if (downloadedThumbnail !== "thumbnail-smoke-blob") throw new Error("attachment thumbnail download mismatch");
+await expectFailure(`/v1/attachments/${attachment.attachment.attachmentId}/blob?variant=sidecar`, {
+  headers: userHeaders
+}, 400);
 
 const collection = await api("/v1/sidebar-collections", {
   method: "POST",
