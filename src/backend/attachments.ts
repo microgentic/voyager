@@ -154,7 +154,18 @@ export async function uploadAttachmentBlob(
     uploadedBytes = buffered.byteLength;
   }
 
-  await updateUploadedVariant(env, attachment, variant, objectKey, uploadedBytes);
+  try {
+    await updateUploadedVariant(
+      env,
+      attachment,
+      variant,
+      objectKey,
+      uploadedBytes,
+    );
+  } catch (error) {
+    await env.ATTACHMENTS_BUCKET.delete(objectKey).catch(() => undefined);
+    throw error;
+  }
   return publicAttachment(await getAttachment(env, attachmentId));
 }
 
