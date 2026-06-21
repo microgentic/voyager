@@ -54,6 +54,10 @@ clearer home than the former single large `src/backend.ts` file.
   semantics only because a file moves.
 - New route handlers should generally live in `routes.ts`; reusable domain
   behavior should live outside the route handler.
+- Any new, removed, or changed Worker route must update
+  `endpointStabilityCatalog` in `scripts/api-contract-assertions.mjs` in the
+  same PR. The route inventory guard depends on that catalog to catch dropped
+  handlers and undocumented `/v1` routes.
 - `conversation-coordinator.ts` should remain the only module that knows the
   internal Conversation DO request format.
 - Add new backend behavior to the smallest matching domain module. If no
