@@ -347,6 +347,11 @@ export interface SendMessageInput {
 	attachmentIds?: string[];
 }
 
+export interface DeleteMessagesResult {
+	scope: 'for_me';
+	envelopeIds: string[];
+}
+
 export interface Paginated<T> {
 	items: T[];
 	nextCursor: string | null;

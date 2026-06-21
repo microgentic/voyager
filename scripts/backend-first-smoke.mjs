@@ -5,6 +5,7 @@ import {
   assertAttachmentResponse,
   assertAuthResult,
   assertBootstrapResponse,
+  assertDeleteMessagesResponse,
   assertEndpointCatalog,
   assertKeyPackageResponse,
   assertKeyPackagesResponse,
@@ -1035,6 +1036,47 @@ for (const room of synced.sync.rooms) {
 }
 if (!bootstrap.pendingMessages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
   throw new Error("bootstrap pending messages were not compatible with sync pending messages");
+}
+
+const deleteForMe = await api(`/v1/rooms/${direct.room.roomId}/messages/delete`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { scope: "for_me", envelopeIds: [directMessage.message.envelopeId] }
+});
+assertDeleteMessagesResponse(deleteForMe, "POST /v1/rooms/{roomId}/messages/delete");
+if (!deleteForMe.deleted.envelopeIds.includes(directMessage.message.envelopeId)) {
+  throw new Error("delete-for-me response did not include deleted envelope id");
+}
+
+const hiddenHistory = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${directMessage.message.serverSequence - 1}`, {
+  headers: userHeaders
+});
+assertMessagesResponse(hiddenHistory, "GET /v1/rooms/{roomId}/messages after delete-for-me");
+if (hiddenHistory.messages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
+  throw new Error("delete-for-me message remained visible to deleting account history");
+}
+
+const senderHistory = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${directMessage.message.serverSequence - 1}`, {
+  headers: ownerHeaders
+});
+assertMessagesResponse(senderHistory, "GET /v1/rooms/{roomId}/messages sender after delete-for-me");
+if (!senderHistory.messages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
+  throw new Error("delete-for-me hid the message from another account");
+}
+
+const hiddenSync = await api("/v1/sync", { headers: userHeaders });
+assertSyncResponse(hiddenSync, "GET /v1/sync after delete-for-me");
+if (hiddenSync.sync.pendingMessages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
+  throw new Error("delete-for-me message remained visible to deleting account sync");
+}
+
+const hiddenBootstrapResult = await apiRaw("/v1/app/bootstrap?limit=100", { headers: userHeaders });
+if (!hiddenBootstrapResult.response.ok) {
+  throw new Error(`GET bootstrap after delete-for-me failed ${hiddenBootstrapResult.response.status}: ${JSON.stringify(hiddenBootstrapResult.payload)}`);
+}
+assertBootstrapResponse(hiddenBootstrapResult.payload, "GET /v1/app/bootstrap after delete-for-me");
+if (hiddenBootstrapResult.payload.bootstrap.pendingMessages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
+  throw new Error("delete-for-me message remained visible to deleting account bootstrap");
 }
 
 await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/ack`, {

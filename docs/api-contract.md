@@ -172,12 +172,24 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `POST` | `/v1/rooms/{roomId}/ownership-transfers/{transferId}/accept` | `{ transfer }` |
 | `GET` | `/v1/rooms/{roomId}/messages` | `{ messages }` |
 | `POST` | `/v1/rooms/{roomId}/messages` | `{ message }` |
+| `POST` | `/v1/rooms/{roomId}/messages/delete` | `{ deleted: { scope, envelopeIds } }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/ack` | `{ receipt }` |
 | `GET` | `/v1/sync` | `{ sync: { rooms, roomsNextCursor, pendingMessages } }` |
 
 Group creation rejects initial `memberPrincipalIds`. Human members join through room invitations. Agent principals may be added through the explicit member endpoint.
 
 Message sends require an `idempotencyKey`, `protocolType`, and opaque `ciphertext`. `serverSequence` is assigned by the backend. `GET /v1/rooms/{roomId}/messages` supports forward reads with `after` and `limit`.
+
+Message deletion currently supports delete-for-me only:
+
+```json
+{
+  "scope": "for_me",
+  "envelopeIds": ["msg_..."]
+}
+```
+
+Delete-for-me records per-account visibility, hides those envelopes from room history, `/v1/sync`, and `/v1/app/bootstrap` for that account, and does not remove the durable message row or hide it from other members.
 
 ### Room Invitations
 
@@ -378,6 +390,20 @@ curl -sS "$BASE_URL/v1/rooms/$ROOM_ID/messages" \
 ```
 
 If the same idempotency key is retried for the same room and sender device, the API returns the existing message instead of creating a duplicate.
+
+### Delete Messages For Me
+
+```bash
+curl -sS "$BASE_URL/v1/rooms/$ROOM_ID/messages/delete" \
+  -H "authorization: Bearer $SESSION_TOKEN" \
+  -H 'content-type: application/json' \
+  --data '{
+    "scope": "for_me",
+    "envelopeIds": ["msg_..."]
+  }'
+```
+
+The response returns the hidden envelope IDs. Other members continue to recover the same messages through normal room reads and sync.
 
 ### Realtime Recovery
 
