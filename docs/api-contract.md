@@ -449,6 +449,8 @@ npm run smoke:backend:local
 
 Those assertions cover common error payloads, auth results, bootstrap, sync, rooms, room invitations, messages, realtime token minting, realtime `room.message` events, key packages, attachments, sidebar collections, and agent request surfaces. They are intentionally additive-friendly: new fields are allowed, but missing or renamed contract fields fail the smoke run.
 
+`scripts/route-inventory-check.mjs` statically compares implemented Worker route/method pairs in `src/index.ts` and `src/backend/routes.ts` against `endpointStabilityCatalog`. It fails when a documented endpoint has no matching handler or an implemented `/v1` route is not categorized.
+
 ## Future-Sensitive Work
 
 The following are deliberately outside this freeze:

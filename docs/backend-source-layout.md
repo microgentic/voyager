@@ -71,6 +71,7 @@ For backend source-layout refactors, run:
 npm run check
 node --check scripts/backend-first-smoke.mjs
 node --check scripts/remote-post-deploy-smoke.mjs
+node scripts/route-inventory-check.mjs
 npm run smoke:backend:local
 npx wrangler deploy --dry-run
 git diff --check
