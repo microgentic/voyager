@@ -1088,6 +1088,50 @@ if (realtimeEvent.senderDeviceId !== owner.device.deviceId) {
 }
 await expectRealtimeConnectFailure(realtimeToken.realtimeToken);
 
+const forwardedToGroup = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/forward`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    targetRoomId: group.room.roomId,
+    idempotencyKey: `forward-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "encrypted-forwarded-smoke-payload"
+  }
+});
+assertMessageResponse(forwardedToGroup, "POST /v1/rooms/{roomId}/messages/{envelopeId}/forward");
+if (forwardedToGroup.message.roomId !== group.room.roomId) {
+  throw new Error("forwarded message did not land in the target room");
+}
+if (forwardedToGroup.message.forwardedFrom?.forwardedByPrincipalId !== owner.principal.principalId) {
+  throw new Error("forwarded message did not expose the forwarding principal");
+}
+const forwardedKeys = Object.keys(forwardedToGroup.message.forwardedFrom ?? {});
+if (
+  forwardedKeys.includes("roomId") ||
+  forwardedKeys.includes("envelopeId") ||
+  forwardedKeys.includes("senderPrincipalId")
+) {
+  throw new Error("forwardedFrom must not expose source room, envelope, or sender metadata");
+}
+
+// Forward provenance must be server-asserted: a normal send cannot fabricate it
+// by smuggling forward fields through the public message body.
+const forgedForward = await api(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `forge-forward-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "normal-send-should-not-be-forwarded",
+    forwardedFromRoomId: direct.room.roomId,
+    forwardedFromEnvelopeId: directMessage.message.envelopeId
+  }
+});
+assertMessageResponse(forgedForward, "POST /v1/rooms/{roomId}/messages forged forward metadata");
+if (forgedForward.message.forwardedFrom !== null) {
+  throw new Error("normal send must not accept forwardedFrom metadata from the request body");
+}
+
 const duplicatePayload = {
   idempotencyKey: `dup-${suffix}`,
   protocolType: "opaque-test",
@@ -1111,6 +1155,52 @@ if (secondDuplicate.message.envelopeId !== firstDuplicate.message.envelopeId) {
 if (secondDuplicate.message.serverSequence !== firstDuplicate.message.serverSequence) {
   throw new Error("duplicate idempotency retry returned a different server sequence");
 }
+
+await expectFailure(`/v1/rooms/${direct.room.roomId}/messages/delete`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    scope: "everyone",
+    envelopeIds: [firstDuplicate.message.envelopeId]
+  }
+}, 403);
+const deleteForEveryone = await api(`/v1/rooms/${direct.room.roomId}/messages/delete`, {
+  method: "POST",
+  headers: userHeaders,
+  json: {
+    scope: "everyone",
+    envelopeIds: [firstDuplicate.message.envelopeId]
+  }
+});
+assertDeleteMessagesResponse(deleteForEveryone, "POST /v1/rooms/{roomId}/messages/delete everyone");
+if (deleteForEveryone.deleted.scope !== "everyone" || !deleteForEveryone.deleted.envelopeIds.includes(firstDuplicate.message.envelopeId)) {
+  throw new Error("delete-for-everyone response did not include deleted envelope id");
+}
+const tombstoneView = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${firstDuplicate.message.serverSequence - 1}&limit=1`, {
+  headers: ownerHeaders
+});
+assertMessagesResponse(tombstoneView, "GET /v1/rooms/{roomId}/messages delete-for-everyone tombstone");
+const tombstoneMessage = tombstoneView.messages[0];
+if (
+  tombstoneMessage?.envelopeId !== firstDuplicate.message.envelopeId ||
+  tombstoneMessage.deletedForEveryone.deleted !== true ||
+  !tombstoneMessage.deletedForEveryone.deletedAt ||
+  tombstoneMessage.deletedForEveryone.deletedByPrincipalId !== accepted.principal.principalId ||
+  tombstoneMessage.reactions.length !== 0 ||
+  tombstoneMessage.pin.pinned !== false
+) {
+  throw new Error("delete-for-everyone did not expose a clean tombstone");
+}
+await expectFailure(`/v1/rooms/${direct.room.roomId}/messages/${firstDuplicate.message.envelopeId}/forward`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    targetRoomId: group.room.roomId,
+    idempotencyKey: `forward-deleted-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "deleted-message-should-not-forward"
+  }
+}, 404);
 
 const concurrentMessages = await Promise.all(
   Array.from({ length: 6 }, (_, index) =>

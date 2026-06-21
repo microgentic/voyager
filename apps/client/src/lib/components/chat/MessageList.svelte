@@ -1,25 +1,29 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { ArrowDown, CheckSquare, Copy, Hand, Info, Pencil, Pin, PinOff, Reply, RotateCcw, Trash2, X } from '@lucide/svelte';
+	import { ArrowDown, CheckSquare, Copy, Forward, Hand, Info, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Trash2, X } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, rooms, toasts, type ChatMessage } from '$lib/stores';
 	import MessageBubble from './MessageBubble.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { parseServerDate, sameDay, formatDayDivider } from '$lib/utils/time';
 
 	let {
 		room,
+		searchOpen = $bindable(false),
 		onReply,
 		onEdit
 	}: {
 		room: Room;
+		searchOpen?: boolean;
 		onReply?: (message: ChatMessage) => void;
 		onEdit?: (message: ChatMessage) => void;
 	} = $props();
 
 	const GROUP_GAP_MS = 5 * 60 * 1000;
+	const DELETE_FOR_EVERYONE_WINDOW_MS = 48 * 60 * 60 * 1000;
 	const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 	type Row =
@@ -27,14 +31,20 @@
 		| { type: 'msg'; key: string; message: ChatMessage; first: boolean; last: boolean };
 
 	const list = $derived(messages.list(room.roomId));
+	let searchQuery = $state('');
+	const normalizedSearchQuery = $derived(searchQuery.trim().toLowerCase());
+	const visibleList = $derived.by<ChatMessage[]>(() => {
+		if (!normalizedSearchQuery) return list;
+		return list.filter((message) => messageMatchesSearch(message, normalizedSearchQuery));
+	});
 	const loading = $derived(messages.loadingRoom === room.roomId && list.length === 0);
 
 	const rows = $derived.by<Row[]>(() => {
 		const out: Row[] = [];
-		for (let i = 0; i < list.length; i += 1) {
-			const m = list[i];
-			const prev = list[i - 1];
-			const next = list[i + 1];
+		for (let i = 0; i < visibleList.length; i += 1) {
+			const m = visibleList[i];
+			const prev = visibleList[i - 1];
+			const next = visibleList[i + 1];
 			const date = parseServerDate(m.serverReceivedAt ?? m.clientCreatedAt);
 			const prevDate = prev ? parseServerDate(prev.serverReceivedAt ?? prev.clientCreatedAt) : null;
 			const nextDate = next ? parseServerDate(next.serverReceivedAt ?? next.clientCreatedAt) : null;
@@ -67,11 +77,24 @@
 	let selectedKeys = $state<string[]>([]);
 	let actionMenu = $state<{ message: ChatMessage; x: number; y: number } | null>(null);
 	let deleteConfirmOpen = $state(false);
+	let deleteScope = $state<'for_me' | 'everyone'>('for_me');
 	let deleting = $state(false);
+	let forwardOpen = $state(false);
+	let forwarding = $state(false);
+	let forwardMessage = $state<ChatMessage | null>(null);
+	let forwardQuery = $state('');
 	let bottomSettleTimers: number[] = [];
 
 	const selectedMessages = $derived(list.filter((message) => selectedKeys.includes(message.key)));
 	const selectionMode = $derived(selectedKeys.length > 0);
+	const forwardCandidates = $derived(
+		rooms.sorted.filter(
+			(candidate) =>
+				candidate.roomId !== room.roomId &&
+				candidate.status === 'active' &&
+				rooms.displayName(candidate).toLowerCase().includes(forwardQuery.trim().toLowerCase())
+		)
+	);
 
 	function onScroll(): void {
 		const el = scrollEl;
@@ -174,8 +197,27 @@
 	}
 
 	function canPin(message: ChatMessage): boolean {
-		if (!message.envelopeId || message.delivery !== 'sent') return false;
+		if (!message.envelopeId || message.delivery !== 'sent' || message.deletedForEveryone.deleted) return false;
 		return room.type === 'direct' || rooms.canManage(room);
+	}
+
+	function canForward(message: ChatMessage): boolean {
+		return Boolean(message.envelopeId) && message.delivery === 'sent' && !message.content.undecodable && !message.deletedForEveryone.deleted;
+	}
+
+	function canDeleteForEveryone(message: ChatMessage): boolean {
+		if (!message.envelopeId || message.delivery !== 'sent' || message.deletedForEveryone.deleted) return false;
+		// Owners/admins may delete any active message; the sender only within the
+		// backend's 48h window. The backend stays authoritative — this just hides
+		// the action when it would predictably fail.
+		if (room.type !== 'direct' && rooms.canManage(room)) return true;
+		return message.mine && withinDeleteForEveryoneWindow(message);
+	}
+
+	function withinDeleteForEveryoneWindow(message: ChatMessage): boolean {
+		const sentAt = parseServerDate(message.serverReceivedAt ?? message.clientCreatedAt);
+		if (!sentAt) return true;
+		return Date.now() - sentAt.getTime() <= DELETE_FOR_EVERYONE_WINDOW_MS;
 	}
 
 	function selectAll(): void {
@@ -188,8 +230,15 @@
 	}
 
 	function messageText(message: ChatMessage): string {
-		if (message.content.undecodable) return '';
+		if (message.deletedForEveryone.deleted || message.content.undecodable) return '';
 		return message.content.body.trim();
+	}
+
+	function messageMatchesSearch(message: ChatMessage, query: string): boolean {
+		const body = messageText(message).toLowerCase();
+		if (body.includes(query)) return true;
+		const sender = room.members.find((member) => member.principalId === message.senderPrincipalId);
+		return Boolean(sender?.displayName.toLowerCase().includes(query));
 	}
 
 	async function copyMessages(items: ChatMessage[]): Promise<void> {
@@ -213,10 +262,36 @@
 		closeActionMenu();
 	}
 
-	function requestDelete(items: ChatMessage[]): void {
+	function openForward(message: ChatMessage): void {
+		if (!canForward(message)) return;
+		closeActionMenu();
+		forwardMessage = message;
+		forwardQuery = '';
+		forwardOpen = true;
+	}
+
+	async function forwardTo(targetRoomId: string): Promise<void> {
+		if (!forwardMessage || forwarding) return;
+		forwarding = true;
+		try {
+			const result = await messages.forwardToRoom(forwardMessage, targetRoomId);
+			const target = rooms.get(targetRoomId);
+			toasts.success(`Forwarded to ${target ? rooms.displayName(target) : 'conversation'}.`);
+			if (result) void messages.fetchSequence(targetRoomId, result.serverSequence).catch(() => undefined);
+			forwardOpen = false;
+			forwardMessage = null;
+		} catch {
+			toasts.error('Could not forward message.');
+		} finally {
+			forwarding = false;
+		}
+	}
+
+	function requestDelete(items: ChatMessage[], scope: 'for_me' | 'everyone' = 'for_me'): void {
 		if (!items.length) return;
 		closeActionMenu();
 		selectedKeys = items.map((message) => message.key);
+		deleteScope = scope;
 		deleteConfirmOpen = true;
 	}
 
@@ -230,9 +305,20 @@
 		const localKeys = items.filter((message) => !message.envelopeId).map((message) => message.key);
 		deleting = true;
 		try {
-			if (envelopeIds.length) await messages.deleteForMe(room.roomId, envelopeIds);
+			if (envelopeIds.length) {
+				if (deleteScope === 'everyone') await messages.deleteForEveryone(room.roomId, envelopeIds);
+				else await messages.deleteForMe(room.roomId, envelopeIds);
+			}
 			if (localKeys.length) messages.removeKeys(room.roomId, localKeys);
-			toasts.success(items.length === 1 ? 'Message deleted for you.' : `${items.length} messages deleted for you.`);
+			toasts.success(
+				deleteScope === 'everyone'
+					? items.length === 1
+						? 'Message deleted for everyone.'
+						: `${items.length} messages deleted for everyone.`
+					: items.length === 1
+						? 'Message deleted for you.'
+						: `${items.length} messages deleted for you.`
+			);
 			selectedKeys = [];
 			deleteConfirmOpen = false;
 		} catch {
@@ -305,12 +391,40 @@
 				selectionRoom = id;
 				selectedKeys = [];
 				actionMenu = null;
+				searchQuery = '';
+				searchOpen = false;
 			}
 		});
 	});
 </script>
 
 <div class="relative min-h-0 flex-1 select-none">
+	{#if searchOpen}
+		<div class="absolute inset-x-2 top-2 z-30 flex items-center gap-2 rounded-xl border border-border bg-elevated/95 p-2 shadow-pop backdrop-blur sm:inset-x-4">
+			<Search class="h-4 w-4 shrink-0 text-faint" />
+			<input
+				bind:value={searchQuery}
+				type="search"
+				placeholder="Search this chat"
+				class="h-8 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-faint"
+			/>
+			{#if normalizedSearchQuery}
+				<span class="shrink-0 text-xs text-muted">{visibleList.length}</span>
+			{/if}
+			<button
+				type="button"
+				class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-surface-2 hover:text-foreground"
+				aria-label="Close search"
+				onclick={() => {
+					searchQuery = '';
+					searchOpen = false;
+				}}
+			>
+				<X class="h-4 w-4" />
+			</button>
+		</div>
+	{/if}
+
 	{#if selectionMode}
 		<div
 			class="absolute inset-x-2 top-2 z-30 flex items-center gap-2 rounded-xl border border-border bg-elevated/95 p-2 text-sm shadow-pop backdrop-blur sm:inset-x-4"
@@ -322,10 +436,22 @@
 				<Copy class="h-4 w-4" />
 				Copy
 			</Button>
+			{#if selectedMessages.length === 1 && canForward(selectedMessages[0])}
+				<Button variant="ghost" size="sm" onclick={() => openForward(selectedMessages[0])}>
+					<Forward class="h-4 w-4" />
+					Forward
+				</Button>
+			{/if}
 			<Button variant="ghost" size="sm" onclick={selectAll} disabled={selectedKeys.length === list.length}>
 				<CheckSquare class="h-4 w-4" />
 				All
 			</Button>
+			{#if selectedMessages.length > 0 && selectedMessages.every(canDeleteForEveryone)}
+				<Button variant="ghost" size="sm" class="text-danger" onclick={() => requestDelete(selectedMessages, 'everyone')}>
+					<Trash2 class="h-4 w-4" />
+					Everyone
+				</Button>
+			{/if}
 			<Button variant="ghost" size="sm" class="text-danger" onclick={() => requestDelete(selectedMessages)}>
 				<Trash2 class="h-4 w-4" />
 				Delete
@@ -353,6 +479,13 @@
 						? 'Send a message to start working with this agent.'
 						: 'No messages yet — say hello.'}
 				</p>
+			</div>
+		{:else if visibleList.length === 0}
+			<div class="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
+				<div class="grid h-14 w-14 place-items-center rounded-2xl bg-surface-2 text-primary">
+					<Search class="h-6 w-6" />
+				</div>
+				<p class="text-sm text-muted">No messages match “{searchQuery}”.</p>
 			</div>
 		{:else}
 			{#each rows as row (row.key)}
@@ -389,7 +522,7 @@
 			class="fixed z-50 w-56 overflow-hidden rounded-xl border border-border bg-elevated p-1.5 text-sm shadow-pop"
 			style={`left: ${actionMenu.x}px; top: ${actionMenu.y}px;`}
 		>
-			{#if actionMenu.message.envelopeId && actionMenu.message.delivery === 'sent'}
+			{#if actionMenu.message.envelopeId && actionMenu.message.delivery === 'sent' && !actionMenu.message.deletedForEveryone.deleted}
 				<div class="grid grid-cols-6 gap-1 p-1">
 					{#each QUICK_REACTIONS as reaction}
 						<button
@@ -404,15 +537,17 @@
 				</div>
 				<div class="my-1 h-px bg-border"></div>
 			{/if}
-			<button
-				type="button"
-				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
-				onclick={() => replyTo(actionMenu!.message)}
-			>
-				<Reply class="h-4 w-4 opacity-80" />
-				<span>Reply</span>
-			</button>
-			{#if actionMenu.message.mine && actionMenu.message.delivery === 'sent' && !actionMenu.message.content.undecodable}
+			{#if !actionMenu.message.deletedForEveryone.deleted}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+					onclick={() => replyTo(actionMenu!.message)}
+				>
+					<Reply class="h-4 w-4 opacity-80" />
+					<span>Reply</span>
+				</button>
+			{/if}
+			{#if actionMenu.message.mine && actionMenu.message.delivery === 'sent' && !actionMenu.message.content.undecodable && !actionMenu.message.deletedForEveryone.deleted}
 				<button
 					type="button"
 					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
@@ -420,6 +555,16 @@
 				>
 					<Pencil class="h-4 w-4 opacity-80" />
 					<span>Edit</span>
+				</button>
+			{/if}
+			{#if canForward(actionMenu.message)}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+					onclick={() => openForward(actionMenu!.message)}
+				>
+					<Forward class="h-4 w-4 opacity-80" />
+					<span>Forward</span>
 				</button>
 			{/if}
 			{#if canPin(actionMenu.message)}
@@ -476,6 +621,16 @@
 				<span>Message info</span>
 			</button>
 			<div class="my-1 h-px bg-border"></div>
+			{#if canDeleteForEveryone(actionMenu.message)}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-danger transition hover:bg-danger-soft"
+					onclick={() => requestDelete([actionMenu!.message], 'everyone')}
+				>
+					<Trash2 class="h-4 w-4 opacity-80" />
+					<span>Delete for everyone</span>
+				</button>
+			{/if}
 			<button
 				type="button"
 				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-danger transition hover:bg-danger-soft"
@@ -506,11 +661,48 @@
 
 	<ConfirmDialog
 		bind:open={deleteConfirmOpen}
-		title="Delete for you?"
-		message="The selected messages will stay visible to other room members."
+		title={deleteScope === 'everyone' ? 'Delete for everyone?' : 'Delete for you?'}
+		message={deleteScope === 'everyone'
+			? 'The selected messages will be replaced with tombstones for all room members.'
+			: 'The selected messages will stay visible to other room members.'}
 		confirmLabel="Delete"
 		danger
 		loading={deleting}
 		onConfirm={deleteSelected}
 	/>
+
+	<Modal bind:open={forwardOpen} title="Forward message" size="sm" onClose={() => (forwardMessage = null)}>
+		<div class="space-y-3">
+			<div class="relative flex items-center">
+				<Search class="pointer-events-none absolute left-3 h-4 w-4 text-faint" />
+				<input
+					bind:value={forwardQuery}
+					type="search"
+					placeholder="Search conversations"
+					class="h-10 w-full rounded-xl border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary"
+				/>
+			</div>
+			<div class="max-h-80 space-y-1 overflow-y-auto">
+				{#if forwardCandidates.length === 0}
+					<p class="py-6 text-center text-sm text-muted">No available conversations.</p>
+				{:else}
+					{#each forwardCandidates as candidate (candidate.roomId)}
+						<button
+							type="button"
+							disabled={forwarding}
+							class="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-surface-2 disabled:opacity-60"
+							onclick={() => void forwardTo(candidate.roomId)}
+						>
+							<span class="min-w-0 truncate font-medium text-foreground">{rooms.displayName(candidate)}</span>
+							<span class="shrink-0 text-xs capitalize text-muted">{candidate.type}</span>
+						</button>
+					{/each}
+				{/if}
+			</div>
+		</div>
+
+		{#snippet footer()}
+			<Button variant="ghost" onclick={() => (forwardOpen = false)} disabled={forwarding}>Cancel</Button>
+		{/snippet}
+	</Modal>
 </div>

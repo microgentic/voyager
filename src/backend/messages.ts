@@ -4,6 +4,7 @@ import { notifyRoomRealtime } from "../realtime";
 import type { AuthContext, Env } from "../types";
 import {
   MAX_MESSAGE_BYTES,
+  type ForwardSource,
   type JsonObject,
   type SendMessageResult,
 } from "./internal-types";
@@ -24,6 +25,8 @@ import {
   sqliteTimestamp,
 } from "./utils";
 import { publicMessage } from "./serializers";
+
+const DELETE_FOR_EVERYONE_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 export function messageSelectColumns(alias = "me"): string {
   return `${alias}.*,
@@ -74,6 +77,7 @@ export async function sendMessageEnvelope(
   roomId: string,
   body: Record<string, unknown>,
   requestId: string,
+  options: { forwardSource?: ForwardSource | null } = {},
 ): Promise<SendMessageResult> {
   const startedAt = performance.now();
   const context = await getSendRoomContext(env, auth, roomId);
@@ -127,16 +131,18 @@ export async function sendMessageEnvelope(
   const attachmentIds = stringArrayField(body, "attachmentIds", {
     maxItems: 20,
   });
+  const forwardSource = options.forwardSource ?? null;
   const insertStartedAt = performance.now();
   const inserted = await env.CONTROL_DB.prepare(
     `INSERT INTO message_envelopes (
       envelope_id, room_id, sender_account_id, sender_principal_id, sender_device_id,
       idempotency_key, protocol_type, ciphertext, ciphertext_bytes, client_created_at,
-      server_sequence, expires_at, state
+      server_sequence, expires_at, state, forwarded_from_room_id, forwarded_from_envelope_id,
+      forwarded_from_sender_principal_id, forwarded_by_principal_id
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       (SELECT COALESCE(MAX(server_sequence), 0) + 1 FROM message_envelopes WHERE room_id = ?),
-      ?, 'available'
+      ?, 'available', ?, ?, ?, ?
     )
     ON CONFLICT(sender_device_id, idempotency_key) DO NOTHING
     RETURNING *`,
@@ -154,6 +160,10 @@ export async function sendMessageEnvelope(
       clientCreatedAt,
       roomId,
       expiresAt,
+      forwardSource?.roomId ?? null,
+      forwardSource?.envelopeId ?? null,
+      forwardSource?.senderPrincipalId ?? null,
+      forwardSource ? auth.principal.principal_id : null,
     )
     .first<Record<string, unknown>>();
   const insertMs = durationSince(insertStartedAt);
@@ -287,7 +297,8 @@ export async function editMessageEnvelope(
     !current ||
     current.room_id !== roomId ||
     current.state === "purged" ||
-    current.state === "expired"
+    current.state === "expired" ||
+    current.deleted_for_everyone_at
   ) {
     throw new HttpError(404, "message_not_found", "Message not found");
   }
@@ -538,6 +549,7 @@ async function getActiveMessageInRoom(
      WHERE envelope_id = ?
        AND room_id = ?
        AND state NOT IN ('expired', 'purged')
+       AND deleted_for_everyone_at IS NULL
        AND expires_at > CURRENT_TIMESTAMP`,
   )
     .bind(envelopeId, roomId)
@@ -683,6 +695,126 @@ export async function deleteMessagesForMe(
   };
 }
 
+export async function deleteMessagesForEveryone(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const context = await getSendRoomContext(env, auth, roomId);
+  if (context.room_status !== "active") {
+    throw new HttpError(409, "room_not_active", "Room is not active");
+  }
+  const scope = stringField(body, "scope", { required: true, max: 20 });
+  if (scope !== "everyone") {
+    throw new HttpError(
+      400,
+      "invalid_delete_scope",
+      "Delete-for-everyone requires scope: everyone",
+    );
+  }
+
+  const envelopeIds = uniqueStrings(
+    stringArrayField(body, "envelopeIds", {
+      required: true,
+      maxItems: 100,
+    }),
+  );
+  if (!envelopeIds.length) {
+    throw new HttpError(
+      400,
+      "missing_field",
+      "Missing required field: envelopeIds",
+    );
+  }
+
+  const placeholders = envelopeIds.map(() => "?").join(", ");
+  const existing = await env.CONTROL_DB.prepare(
+    `SELECT envelope_id, sender_principal_id, server_received_at, deleted_for_everyone_at
+     FROM message_envelopes
+     WHERE room_id = ?
+       AND envelope_id IN (${placeholders})
+       AND state NOT IN ('expired', 'purged')
+       AND expires_at > CURRENT_TIMESTAMP`,
+  )
+    .bind(roomId, ...envelopeIds)
+    .all<Record<string, unknown>>();
+  const rows = existing.results ?? [];
+  if (rows.length !== envelopeIds.length) {
+    throw new HttpError(404, "message_not_found", "Message not found");
+  }
+
+  const room = await getRoom(env, roomId);
+  const isManager =
+    room.type !== "direct" && ["owner", "admin"].includes(String(context.role));
+  const now = Date.now();
+  for (const row of rows) {
+    if (row.deleted_for_everyone_at) continue;
+    const isSender = row.sender_principal_id === auth.principal.principal_id;
+    const sentAt = sqliteDateMs(String(row.server_received_at));
+    const withinSenderWindow =
+      isSender && sentAt !== null && now - sentAt <= DELETE_FOR_EVERYONE_WINDOW_MS;
+    if (!withinSenderWindow && !isManager) {
+      throw new HttpError(
+        403,
+        "delete_everyone_forbidden",
+        "Only the sender within 48 hours, or a room owner/admin, can delete for everyone",
+      );
+    }
+  }
+
+  const reason = stringField(body, "reason", { max: 160 }) ?? null;
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `UPDATE message_envelopes
+       SET deleted_for_everyone_at = COALESCE(deleted_for_everyone_at, CURRENT_TIMESTAMP),
+           deleted_by_account_id = COALESCE(deleted_by_account_id, ?),
+           deleted_by_principal_id = COALESCE(deleted_by_principal_id, ?),
+           deleted_by_device_id = COALESCE(deleted_by_device_id, ?),
+           deletion_reason = COALESCE(deletion_reason, ?),
+           ciphertext = CASE WHEN deleted_for_everyone_at IS NULL THEN 'deleted-for-everyone' ELSE ciphertext END,
+           ciphertext_bytes = CASE WHEN deleted_for_everyone_at IS NULL THEN ? ELSE ciphertext_bytes END
+       WHERE room_id = ?
+         AND envelope_id IN (${placeholders})
+         AND state NOT IN ('expired', 'purged')`,
+    ).bind(
+      auth.account.account_id,
+      auth.principal.principal_id,
+      auth.device.device_id,
+      reason,
+      byteLength("deleted-for-everyone"),
+      roomId,
+      ...envelopeIds,
+    ),
+    env.CONTROL_DB.prepare(
+      `DELETE FROM message_reactions
+       WHERE room_id = ?
+         AND envelope_id IN (${placeholders})`,
+    ).bind(roomId, ...envelopeIds),
+    env.CONTROL_DB.prepare(
+      `UPDATE message_pins
+       SET unpinned_by_principal_id = ?,
+           unpinned_by_device_id = ?,
+           unpinned_at = CURRENT_TIMESTAMP
+       WHERE room_id = ?
+         AND envelope_id IN (${placeholders})
+         AND unpinned_at IS NULL`,
+    ).bind(auth.principal.principal_id, auth.device.device_id, roomId, ...envelopeIds),
+    env.CONTROL_DB.prepare(
+      "UPDATE rooms SET version = version + 1, updated_at = CURRENT_TIMESTAMP WHERE room_id = ?",
+    ).bind(roomId),
+  ]);
+
+  await Promise.all(
+    envelopeIds.map((envelopeId) => notifyMessageSync(env, auth, roomId, envelopeId)),
+  );
+
+  return {
+    scope: "everyone",
+    envelopeIds,
+  };
+}
+
 export async function acknowledgeMessage(
   env: Env,
   auth: AuthContext,
@@ -814,6 +946,53 @@ export async function getMessage(
   )
     .bind(envelopeId)
     .first<Record<string, unknown>>();
+}
+
+// Forward provenance is server-asserted: only the dedicated /forward route may
+// resolve a source, and the result is threaded to sendMessageEnvelope as an
+// internal option. Normal sends never carry forward metadata, so a caller
+// cannot fabricate it through the public send body.
+export async function resolveForwardSource(
+  env: Env,
+  auth: AuthContext,
+  sourceRoomId: string,
+  sourceEnvelopeId: string,
+): Promise<ForwardSource> {
+  await requireRoomMembership(env, auth, sourceRoomId);
+  const source = await env.CONTROL_DB.prepare(
+    `SELECT envelope_id, room_id, sender_principal_id
+     FROM message_envelopes me
+     WHERE me.room_id = ?
+       AND me.envelope_id = ?
+       AND me.state NOT IN ('expired', 'purged')
+       AND me.expires_at > CURRENT_TIMESTAMP
+       AND me.deleted_for_everyone_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM message_visibility mv
+         WHERE mv.envelope_id = me.envelope_id
+           AND mv.account_id = ?
+       )`,
+  )
+    .bind(sourceRoomId, sourceEnvelopeId, auth.account.account_id)
+    .first<Record<string, unknown>>();
+  if (!source) {
+    throw new HttpError(
+      404,
+      "forward_source_not_found",
+      "Forward source message not found",
+    );
+  }
+  return {
+    roomId: sourceRoomId,
+    envelopeId: sourceEnvelopeId,
+    senderPrincipalId: String(source.sender_principal_id),
+  };
+}
+
+function sqliteDateMs(value: string): number | null {
+  const parsed = Date.parse(`${value.replace(" ", "T")}Z`);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export async function updateMessageReceiptState(

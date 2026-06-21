@@ -12,6 +12,7 @@ import type {
 	Device,
 	DeviceInput,
 	EditMessageInput,
+	ForwardMessageInput,
 	KeyPackage,
 	MeResult,
 	Membership,
@@ -418,6 +419,28 @@ export class VoyagerClient {
 			{ json: { scope: 'for_me', envelopeIds } }
 		);
 		return res.deleted;
+	}
+
+	async deleteMessagesForEveryone(roomId: string, envelopeIds: string[]): Promise<DeleteMessagesResult> {
+		const res = await this.request<{ deleted: DeleteMessagesResult }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/delete`,
+			{ json: { scope: 'everyone', envelopeIds } }
+		);
+		return res.deleted;
+	}
+
+	async forwardMessage(
+		sourceRoomId: string,
+		envelopeId: string,
+		input: ForwardMessageInput
+	): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(sourceRoomId)}/messages/${encodeURIComponent(envelopeId)}/forward`,
+			{ json: { ...input } }
+		);
+		return res.message;
 	}
 
 	async editMessage(roomId: string, envelopeId: string, input: EditMessageInput): Promise<MessageEnvelope> {

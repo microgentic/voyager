@@ -1,13 +1,21 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { ArrowLeft, MoreVertical, Users } from '@lucide/svelte';
+	import { ArrowLeft, MoreVertical, Search, Users } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { rooms, ui } from '$lib/stores';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import { avatarGradient } from '$lib/utils/avatar';
 
-	let { room, onShowDetails }: { room: Room; onShowDetails: () => void } = $props();
+	let {
+		room,
+		onShowDetails,
+		onToggleSearch
+	}: {
+		room: Room;
+		onShowDetails: () => void;
+		onToggleSearch?: () => void;
+	} = $props();
 
 	const isGroup = $derived(room.type === 'group');
 	const counterpart = $derived(rooms.counterpart(room));
@@ -65,6 +73,14 @@
 				</span>
 				<span class="block truncate text-xs text-muted">{subtitle}</span>
 			</span>
+		</button>
+
+		<button
+			onclick={onToggleSearch}
+			class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground"
+			aria-label="Search conversation"
+		>
+			<Search class="h-5 w-5" />
 		</button>
 
 		<button

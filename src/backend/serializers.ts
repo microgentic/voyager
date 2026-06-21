@@ -145,6 +145,20 @@ export function publicMessage(row: Record<string, unknown>): JsonObject {
     state: row.state,
     editedAt: row.edited_at ?? null,
     editCount: Number(row.edit_count ?? 0),
+    // Source room/envelope/sender are retained in D1 and the audit log for
+    // server-side traceability, but not exposed to target-room members. The
+    // public envelope only reveals that the message was forwarded and by whom.
+    forwardedFrom: row.forwarded_from_envelope_id
+      ? {
+          forwardedByPrincipalId: row.forwarded_by_principal_id,
+        }
+      : null,
+    deletedForEveryone: {
+      deleted: Boolean(row.deleted_for_everyone_at),
+      deletedAt: row.deleted_for_everyone_at ?? null,
+      deletedByPrincipalId: row.deleted_by_principal_id ?? null,
+      reason: row.deletion_reason ?? null,
+    },
     receiptSummary: {
       total: receiptTotal,
       pending: receiptPending,

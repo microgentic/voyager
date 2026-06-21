@@ -16,6 +16,7 @@ import {
   archiveRoom,
   createRoomInvitation,
   deleteMessageReaction,
+  deleteMessagesForEveryone,
   declineRoomInvitation,
   durationSince,
   editMessageEnvelope,
@@ -38,6 +39,7 @@ import type {
   ConversationMutationResult,
   ConversationSendRequest,
   ConversationSendResponse,
+  ForwardSource,
   JsonObject,
   SendMessageMetrics,
   SendMessageResult,
@@ -119,6 +121,7 @@ export class ConversationCoordinator {
         payload.roomId,
         payload.body,
         payload.requestId,
+        { forwardSource: payload.forwardSource ?? null },
       );
       const operationMs = durationSince(startedAt);
       const enrichedMetrics = {
@@ -197,6 +200,32 @@ export function parseConversationSendRequest(
     roomId,
     body: messageBody as Record<string, unknown>,
     requestId,
+    forwardSource: parseForwardSource(body),
+  };
+}
+
+// The forward source is constructed server-side by the /forward route and
+// passed as a sibling of `body`, never read from the public message body.
+function parseForwardSource(
+  body: Record<string, unknown>,
+): ForwardSource | null {
+  const raw = body.forwardSource;
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpError(
+      400,
+      "invalid_field",
+      "Field must be an object: forwardSource",
+    );
+  }
+  const source = raw as Record<string, unknown>;
+  return {
+    roomId: stringField(source, "roomId", { required: true, max: 80 })!,
+    envelopeId: stringField(source, "envelopeId", { required: true, max: 80 })!,
+    senderPrincipalId: stringField(source, "senderPrincipalId", {
+      required: true,
+      max: 80,
+    })!,
   };
 }
 
@@ -309,6 +338,13 @@ export async function runConversationMutation(
         payload.roomId,
         requiredMutationField(payload, "envelopeId"),
         optionalMutationBody(payload),
+      );
+    case "message.delete_everyone":
+      return deleteMessagesForEveryone(
+        env,
+        payload.auth,
+        payload.roomId,
+        requiredMutationBody(payload),
       );
     case "message.pin":
       return pinMessage(
@@ -470,6 +506,7 @@ export async function sendMessageThroughConversationCoordinator(
   roomId: string,
   body: Record<string, unknown>,
   requestId: string,
+  options: { forwardSource?: ForwardSource | null } = {},
 ): Promise<SendMessageResult> {
   const startedAt = performance.now();
   const coordinatorId = env.CONVERSATION_COORDINATOR.idFromName(roomId);
@@ -479,7 +516,12 @@ export async function sendMessageThroughConversationCoordinator(
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ auth, body, requestId }),
+      body: JSON.stringify({
+        auth,
+        body,
+        requestId,
+        forwardSource: options.forwardSource ?? null,
+      }),
     },
   );
   const conversationDoMs = durationSince(startedAt);

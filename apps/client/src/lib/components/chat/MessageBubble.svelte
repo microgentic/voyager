@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock, CornerUpLeft, Pin } from '@lucide/svelte';
+	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock, CornerUpLeft, Pin, Forward, Trash2 } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, type ChatMessage } from '$lib/stores';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
@@ -41,11 +41,18 @@
 		replyMessage ? room.members.find((m) => m.principalId === replyMessage.senderPrincipalId) : undefined
 	);
 	const replyAuthor = $derived(replyMessage?.mine ? 'You' : (replySender?.displayName ?? 'Message'));
-	const replyText = $derived(replyMessage?.content.undecodable ? 'Message can’t be displayed' : (replyMessage?.content.body.trim() ?? 'Original message'));
+	const replyText = $derived(
+		replyMessage?.deletedForEveryone.deleted
+			? 'Message deleted'
+			: replyMessage?.content.undecodable
+				? 'Message can’t be displayed'
+				: (replyMessage?.content.body.trim() ?? 'Original message')
+	);
+	const isDeletedForEveryone = $derived(message.deletedForEveryone.deleted);
 
-	const hasBody = $derived(message.content.body.trim().length > 0);
+	const hasBody = $derived(!isDeletedForEveryone && message.content.body.trim().length > 0);
 	const html = $derived(
-		message.content.undecodable
+		isDeletedForEveryone || message.content.undecodable
 			? ''
 			: message.content.contentType === 'text/markdown'
 				? renderMarkdown(message.content.body)
@@ -166,6 +173,13 @@
 				</div>
 			{/if}
 
+			{#if message.forwardedFrom}
+				<div class={cn('mb-1 flex items-center gap-1 text-[11px] font-semibold', mine ? 'text-white/75' : 'text-muted')}>
+					<Forward class="h-3 w-3" />
+					<span>Forwarded</span>
+				</div>
+			{/if}
+
 			{#if showName}
 				<div class="mb-0.5 flex items-center gap-1 text-[13px] font-semibold" style="color:{nameColor(message.senderPrincipalId)}">
 					{senderName}
@@ -173,7 +187,7 @@
 				</div>
 			{/if}
 
-			{#if message.content.replyToMessageId}
+			{#if message.content.replyToMessageId && !isDeletedForEveryone}
 				<div
 					class={cn(
 						'mb-1.5 flex max-w-full gap-2 rounded-xl px-2.5 py-2 text-xs',
@@ -188,7 +202,11 @@
 				</div>
 			{/if}
 
-			{#if message.content.undecodable}
+			{#if isDeletedForEveryone}
+				<p class="flex items-center gap-1.5 italic opacity-80">
+					<Trash2 class="h-4 w-4" /> Message deleted
+				</p>
+			{:else if message.content.undecodable}
 				<p class="flex items-center gap-1.5 italic opacity-80">
 					<Lock class="h-4 w-4" /> Message can’t be displayed
 				</p>
@@ -236,7 +254,7 @@
 				{/if}
 			</div>
 		</div>
-		{#if message.reactions.length}
+		{#if message.reactions.length && !isDeletedForEveryone}
 			<div class={cn('mt-1 flex max-w-full flex-wrap gap-1', mine ? 'justify-end pr-1' : 'justify-start pl-1')}>
 				{#each message.reactions as reaction (reaction.reaction)}
 					<button

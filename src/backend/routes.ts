@@ -1,5 +1,5 @@
 import { audit, requireAdmin } from "../db";
-import { json, readJsonObject, requireMethod, routeParams } from "../http";
+import { HttpError, json, readJsonObject, requireMethod, routeParams, stringField } from "../http";
 import type { AuthContext, Env } from "../types";
 import {
   requireCoordinatorResult,
@@ -40,6 +40,7 @@ import {
   mutationTimingHeaders,
   publishKeyPackage,
   readTimingHeaders,
+  resolveForwardSource,
   reviewAgentRequest,
   revokeKeyPackage,
   claimKeyPackage,
@@ -641,15 +642,32 @@ export async function handleBackendFirstRoutes(
   );
   if (deleteMessagesMatch) {
     requireMethod(request, "POST");
-    const deleted = await deleteMessagesForMe(
-      env,
-      auth,
-      deleteMessagesMatch[1],
-      await readJsonObject(request),
-    );
+    const body = await readJsonObject(request);
+    const scope = body.scope;
+    let deleted: Record<string, unknown>;
+    if (scope === "everyone") {
+      const mutation = await runMutationThroughConversationCoordinator(
+        env,
+        auth,
+        deleteMessagesMatch[1],
+        requestId,
+        {
+          operation: "message.delete_everyone",
+          body,
+        },
+      );
+      deleted = requireCoordinatorResult(mutation.result);
+    } else {
+      deleted = await deleteMessagesForMe(
+        env,
+        auth,
+        deleteMessagesMatch[1],
+        body,
+      );
+    }
     await audit(env, {
       actorAccountId: auth.account.account_id,
-      action: "message.delete_for_me",
+      action: deleted.scope === "everyone" ? "message.delete_everyone" : "message.delete_for_me",
       targetType: "room",
       targetId: deleteMessagesMatch[1],
       requestId,
@@ -662,6 +680,59 @@ export async function handleBackendFirstRoutes(
       },
     });
     return json({ ok: true, deleted });
+  }
+
+  const messageForwardMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/forward$/,
+    url.pathname,
+  );
+  if (messageForwardMatch) {
+    requireMethod(request, "POST");
+    const body = await readJsonObject(request);
+    const targetRoomId = stringField(body, "targetRoomId", {
+      required: true,
+      max: 80,
+    })!;
+    if (targetRoomId === messageForwardMatch[1]) {
+      throw new HttpError(
+        400,
+        "invalid_forward_target",
+        "Forward target must be a different room",
+      );
+    }
+    const forwardSource = await resolveForwardSource(
+      env,
+      auth,
+      messageForwardMatch[1],
+      messageForwardMatch[2],
+    );
+    const { message, metrics } =
+      await sendMessageThroughConversationCoordinator(
+        env,
+        auth,
+        targetRoomId,
+        body,
+        requestId,
+        { forwardSource },
+      );
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.forward",
+      targetType: "message",
+      targetId: messageForwardMatch[2],
+      requestId,
+      result: "success",
+      metadata: {
+        sourceRoomId: messageForwardMatch[1],
+        targetRoomId,
+        forwardedEnvelopeId: message.envelopeId,
+        sequence: message.serverSequence,
+      },
+    });
+    return json(
+      { ok: true, message },
+      { status: 201, headers: sendMessageTimingHeaders(metrics) },
+    );
   }
 
   const messageReactionDeleteMatch = routeParams(

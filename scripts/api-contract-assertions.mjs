@@ -30,6 +30,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
   { method: "PATCH", path: "/v1/rooms/{roomId}/messages/{envelopeId}", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/forward", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions", stability: "stable/current" },
   { method: "DELETE", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/pin", stability: "stable/current" },
@@ -144,7 +145,7 @@ export function assertMessagesResponse(payload, context) {
 export function assertDeleteMessagesResponse(payload, context) {
   const value = success(payload, context);
   const deleted = object(value.deleted, `${context}.deleted`);
-  literal(deleted.scope, "for_me", `${context}.deleted.scope`);
+  enumValue(deleted.scope, ["for_me", "everyone"], `${context}.deleted.scope`);
   array(deleted.envelopeIds, `${context}.deleted.envelopeIds`).forEach((envelopeId, index) =>
     string(envelopeId, `${context}.deleted.envelopeIds[${index}]`)
   );
@@ -332,6 +333,8 @@ function assertMessage(value, context) {
   string(message.expiresAt, `${context}.expiresAt`);
   nullableString(message.editedAt, `${context}.editedAt`);
   number(message.editCount, `${context}.editCount`);
+  assertForwardedFrom(message.forwardedFrom, `${context}.forwardedFrom`);
+  assertDeletedForEveryone(message.deletedForEveryone, `${context}.deletedForEveryone`);
   assertReceiptSummary(message.receiptSummary, `${context}.receiptSummary`);
   assertReactionSummary(message.reactions, `${context}.reactions`);
   assertMessagePin(message.pin, `${context}.pin`);
@@ -340,6 +343,20 @@ function assertMessage(value, context) {
     ["accepted", "available", "partially_acknowledged", "fully_acknowledged", "expired", "purged"],
     `${context}.state`
   );
+}
+
+function assertForwardedFrom(value, context) {
+  if (value === null) return;
+  const forwarded = object(value, context);
+  string(forwarded.forwardedByPrincipalId, `${context}.forwardedByPrincipalId`);
+}
+
+function assertDeletedForEveryone(value, context) {
+  const deleted = object(value, context);
+  boolean(deleted.deleted, `${context}.deleted`);
+  nullableString(deleted.deletedAt, `${context}.deletedAt`);
+  nullableString(deleted.deletedByPrincipalId, `${context}.deletedByPrincipalId`);
+  nullableString(deleted.reason, `${context}.reason`);
 }
 
 function assertReactionSummary(value, context) {

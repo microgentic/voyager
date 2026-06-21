@@ -27,11 +27,18 @@ export interface SendMessageResult {
   metrics: SendMessageMetrics;
 }
 
+export interface ForwardSource {
+  roomId: string;
+  envelopeId: string;
+  senderPrincipalId: string;
+}
+
 export interface ConversationSendRequest {
   auth: AuthContext;
   roomId: string;
   body: Record<string, unknown>;
   requestId: string;
+  forwardSource?: ForwardSource | null;
 }
 
 export interface ConversationMutationRequest {
