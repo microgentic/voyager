@@ -298,6 +298,7 @@ function variantRef(
 		bytes: variant.bytes ?? local?.bytes ?? null,
 		width: variant.width ?? local?.width ?? null,
 		height: variant.height ?? local?.height ?? null,
-		downloadPath: variant.downloadPath
+		downloadPath: variant.downloadPath,
+		mimeType: local?.mimeType
 	};
 }

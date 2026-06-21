@@ -45,7 +45,7 @@
 		try {
 			const buffer = await api.downloadAttachmentBlob(attachment.attachmentId, { variant });
 			const blob = new Blob([buffer], {
-				type: attachment.mediaType || 'application/octet-stream'
+				type: attachment.variants?.[variant]?.mimeType ?? attachment.mediaType ?? 'application/octet-stream'
 			});
 			const url = URL.createObjectURL(blob);
 			urls = { ...urls, [variant]: url };

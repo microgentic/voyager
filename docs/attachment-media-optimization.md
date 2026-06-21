@@ -24,7 +24,8 @@ PR 1 of the media/calling roadmap added the backend foundation for optimized att
 - Chat bubbles load `thumbnail` first for image timelines and open a private authenticated viewer that prefers `preview` and falls back to `original`.
 - Generic files render as downloadable file cards.
 - Thread replies use the same composer path, so image/file attachments work in threads.
-- Forwarding a visible attachment message clones the attachment variants into the target room before calling the existing forward endpoint, preserving room-local attachment ownership.
+- Message attachment references include per-variant MIME metadata so the viewer and forwarding path do not assume all variants share the same content type.
+- Forwarding a visible attachment message clones the attachment variants into the target room before calling the existing forward endpoint, preserving room-local attachment ownership and cleaning up cloned rows if the final forward request fails.
 - Delete-for-me hides the message locally without deleting shared blobs; delete-for-everyone tombstones the message display so attachment content is no longer rendered from that message context.
 
 ## Security Boundary

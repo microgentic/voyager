@@ -39,6 +39,7 @@ export interface AttachmentRefVariant {
 	width: number | null;
 	height: number | null;
 	downloadPath: string;
+	mimeType?: string;
 }
 
 export interface MessageContent {

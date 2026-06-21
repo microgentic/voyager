@@ -137,6 +137,10 @@
 				variantManifest: plan.variantManifest
 			});
 			attachmentId = allocated.attachmentId;
+			if (controller.signal.aborted) {
+				await api.deleteAttachment(attachmentId).catch(() => undefined);
+				return;
+			}
 			patchPending(id, { attachmentId, progress: 0.25, statusText: 'Uploading' });
 			let uploaded = 0;
 			let latest = allocated;
@@ -171,8 +175,8 @@
 			const ref = attachmentRefFromUpload(latest, plan);
 			patchPending(id, { ref, status: 'ready', progress: 1, statusText: 'Ready', abort: undefined });
 		} catch (err) {
-			if ((err as Error)?.name === 'AbortError') return;
 			if (attachmentId) void api.deleteAttachment(attachmentId).catch(() => undefined);
+			if ((err as Error)?.name === 'AbortError') return;
 			const display = isApiError(err) ? err.display : `Couldn’t upload ${file.name || 'attachment'}.`;
 			patchPending(id, {
 				status: 'error',

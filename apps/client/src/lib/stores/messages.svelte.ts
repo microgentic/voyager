@@ -96,13 +96,14 @@ function mediaKindFromMime(mimeType: string): AttachmentMediaKind {
 	return 'unknown';
 }
 
-function attachmentVariantRef(variant: AttachmentVariant): AttachmentRefVariant {
+function attachmentVariantRef(variant: AttachmentVariant, mimeType?: string): AttachmentRefVariant {
 	return {
 		variant: variant.variant,
 		bytes: variant.bytes,
 		width: variant.width,
 		height: variant.height,
-		downloadPath: variant.downloadPath
+		downloadPath: variant.downloadPath,
+		mimeType
 	};
 }
 
@@ -492,28 +493,39 @@ class MessagesStore {
 		}
 		const createdAt = new Date().toISOString();
 		const key = idempotencyKey();
-		const clonedAttachments = await this.cloneAttachmentsForRoom(
-			message.content.attachments ?? [],
-			targetRoomId
-		);
-		const encoded = await messageCodec.encode(
-			{
-				contentType: message.content.contentType,
-				body: message.content.body,
-				attachments: clonedAttachments
-			},
-			{ senderPrincipalId: principalId, createdAt }
-		);
-		const envelope = await api.forwardMessage(message.roomId, message.envelopeId, {
-			targetRoomId,
-			idempotencyKey: key,
-			ciphertext: encoded.ciphertext,
-			protocolType: encoded.protocolType,
-			clientCreatedAt: createdAt,
-			attachmentIds: clonedAttachments.map((attachment) => attachment.attachmentId)
-		});
-		await this.ingest([envelope]);
-		return this.findByEnvelopeId(targetRoomId, envelope.envelopeId) ?? null;
+		const clonedAttachments: AttachmentRef[] = [];
+		let messageCreated = false;
+		try {
+			clonedAttachments.push(
+				...(await this.cloneAttachmentsForRoom(message.content.attachments ?? [], targetRoomId))
+			);
+			const encoded = await messageCodec.encode(
+				{
+					contentType: message.content.contentType,
+					body: message.content.body,
+					attachments: clonedAttachments
+				},
+				{ senderPrincipalId: principalId, createdAt }
+			);
+			const envelope = await api.forwardMessage(message.roomId, message.envelopeId, {
+				targetRoomId,
+				idempotencyKey: key,
+				ciphertext: encoded.ciphertext,
+				protocolType: encoded.protocolType,
+				clientCreatedAt: createdAt,
+				attachmentIds: clonedAttachments.map((attachment) => attachment.attachmentId)
+			});
+			messageCreated = true;
+			await this.ingest([envelope]);
+			return this.findByEnvelopeId(targetRoomId, envelope.envelopeId) ?? null;
+		} catch (error) {
+			if (!messageCreated) {
+				await Promise.allSettled(
+					clonedAttachments.map((attachment) => api.deleteAttachment(attachment.attachmentId))
+				);
+			}
+			throw error;
+		}
 	}
 
 	private async cloneAttachmentsForRoom(
@@ -521,7 +533,18 @@ class MessagesStore {
 		targetRoomId: string
 	): Promise<AttachmentRef[]> {
 		if (!attachments.length) return [];
-		return Promise.all(attachments.map((attachment) => this.cloneAttachmentForRoom(attachment, targetRoomId)));
+		const cloned: AttachmentRef[] = [];
+		try {
+			for (const attachment of attachments) {
+				cloned.push(await this.cloneAttachmentForRoom(attachment, targetRoomId));
+			}
+			return cloned;
+		} catch (error) {
+			await Promise.allSettled(
+				cloned.map((attachment) => api.deleteAttachment(attachment.attachmentId))
+			);
+			throw error;
+		}
 	}
 
 	private async cloneAttachmentForRoom(
@@ -580,11 +603,16 @@ class MessagesStore {
 			void api.deleteAttachment(allocated.attachmentId).catch(() => undefined);
 			throw error;
 		}
+		const mimeTypes = new Map(variants.map((item) => [item.variant, item.mimeType]));
 		const refVariants: AttachmentRef['variants'] = {
-			original: attachmentVariantRef(latest.variants.original)
+			original: attachmentVariantRef(latest.variants.original, mimeTypes.get('original'))
 		};
-		if (latest.variants.preview) refVariants.preview = attachmentVariantRef(latest.variants.preview);
-		if (latest.variants.thumbnail) refVariants.thumbnail = attachmentVariantRef(latest.variants.thumbnail);
+		if (latest.variants.preview) {
+			refVariants.preview = attachmentVariantRef(latest.variants.preview, mimeTypes.get('preview'));
+		}
+		if (latest.variants.thumbnail) {
+			refVariants.thumbnail = attachmentVariantRef(latest.variants.thumbnail, mimeTypes.get('thumbnail'));
+		}
 		return {
 			...attachment,
 			attachmentId: latest.attachmentId,
@@ -605,7 +633,7 @@ class MessagesStore {
 		for (const variant of names) {
 			const buffer = await api.downloadAttachmentBlob(attachment.attachmentId, { variant });
 			const source = attachment.variants?.[variant];
-			const mimeType = attachment.mediaType || 'application/octet-stream';
+			const mimeType = source?.mimeType ?? attachment.mediaType ?? 'application/octet-stream';
 			variants.push({
 				variant,
 				blob: new Blob([buffer], { type: mimeType }),
