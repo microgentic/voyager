@@ -15,6 +15,7 @@
 	const room = $derived(rooms.get(roomId));
 	let notFound = $state(false);
 	let showDetails = $state(false);
+	let searchOpen = $state(false);
 	let replyTo = $state<ChatMessage | null>(null);
 	let editingMessage = $state<ChatMessage | null>(null);
 
@@ -41,6 +42,7 @@
 		untrack(() => {
 				notFound = false;
 				showDetails = false;
+				searchOpen = false;
 				clearComposerContext();
 				if (!id) return;
 			sync.setActiveRoom(id);
@@ -65,8 +67,8 @@
 
 {#if room}
 	<div class="flex h-full min-h-0 flex-col">
-		<RoomHeader {room} onShowDetails={() => (showDetails = true)} />
-		<MessageList {room} onReply={startReply} onEdit={startEdit} />
+		<RoomHeader {room} onShowDetails={() => (showDetails = true)} onToggleSearch={() => (searchOpen = !searchOpen)} />
+		<MessageList {room} bind:searchOpen onReply={startReply} onEdit={startEdit} />
 		<Composer {room} {replyTo} {editingMessage} onCancelContext={clearComposerContext} onSent={clearComposerContext} />
 	</div>
 	<RoomDetails {room} bind:open={showDetails} />

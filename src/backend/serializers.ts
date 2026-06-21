@@ -145,6 +145,20 @@ export function publicMessage(row: Record<string, unknown>): JsonObject {
     state: row.state,
     editedAt: row.edited_at ?? null,
     editCount: Number(row.edit_count ?? 0),
+    forwardedFrom: row.forwarded_from_envelope_id
+      ? {
+          roomId: row.forwarded_from_room_id,
+          envelopeId: row.forwarded_from_envelope_id,
+          senderPrincipalId: row.forwarded_from_sender_principal_id,
+          forwardedByPrincipalId: row.forwarded_by_principal_id,
+        }
+      : null,
+    deletedForEveryone: {
+      deleted: Boolean(row.deleted_for_everyone_at),
+      deletedAt: row.deleted_for_everyone_at ?? null,
+      deletedByPrincipalId: row.deleted_by_principal_id ?? null,
+      reason: row.deletion_reason ?? null,
+    },
     receiptSummary: {
       total: receiptTotal,
       pending: receiptPending,

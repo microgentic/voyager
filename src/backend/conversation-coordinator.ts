@@ -16,6 +16,7 @@ import {
   archiveRoom,
   createRoomInvitation,
   deleteMessageReaction,
+  deleteMessagesForEveryone,
   declineRoomInvitation,
   durationSince,
   editMessageEnvelope,
@@ -309,6 +310,13 @@ export async function runConversationMutation(
         payload.roomId,
         requiredMutationField(payload, "envelopeId"),
         optionalMutationBody(payload),
+      );
+    case "message.delete_everyone":
+      return deleteMessagesForEveryone(
+        env,
+        payload.auth,
+        payload.roomId,
+        requiredMutationBody(payload),
       );
     case "message.pin":
       return pinMessage(

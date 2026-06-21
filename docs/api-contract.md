@@ -174,6 +174,7 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `POST` | `/v1/rooms/{roomId}/messages` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/delete` | `{ deleted: { scope, envelopeIds } }` |
 | `PATCH` | `/v1/rooms/{roomId}/messages/{envelopeId}` | `{ message }` |
+| `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/forward` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/reactions` | `{ message }` |
 | `DELETE` | `/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/pin` | `{ message }` |
@@ -209,17 +210,31 @@ Message responses include additive edit and delivery metadata:
     "pinned": true,
     "pinnedAt": "2026-06-21 12:00:00",
     "pinnedByPrincipalId": "prn_..."
+  },
+  "forwardedFrom": {
+    "roomId": "room_...",
+    "envelopeId": "msg_...",
+    "senderPrincipalId": "prn_...",
+    "forwardedByPrincipalId": "prn_..."
+  },
+  "deletedForEveryone": {
+    "deleted": false,
+    "deletedAt": null,
+    "deletedByPrincipalId": null,
+    "reason": null
   }
 }
 ```
 
 `receiptSummary.status` is the client-facing mirror signal: `sent`, `delivered`, or `read`. Receipt rows remain per-device internally, and the compact status advances when at least one recipient device reaches the delivered/read state; use the numeric counts for detailed delivery diagnostics. `PATCH /v1/rooms/{roomId}/messages/{envelopeId}` lets the original sender replace the current opaque payload for an active, non-expired message. The previous opaque payload is preserved in `message_edits`; the active message keeps the same `envelopeId` and `serverSequence`.
 
+`POST /v1/rooms/{roomId}/messages/{envelopeId}/forward` is a client-mediated forward: the client re-encodes the displayable content for `targetRoomId`, and the backend validates that the source message is visible to the caller and not deleted-for-everyone. The new target-room envelope carries `forwardedFrom`; D1 remains authoritative and the source ciphertext is never interpreted by the backend.
+
 Reactions are room message metadata. `POST /reactions` accepts `{ "reaction": "👍" }` and is idempotent per `(message, principal)`: a caller has one active reaction per message, and posting a different reaction replaces the previous one. `DELETE /reactions/{reaction}` removes only the caller's matching active reaction. Message `reactions[].reactedByMe` is viewer-specific; counts are room-wide.
 
 Pins are room message metadata. Direct-room participants may pin or unpin messages; group/channel pins require an owner or admin role. Pin/unpin responses return the updated message envelope. Room responses also include `pinnedMessageCount` and `latestPinnedMessageId`.
 
-Message deletion currently supports delete-for-me only:
+Message deletion supports two explicit scopes:
 
 ```json
 {
@@ -229,6 +244,15 @@ Message deletion currently supports delete-for-me only:
 ```
 
 Delete-for-me records per-account visibility, hides those envelopes from room history, `/v1/sync`, and `/v1/app/bootstrap` for that account, and does not remove the durable message row or hide it from other members.
+
+```json
+{
+  "scope": "everyone",
+  "envelopeIds": ["msg_..."]
+}
+```
+
+Delete-for-everyone is a room-coordinated tombstone mutation. The original sender may delete their own message for everyone within 48 hours. Group/channel owners and admins may delete any active message for everyone. Direct-room participants cannot delete the other participant's message for everyone. The envelope stays in the room timeline with the same `serverSequence`, `deletedForEveryone.deleted: true`, cleared reactions, and inactive pin metadata.
 
 ### Room Invitations
 

@@ -145,9 +145,25 @@ export interface MessageEnvelope {
 	state: MessageState;
 	editedAt: string | null;
 	editCount: number;
+	forwardedFrom: MessageForwardedFrom | null;
+	deletedForEveryone: MessageDeletedForEveryone;
 	receiptSummary: MessageReceiptSummary;
 	reactions: MessageReactionSummary[];
 	pin: MessagePinSummary;
+}
+
+export interface MessageForwardedFrom {
+	roomId: string;
+	envelopeId: string;
+	senderPrincipalId: string;
+	forwardedByPrincipalId: string;
+}
+
+export interface MessageDeletedForEveryone {
+	deleted: boolean;
+	deletedAt: string | null;
+	deletedByPrincipalId: string | null;
+	reason: string | null;
 }
 
 export interface MessageReceiptSummary {
@@ -374,6 +390,10 @@ export interface SendMessageInput {
 	attachmentIds?: string[];
 }
 
+export interface ForwardMessageInput extends SendMessageInput {
+	targetRoomId: string;
+}
+
 export interface EditMessageInput {
 	ciphertext: string;
 	protocolType: ProtocolType;
@@ -382,7 +402,7 @@ export interface EditMessageInput {
 }
 
 export interface DeleteMessagesResult {
-	scope: 'for_me';
+	scope: 'for_me' | 'everyone';
 	envelopeIds: string[];
 }
 

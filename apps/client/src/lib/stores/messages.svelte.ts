@@ -2,6 +2,8 @@ import { SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api';
 import type {
 	MessageEnvelope,
+	MessageDeletedForEveryone,
+	MessageForwardedFrom,
 	MessagePinSummary,
 	MessageReactionSummary,
 	MessageReceiptSummary,
@@ -27,6 +29,8 @@ export interface ChatMessage {
 	clientCreatedAt: string | null;
 	editedAt: string | null;
 	editCount: number;
+	forwardedFrom: MessageForwardedFrom | null;
+	deletedForEveryone: MessageDeletedForEveryone;
 	receiptSummary: MessageReceiptSummary;
 	reactions: MessageReactionSummary[];
 	pin: MessagePinSummary;
@@ -60,6 +64,19 @@ function sortMessages(list: ChatMessage[]): ChatMessage[] {
 		const bt = parseServerDate(b.clientCreatedAt ?? b.serverReceivedAt)?.getTime() ?? 0;
 		return at - bt;
 	});
+}
+
+function deletedContent(): DecodedMessage {
+	return {
+		schemaVersion: 1,
+		contentType: 'text/plain',
+		body: '',
+		replyToMessageId: null,
+		attachments: [],
+		senderPrincipalId: null,
+		createdAt: null,
+		undecodable: false
+	};
 }
 
 class MessagesStore {
@@ -125,6 +142,13 @@ class MessagesStore {
 			clientCreatedAt: env.clientCreatedAt,
 			editedAt: env.editedAt ?? null,
 			editCount: env.editCount ?? 0,
+			forwardedFrom: env.forwardedFrom ?? null,
+			deletedForEveryone: env.deletedForEveryone ?? {
+				deleted: false,
+				deletedAt: null,
+				deletedByPrincipalId: null,
+				reason: null
+			},
 			receiptSummary: env.receiptSummary ?? { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
 			reactions: env.reactions ?? [],
 			pin: env.pin ?? { pinned: false, pinnedAt: null, pinnedByPrincipalId: null },
@@ -139,7 +163,14 @@ class MessagesStore {
 	async ingest(envelopes: MessageEnvelope[]): Promise<void> {
 		if (!envelopes.length) return;
 		const decoded = await Promise.all(
-			envelopes.map(async (env) => this.toChatMessage(env, await messageCodec.decode(env.ciphertext, env.protocolType)))
+			envelopes.map(async (env) =>
+				this.toChatMessage(
+					env,
+					env.deletedForEveryone?.deleted
+						? deletedContent()
+						: await messageCodec.decode(env.ciphertext, env.protocolType)
+				)
+			)
 		);
 		const next = { ...this.byRoom };
 		const grouped = new Map<string, ChatMessage[]>();
@@ -215,6 +246,8 @@ class MessagesStore {
 			state: 'local',
 			editedAt: null,
 			editCount: 0,
+			forwardedFrom: null,
+			deletedForEveryone: { deleted: false, deletedAt: null, deletedByPrincipalId: null, reason: null },
 			receiptSummary: { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
 			reactions: [],
 			pin: { pinned: false, pinnedAt: null, pinnedByPrincipalId: null },
@@ -312,6 +345,39 @@ class MessagesStore {
 		await this.ingest([envelope]);
 	}
 
+	async forwardToRoom(message: ChatMessage, targetRoomId: string): Promise<ChatMessage | null> {
+		const principalId = auth.principal?.principalId;
+		if (
+			!principalId ||
+			!message.envelopeId ||
+			message.delivery !== 'sent' ||
+			message.content.undecodable ||
+			message.deletedForEveryone.deleted ||
+			message.roomId === targetRoomId
+		) {
+			return null;
+		}
+		const createdAt = new Date().toISOString();
+		const key = idempotencyKey();
+		const encoded = await messageCodec.encode(
+			{
+				contentType: message.content.contentType,
+				body: message.content.body,
+				attachments: []
+			},
+			{ senderPrincipalId: principalId, createdAt }
+		);
+		const envelope = await api.forwardMessage(message.roomId, message.envelopeId, {
+			targetRoomId,
+			idempotencyKey: key,
+			ciphertext: encoded.ciphertext,
+			protocolType: encoded.protocolType,
+			clientCreatedAt: createdAt
+		});
+		await this.ingest([envelope]);
+		return this.findByEnvelopeId(targetRoomId, envelope.envelopeId) ?? null;
+	}
+
 	async retry(message: ChatMessage): Promise<void> {
 		if (message.delivery !== 'failed') return;
 		// Drop the failed placeholder and resend its content.
@@ -333,6 +399,39 @@ class MessagesStore {
 		const result = await api.deleteMessagesForMe(roomId, ids);
 		this.removeEnvelopeIds(roomId, result.envelopeIds);
 		return result.envelopeIds;
+	}
+
+	async deleteForEveryone(roomId: string, envelopeIds: string[]): Promise<string[]> {
+		const ids = Array.from(new Set(envelopeIds.filter(Boolean)));
+		if (!ids.length) return [];
+		const result = await api.deleteMessagesForEveryone(roomId, ids);
+		this.markDeletedForEveryone(roomId, result.envelopeIds);
+		return result.envelopeIds;
+	}
+
+	markDeletedForEveryone(roomId: string, envelopeIds: string[]): void {
+		const ids = new Set(envelopeIds);
+		if (!ids.size) return;
+		const deletedAt = new Date().toISOString();
+		this.byRoom = {
+			...this.byRoom,
+			[roomId]: this.list(roomId).map((message) =>
+				message.envelopeId && ids.has(message.envelopeId)
+					? {
+							...message,
+							content: deletedContent(),
+							deletedForEveryone: {
+								deleted: true,
+								deletedAt,
+								deletedByPrincipalId: auth.principal?.principalId ?? null,
+								reason: null
+							},
+							reactions: [],
+							pin: { pinned: false, pinnedAt: null, pinnedByPrincipalId: null }
+						}
+					: message
+			)
+		};
 	}
 
 	removeEnvelopeIds(roomId: string, envelopeIds: string[]): void {
