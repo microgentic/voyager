@@ -33,12 +33,18 @@ export interface ForwardSource {
   senderPrincipalId: string;
 }
 
+export interface ThreadReply {
+  rootEnvelopeId: string;
+  alsoSendToRoom: boolean;
+}
+
 export interface ConversationSendRequest {
   auth: AuthContext;
   roomId: string;
   body: Record<string, unknown>;
   requestId: string;
   forwardSource?: ForwardSource | null;
+  threadReply?: ThreadReply | null;
 }
 
 export interface ConversationMutationRequest {

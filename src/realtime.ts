@@ -2,7 +2,7 @@ import type { AuthContext, Env } from "./types";
 
 export const REALTIME_PROTOCOL = "voyager.realtime.v1";
 
-type RealtimeEventType = "room.message" | "room.sync";
+type RealtimeEventType = "room.message" | "room.sync" | "room.thread";
 
 interface RealtimeEvent {
   type: RealtimeEventType;
@@ -12,6 +12,8 @@ interface RealtimeEvent {
   envelopeId?: string;
   serverSequence?: number;
   senderDeviceId?: string;
+  rootEnvelopeId?: string;
+  alsoSentToRoom?: boolean;
 }
 
 interface SocketAttachment {
@@ -54,7 +56,9 @@ export async function notifyRoomRealtime(
     roomId,
     envelopeId: event.envelopeId,
     serverSequence: event.serverSequence,
-    senderDeviceId: event.senderDeviceId
+    senderDeviceId: event.senderDeviceId,
+    rootEnvelopeId: event.rootEnvelopeId,
+    alsoSentToRoom: event.alsoSentToRoom
   });
 }
 

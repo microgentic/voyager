@@ -31,6 +31,8 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
   { method: "PATCH", path: "/v1/rooms/{roomId}/messages/{envelopeId}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/forward", stability: "stable/current" },
+  { method: "GET", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions", stability: "stable/current" },
   { method: "DELETE", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/pin", stability: "stable/current" },
@@ -140,6 +142,15 @@ export function assertPaginatedRoomsResponse(payload, context) {
 export function assertMessagesResponse(payload, context) {
   const value = success(payload, context);
   array(value.messages, `${context}.messages`).forEach((message, index) => assertMessage(message, `${context}.messages[${index}]`));
+}
+
+export function assertThreadResponse(payload, context) {
+  const value = success(payload, context);
+  const thread = object(value.thread, `${context}.thread`);
+  assertMessage(thread.root, `${context}.thread.root`);
+  array(thread.replies, `${context}.thread.replies`).forEach((reply, index) =>
+    assertMessage(reply, `${context}.thread.replies[${index}]`)
+  );
 }
 
 export function assertDeleteMessagesResponse(payload, context) {
@@ -335,6 +346,9 @@ function assertMessage(value, context) {
   number(message.editCount, `${context}.editCount`);
   assertForwardedFrom(message.forwardedFrom, `${context}.forwardedFrom`);
   assertDeletedForEveryone(message.deletedForEveryone, `${context}.deletedForEveryone`);
+  nullableString(message.threadRootEnvelopeId, `${context}.threadRootEnvelopeId`);
+  boolean(message.alsoSentToRoom, `${context}.alsoSentToRoom`);
+  assertThreadSummary(message.threadSummary, `${context}.threadSummary`);
   assertReceiptSummary(message.receiptSummary, `${context}.receiptSummary`);
   assertReactionSummary(message.reactions, `${context}.reactions`);
   assertMessagePin(message.pin, `${context}.pin`);
@@ -349,6 +363,15 @@ function assertForwardedFrom(value, context) {
   if (value === null) return;
   const forwarded = object(value, context);
   string(forwarded.forwardedByPrincipalId, `${context}.forwardedByPrincipalId`);
+}
+
+function assertThreadSummary(value, context) {
+  if (value === null) return;
+  const summary = object(value, context);
+  number(summary.replyCount, `${context}.replyCount`);
+  nullableString(summary.lastReplyEnvelopeId, `${context}.lastReplyEnvelopeId`);
+  nullableString(summary.lastReplySenderPrincipalId, `${context}.lastReplySenderPrincipalId`);
+  nullableString(summary.lastReplyAt, `${context}.lastReplyAt`);
 }
 
 function assertDeletedForEveryone(value, context) {

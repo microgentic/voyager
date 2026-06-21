@@ -63,6 +63,7 @@ export async function listPendingMessages(
        AND dr.status = 'pending'
        AND me.expires_at > CURRENT_TIMESTAMP
        AND me.state != 'purged'
+       AND (me.thread_root_envelope_id IS NULL OR me.also_sent_to_room = 1)
        AND NOT EXISTS (
          SELECT 1
          FROM message_visibility mv

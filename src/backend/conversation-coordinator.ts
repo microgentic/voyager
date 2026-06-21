@@ -43,6 +43,7 @@ import type {
   JsonObject,
   SendMessageMetrics,
   SendMessageResult,
+  ThreadReply,
 } from "./internal-types";
 
 export class ConversationCoordinator {
@@ -121,7 +122,10 @@ export class ConversationCoordinator {
         payload.roomId,
         payload.body,
         payload.requestId,
-        { forwardSource: payload.forwardSource ?? null },
+        {
+          forwardSource: payload.forwardSource ?? null,
+          threadReply: payload.threadReply ?? null,
+        },
       );
       const operationMs = durationSince(startedAt);
       const enrichedMetrics = {
@@ -201,6 +205,32 @@ export function parseConversationSendRequest(
     body: messageBody as Record<string, unknown>,
     requestId,
     forwardSource: parseForwardSource(body),
+    threadReply: parseThreadReply(body),
+  };
+}
+
+// Thread replies, like forwards, are server-asserted: the root and also-send
+// intent are set by the /thread route and travel as a sibling of `body`, never
+// read from the public message body.
+function parseThreadReply(
+  body: Record<string, unknown>,
+): ThreadReply | null {
+  const raw = body.threadReply;
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpError(
+      400,
+      "invalid_field",
+      "Field must be an object: threadReply",
+    );
+  }
+  const reply = raw as Record<string, unknown>;
+  return {
+    rootEnvelopeId: stringField(reply, "rootEnvelopeId", {
+      required: true,
+      max: 80,
+    })!,
+    alsoSendToRoom: reply.alsoSendToRoom === true,
   };
 }
 
@@ -506,7 +536,10 @@ export async function sendMessageThroughConversationCoordinator(
   roomId: string,
   body: Record<string, unknown>,
   requestId: string,
-  options: { forwardSource?: ForwardSource | null } = {},
+  options: {
+    forwardSource?: ForwardSource | null;
+    threadReply?: ThreadReply | null;
+  } = {},
 ): Promise<SendMessageResult> {
   const startedAt = performance.now();
   const coordinatorId = env.CONVERSATION_COORDINATOR.idFromName(roomId);
@@ -521,6 +554,7 @@ export async function sendMessageThroughConversationCoordinator(
         body,
         requestId,
         forwardSource: options.forwardSource ?? null,
+        threadReply: options.threadReply ?? null,
       }),
     },
   );

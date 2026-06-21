@@ -20,7 +20,8 @@ import {
   assertRoomInvitationResponse,
   assertRoomResponse,
   assertSidebarCollectionResponse,
-  assertSyncResponse
+  assertSyncResponse,
+  assertThreadResponse
 } from "./api-contract-assertions.mjs";
 import { assertRouteInventory } from "./route-inventory-check.mjs";
 
@@ -1223,6 +1224,160 @@ await expectFailure(`/v1/rooms/${direct.room.roomId}/messages/${firstDuplicate.m
     ciphertext: "deleted-message-should-not-forward"
   }
 }, 404);
+
+// --- Threads: same-room sub-timeline with also-send and tombstone rules. ---
+const threadRoot = await api(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `thread-root-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "thread-root-smoke-payload"
+  }
+});
+assertMessageResponse(threadRoot, "POST /v1/rooms/{roomId}/messages thread root");
+const threadRootId = threadRoot.message.envelopeId;
+
+const threadReply = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `thread-reply-1-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "thread-reply-1-smoke-payload"
+  }
+});
+assertMessageResponse(threadReply, "POST /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread");
+if (threadReply.message.threadRootEnvelopeId !== threadRootId || threadReply.message.alsoSentToRoom !== false) {
+  throw new Error("thread reply did not carry server-asserted thread metadata");
+}
+
+const mainAfterReply = await api(`/v1/rooms/${group.room.roomId}/messages?after=${threadRoot.message.serverSequence - 1}&limit=50`, {
+  headers: ownerHeaders
+});
+assertMessagesResponse(mainAfterReply, "GET /v1/rooms/{roomId}/messages thread-only excluded");
+if (mainAfterReply.messages.some((message) => message.envelopeId === threadReply.message.envelopeId)) {
+  throw new Error("thread-only reply leaked into the main timeline");
+}
+const rootInMain = mainAfterReply.messages.find((message) => message.envelopeId === threadRootId);
+if (!rootInMain || rootInMain.threadSummary?.replyCount !== 1) {
+  throw new Error("root thread summary did not reflect the reply");
+}
+
+const threadView = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  headers: ownerHeaders
+});
+assertThreadResponse(threadView, "GET /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread");
+if (threadView.thread.root.envelopeId !== threadRootId) {
+  throw new Error("thread endpoint returned the wrong root");
+}
+if (!threadView.thread.replies.some((message) => message.envelopeId === threadReply.message.envelopeId)) {
+  throw new Error("thread endpoint did not include the reply");
+}
+
+const threadReplyBroadcast = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `thread-reply-2-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "thread-reply-2-smoke-payload",
+    alsoSendToRoom: true
+  }
+});
+assertMessageResponse(threadReplyBroadcast, "POST thread reply also-send");
+if (threadReplyBroadcast.message.alsoSentToRoom !== true || threadReplyBroadcast.message.threadRootEnvelopeId !== threadRootId) {
+  throw new Error("also-send reply metadata incorrect");
+}
+const mainAfterBroadcast = await api(`/v1/rooms/${group.room.roomId}/messages?after=${threadRoot.message.serverSequence - 1}&limit=50`, {
+  headers: ownerHeaders
+});
+if (!mainAfterBroadcast.messages.some((message) => message.envelopeId === threadReplyBroadcast.message.envelopeId)) {
+  throw new Error("also-send reply did not appear in the main timeline");
+}
+
+// Thread metadata is server-asserted: a normal send cannot smuggle it through the body.
+const forgedThread = await api(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `forge-thread-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "normal-send-should-not-thread",
+    threadRootEnvelopeId: threadRootId,
+    alsoSentToRoom: true,
+    threadReply: { rootEnvelopeId: threadRootId, alsoSendToRoom: true }
+  }
+});
+assertMessageResponse(forgedThread, "POST normal send forged thread metadata");
+if (forgedThread.message.threadRootEnvelopeId !== null || forgedThread.message.alsoSentToRoom !== false) {
+  throw new Error("normal send must not accept thread metadata from the request body");
+}
+
+// Deleting an also-sent reply for everyone tombstones it inside the thread too.
+const deleteThreadReply = await api(`/v1/rooms/${group.room.roomId}/messages/delete`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { scope: "everyone", envelopeIds: [threadReplyBroadcast.message.envelopeId] }
+});
+assertDeleteMessagesResponse(deleteThreadReply, "POST delete thread reply everyone");
+const threadAfterReplyDelete = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  headers: ownerHeaders
+});
+const deletedReplyInThread = threadAfterReplyDelete.thread.replies.find(
+  (message) => message.envelopeId === threadReplyBroadcast.message.envelopeId
+);
+if (!deletedReplyInThread || deletedReplyInThread.deletedForEveryone.deleted !== true) {
+  throw new Error("thread reply tombstone not reflected in the thread");
+}
+
+// Deleting the root for everyone keeps existing replies but rejects new ones.
+const deleteRoot = await api(`/v1/rooms/${group.room.roomId}/messages/delete`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { scope: "everyone", envelopeIds: [threadRootId] }
+});
+assertDeleteMessagesResponse(deleteRoot, "POST delete thread root everyone");
+const threadAfterRootDelete = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  headers: ownerHeaders
+});
+assertThreadResponse(threadAfterRootDelete, "GET thread after root delete");
+if (threadAfterRootDelete.thread.root.deletedForEveryone.deleted !== true) {
+  throw new Error("tombstoned root was not returned by the thread endpoint");
+}
+if (!threadAfterRootDelete.thread.replies.some((message) => message.envelopeId === threadReply.message.envelopeId)) {
+  throw new Error("existing replies should remain after the root is deleted");
+}
+await expectFailure(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `thread-after-root-delete-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "should-be-rejected"
+  }
+}, 404);
+
+// Threads work in direct rooms too.
+const directThreadRoot = await api(`/v1/rooms/${direct.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { idempotencyKey: `direct-thread-root-${suffix}`, protocolType: "opaque-test", ciphertext: "direct-thread-root" }
+});
+assertMessageResponse(directThreadRoot, "POST direct thread root");
+const directThreadReply = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { idempotencyKey: `direct-thread-reply-${suffix}`, protocolType: "opaque-test", ciphertext: "direct-thread-reply" }
+});
+assertMessageResponse(directThreadReply, "POST direct thread reply");
+const directThreadView = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread`, {
+  headers: ownerHeaders
+});
+assertThreadResponse(directThreadView, "GET direct thread");
+if (!directThreadView.thread.replies.some((message) => message.envelopeId === directThreadReply.message.envelopeId)) {
+  throw new Error("direct room thread did not include the reply");
+}
 
 const concurrentMessages = await Promise.all(
   Array.from({ length: 6 }, (_, index) =>

@@ -159,6 +159,19 @@ export function publicMessage(row: Record<string, unknown>): JsonObject {
       deletedByPrincipalId: row.deleted_by_principal_id ?? null,
       reason: row.deletion_reason ?? null,
     },
+    threadRootEnvelopeId: row.thread_root_envelope_id ?? null,
+    alsoSentToRoom: Boolean(row.also_sent_to_room),
+    // Summary is computed on read from thread replies, so it stays accurate as
+    // replies are added, edited, or tombstoned. Null until the first reply.
+    threadSummary: Number(row.thread_reply_count ?? 0)
+      ? {
+          replyCount: Number(row.thread_reply_count ?? 0),
+          lastReplyEnvelopeId: row.thread_last_reply_envelope_id ?? null,
+          lastReplySenderPrincipalId:
+            row.thread_last_reply_sender_principal_id ?? null,
+          lastReplyAt: row.thread_last_reply_at ?? null,
+        }
+      : null,
     receiptSummary: {
       total: receiptTotal,
       pending: receiptPending,

@@ -1,6 +1,7 @@
 import { api } from '$lib/api';
 import type { RealtimeEvent } from '$lib/api/types';
 import { auth } from './auth.svelte';
+import { messages } from './messages.svelte';
 import { sync } from './sync.svelte';
 
 type RealtimeState = 'idle' | 'connecting' | 'connected' | 'retrying';
@@ -127,6 +128,19 @@ class RealtimeStore {
 			this.lastEnvelopeId = event.envelopeId ?? null;
 			this.lastServerSequence = event.serverSequence ?? null;
 			sync.pokeRoomNow(event.roomId, event.serverSequence);
+			return;
+		}
+		if (event.type === 'room.thread' && event.roomId && event.rootEnvelopeId) {
+			this.lastEventAt = new Date();
+			this.lastRoomMessageAt = this.lastEventAt;
+			this.lastRoomId = event.roomId;
+			this.lastEnvelopeId = event.envelopeId ?? null;
+			this.lastServerSequence = event.serverSequence ?? null;
+			// Refresh the thread (and its root summary) in place; the root's own
+			// sequence never moves, so a plain after-cursor pull would miss it.
+			void messages.syncThread(event.roomId, event.rootEnvelopeId);
+			// Also-sent replies belong in the main timeline too.
+			if (event.alsoSentToRoom) sync.pokeRoomNow(event.roomId, event.serverSequence);
 			return;
 		}
 		if (event.type === 'room.sync') {

@@ -25,6 +25,7 @@ import {
   downloadAttachmentBlob,
   getRoomForMember,
   getRoomIdForPendingRoomInvitation,
+  getThread,
   listAdminAgentRequests,
   listAdminRooms,
   listAvailableKeyPackages,
@@ -727,6 +728,54 @@ export async function handleBackendFirstRoutes(
         targetRoomId,
         forwardedEnvelopeId: message.envelopeId,
         sequence: message.serverSequence,
+      },
+    });
+    return json(
+      { ok: true, message },
+      { status: 201, headers: sendMessageTimingHeaders(metrics) },
+    );
+  }
+
+  const threadMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread$/,
+    url.pathname,
+  );
+  if (threadMatch) {
+    if (request.method === "GET") {
+      return json({
+        ok: true,
+        thread: await getThread(env, auth, threadMatch[1], threadMatch[2], url),
+      });
+    }
+    requireMethod(request, "POST");
+    const body = await readJsonObject(request);
+    const alsoSendToRoom = body.alsoSendToRoom === true;
+    const { message, metrics } =
+      await sendMessageThroughConversationCoordinator(
+        env,
+        auth,
+        threadMatch[1],
+        body,
+        requestId,
+        {
+          threadReply: {
+            rootEnvelopeId: threadMatch[2],
+            alsoSendToRoom,
+          },
+        },
+      );
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.thread_reply",
+      targetType: "message",
+      targetId: threadMatch[2],
+      requestId,
+      result: "success",
+      metadata: {
+        roomId: threadMatch[1],
+        replyEnvelopeId: message.envelopeId,
+        sequence: message.serverSequence,
+        alsoSentToRoom: alsoSendToRoom,
       },
     });
     return json(

@@ -14,12 +14,14 @@
 		room,
 		replyTo = null,
 		editingMessage = null,
+		threadRoot = null,
 		onCancelContext,
 		onSent
 	}: {
 		room: Room;
 		replyTo?: ChatMessage | null;
 		editingMessage?: ChatMessage | null;
+		threadRoot?: ChatMessage | null;
 		onCancelContext?: () => void;
 		onSent?: () => void;
 	} = $props();
@@ -37,6 +39,7 @@
 	let markdown = $state(false);
 	let sending = $state(false);
 	let pending = $state<Pending[]>([]);
+	let alsoSendToRoom = $state(false);
 	let textareaEl = $state<HTMLTextAreaElement>();
 	let fileInput = $state<HTMLInputElement>();
 	let hydratedEditKey = '';
@@ -46,6 +49,8 @@
 	const archived = $derived(room.status !== 'active');
 	const uploading = $derived(pending.some((p) => p.status === 'uploading'));
 	const editing = $derived(Boolean(editingMessage));
+	const inThread = $derived(Boolean(threadRoot) && !editing);
+	const alsoSendLabel = $derived(room.type === 'direct' ? 'the main chat' : `#${room.name ?? 'room'}`);
 	const activeContext = $derived(editingMessage ?? replyTo);
 	const ready = $derived(text.trim().length > 0 || (!editing && pending.some((p) => p.status === 'ready')));
 	const contextTitle = $derived(
@@ -104,6 +109,14 @@
 					replyToMessageId: editingMessage.content.replyToMessageId,
 					attachments: editingMessage.content.attachments
 				});
+			} else if (inThread && threadRoot?.envelopeId) {
+				await messages.replyInThread(
+					room.roomId,
+					threadRoot.envelopeId,
+					{ contentType: markdown ? 'text/markdown' : 'text/plain', body, attachments },
+					alsoSendToRoom
+				);
+				alsoSendToRoom = false;
 			} else {
 				await messages.sendText(room.roomId, {
 					contentType: markdown ? 'text/markdown' : 'text/plain',
@@ -205,6 +218,13 @@
 			</div>
 		{/if}
 
+		{#if inThread}
+			<label class="mb-2 flex w-fit cursor-pointer items-center gap-2 px-1 text-xs text-muted">
+				<input type="checkbox" bind:checked={alsoSendToRoom} class="h-4 w-4 rounded border-border accent-primary" />
+				<span>Also send to {alsoSendLabel}</span>
+			</label>
+		{/if}
+
 		<div class="flex min-w-0 items-end gap-1 sm:gap-1.5">
 			<input
 				bind:this={fileInput}
@@ -243,8 +263,8 @@
 					onkeydown={onKeydown}
 					maxRows={6}
 					class="min-w-0"
-					placeholder={markdown ? 'Write with Markdown…' : 'Message…'}
-					aria-label="Message"
+					placeholder={inThread ? 'Reply in thread…' : markdown ? 'Write with Markdown…' : 'Message…'}
+					aria-label={inThread ? 'Reply in thread' : 'Message'}
 				/>
 			</div>
 

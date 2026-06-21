@@ -28,7 +28,9 @@ import type {
 	SendMessageInput,
 	Session,
 	SidebarCollection,
-	SyncResult
+	SyncResult,
+	ThreadReplyInput,
+	ThreadView
 } from './types';
 
 type Json = Record<string, unknown>;
@@ -438,6 +440,27 @@ export class VoyagerClient {
 		const res = await this.request<{ message: MessageEnvelope }>(
 			'POST',
 			`/v1/rooms/${encodeURIComponent(sourceRoomId)}/messages/${encodeURIComponent(envelopeId)}/forward`,
+			{ json: { ...input } }
+		);
+		return res.message;
+	}
+
+	async getThread(roomId: string, rootEnvelopeId: string): Promise<ThreadView> {
+		const res = await this.request<{ thread: ThreadView }>(
+			'GET',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(rootEnvelopeId)}/thread`
+		);
+		return res.thread;
+	}
+
+	async replyInThread(
+		roomId: string,
+		rootEnvelopeId: string,
+		input: ThreadReplyInput
+	): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(rootEnvelopeId)}/thread`,
 			{ json: { ...input } }
 		);
 		return res.message;
