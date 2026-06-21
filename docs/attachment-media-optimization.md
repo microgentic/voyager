@@ -1,8 +1,8 @@
 # Attachment Media Optimization
 
-PR 1 of the media/calling roadmap adds the backend foundation for optimized attachments. The goal is to let clients upload multiple private variants of the same attachment while keeping D1 as metadata/state and R2 as private object storage.
+PR 1 of the media/calling roadmap added the backend foundation for optimized attachments. PR 2 wires that contract into the client experience. The goal is to let clients upload multiple private variants of the same attachment while keeping D1 as metadata/state and R2 as private object storage.
 
-## Current Scope
+## Backend Scope
 
 - Attachment allocation accepts media metadata: `mediaKind`, `originalFilename`, `declaredMimeType`, `width`, `height`, `durationMs`, and an opaque `variantManifest`.
 - `PUT /v1/attachments/{attachmentId}/blob` still uploads the original variant for compatibility.
@@ -15,9 +15,23 @@ PR 1 of the media/calling roadmap adds the backend foundation for optimized atta
 - Allocation enforces a small pending-attachment cap per device to prevent unbounded abandoned allocations.
 - Maintenance cleanup deletes known variant objects for expired attachments before marking those rows expired.
 
+## Client Scope
+
+- The composer generates optimized image variants locally with browser-native image APIs before upload.
+- Static images default to an optimized primary `original`, optional `preview`, and `thumbnail`; unsupported images and generic files fall back to the opaque original-only path.
+- The composer shows staged upload progress, local pending thumbnails, cancel, retry, and cleanup of unsent attachment allocations.
+- Web/desktop users can drag files into the composer drop target; mobile continues to use the platform file picker exposed through the same file input.
+- Chat bubbles load `thumbnail` first for image timelines and open a private authenticated viewer that prefers `preview` and falls back to `original`.
+- Generic files render as downloadable file cards.
+- Thread replies use the same composer path, so image/file attachments work in threads.
+- Forwarding a visible attachment message clones the attachment variants into the target room before calling the existing forward endpoint, preserving room-local attachment ownership.
+- Delete-for-me hides the message locally without deleting shared blobs; delete-for-everyone tombstones the message display so attachment content is no longer rendered from that message context.
+
 ## Security Boundary
 
 The backend still treats attachment bytes as opaque. It records client-supplied metadata and byte counts, but it does not inspect, transform, or verify image/video plaintext. This keeps the implementation compatible with future client-side encryption work.
+
+Client-side image optimization currently happens before the future MLS/native attachment encryption layer. Once encrypted attachments land, each variant should be encrypted independently before upload while preserving the same metadata and variant-selection shape.
 
 R2 buckets must remain private. Voyager uses authenticated Worker downloads for all variants; public buckets and long-lived public media URLs are intentionally out of scope.
 
@@ -33,17 +47,11 @@ Each attachment has one durable row and up to three object variants:
 
 Clients should prefer `thumbnail` in dense timelines, `preview` in viewers, and `original` only for explicit download or "send original" flows.
 
-## Deferred To PR 2
-
-- Client-side image resizing/compression.
-- Thumbnail rendering in chat bubbles.
-- Media viewer/lightbox.
-- Upload progress, cancel, and retry UI.
-- Drag-and-drop and mobile picker polish.
-- More nuanced cleanup for uploaded-but-never-referenced variants before their normal expiration window.
-
 ## Future Notes
 
 - Direct-to-R2 multipart uploads remain deferred until large file/video uploads need resumable transfer.
 - Cloudflare Images or signed media URLs remain deferred until the access-control and leakage model is designed.
 - This PR does not claim end-to-end encrypted attachments; it preserves the backend abstraction needed for that later work.
+- A dedicated "send original camera/source file" option remains deferred. The current default sends an optimized primary image as the required `original` variant.
+- Fine-grained upload byte progress remains deferred because the current authenticated Worker upload path uses `fetch`; the composer reports deterministic processing/upload stages instead.
+- Full camera capture polish and platform-specific save-to-gallery affordances remain part of later mobile hardening.
