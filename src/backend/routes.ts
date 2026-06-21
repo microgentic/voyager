@@ -38,6 +38,7 @@ import {
   listRoomMessages,
   listRooms,
   listSidebarCollections,
+  listThreads,
   mutationTimingHeaders,
   publishKeyPackage,
   readTimingHeaders,
@@ -51,6 +52,8 @@ import {
   uploadAttachmentBlob,
   addSidebarCollectionItem,
   runCleanup,
+  markThreadRead,
+  updateThreadSubscription,
 } from "./operations";
 
 export async function handleBackendFirstRoutes(
@@ -191,6 +194,15 @@ export async function handleBackendFirstRoutes(
     return json(
       { ok: true, ...(await listRooms(env, auth, url)) },
       { headers: readTimingHeaders("rooms", authTimingMs, startedAt) },
+    );
+  }
+
+  if (url.pathname === "/v1/threads") {
+    requireMethod(request, "GET");
+    const startedAt = performance.now();
+    return json(
+      { ok: true, ...(await listThreads(env, auth, url)) },
+      { headers: readTimingHeaders("threads", authTimingMs, startedAt) },
     );
   }
 
@@ -782,6 +794,55 @@ export async function handleBackendFirstRoutes(
       { ok: true, message },
       { status: 201, headers: sendMessageTimingHeaders(metrics) },
     );
+  }
+
+  const threadReadMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread\/read$/,
+    url.pathname,
+  );
+  if (threadReadMatch) {
+    requireMethod(request, "POST");
+    const state = await markThreadRead(
+      env,
+      auth,
+      threadReadMatch[1],
+      threadReadMatch[2],
+    );
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.thread_read",
+      targetType: "message",
+      targetId: threadReadMatch[2],
+      requestId,
+      result: "success",
+      metadata: { roomId: threadReadMatch[1] },
+    });
+    return json({ ok: true, threadState: state });
+  }
+
+  const threadSubscriptionMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread\/subscription$/,
+    url.pathname,
+  );
+  if (threadSubscriptionMatch) {
+    requireMethod(request, "PATCH");
+    const state = await updateThreadSubscription(
+      env,
+      auth,
+      threadSubscriptionMatch[1],
+      threadSubscriptionMatch[2],
+      await readJsonObject(request),
+    );
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "message.thread_subscription.update",
+      targetType: "message",
+      targetId: threadSubscriptionMatch[2],
+      requestId,
+      result: "success",
+      metadata: { roomId: threadSubscriptionMatch[1] },
+    });
+    return json({ ok: true, threadState: state });
   }
 
   const messageReactionDeleteMatch = routeParams(

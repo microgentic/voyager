@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { sections } from './sections';
-	import { invitations } from '$lib/stores';
+	import { invitations, threads } from '$lib/stores';
 	import { cn } from '$lib/utils/cn';
 
 	const path = $derived(page.url.pathname);
@@ -28,6 +28,13 @@
 						class="absolute -right-2.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[9px] font-bold text-primary-foreground"
 					>
 						{invitations.count}
+					</span>
+				{/if}
+				{#if section.badge === 'threads' && threads.unreadCount > 0}
+					<span
+						class="absolute -right-2.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[9px] font-bold text-primary-foreground"
+					>
+						{threads.unreadCount}
 					</span>
 				{/if}
 			</span>

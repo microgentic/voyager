@@ -1,11 +1,11 @@
-import { MessageSquare, Mailbox, Bot, Settings, type Icon } from '@lucide/svelte';
+import { MessageSquare, MessagesSquare, Mailbox, Bot, Settings, type Icon } from '@lucide/svelte';
 
 export interface NavSection {
 	id: string;
 	href: string;
 	label: string;
 	icon: typeof Icon;
-	badge?: 'invites';
+	badge?: 'invites' | 'threads';
 	match: (pathname: string) => boolean;
 }
 
@@ -16,6 +16,14 @@ export const sections: NavSection[] = [
 		label: 'Chats',
 		icon: MessageSquare,
 		match: (p) => p === '/app' || p.startsWith('/app/')
+	},
+	{
+		id: 'threads',
+		href: '/threads',
+		label: 'Threads',
+		icon: MessagesSquare,
+		badge: 'threads',
+		match: (p) => p.startsWith('/threads')
 	},
 	{
 		id: 'invites',

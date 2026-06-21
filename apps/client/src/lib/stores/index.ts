@@ -2,6 +2,7 @@ export { auth } from './auth.svelte';
 export { ui } from './ui.svelte';
 export { rooms } from './rooms.svelte';
 export { messages, type ChatMessage } from './messages.svelte';
+export { threads } from './threads.svelte';
 export { sync } from './sync.svelte';
 export { realtime } from './realtime.svelte';
 export { principals } from './principals.svelte';

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { auth, ui, rooms, messages, principals, invitations, collections, sync, realtime } from '$lib/stores';
+	import { auth, ui, rooms, messages, threads, principals, invitations, collections, sync, realtime } from '$lib/stores';
 	import DesktopTitlebar from '$lib/components/shell/DesktopTitlebar.svelte';
 	import NavRail from '$lib/components/nav/NavRail.svelte';
 	import TabBar from '$lib/components/nav/TabBar.svelte';
@@ -27,6 +27,7 @@
 	function deferNonCriticalLoads(): void {
 		const load = () => {
 			void principals.load();
+			void threads.load();
 			void invitations.load();
 			void collections.load();
 		};

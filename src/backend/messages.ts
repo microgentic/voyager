@@ -335,8 +335,15 @@ export async function getThread(
   url: URL,
 ): Promise<JsonObject> {
   await requireRoomMembership(env, auth, roomId);
-  const after = numberParam(url, "after", 0, Number.MAX_SAFE_INTEGER, 0);
   const limit = numberParam(url, "limit", 1, 200, 200);
+  const hasAfter = url.searchParams.has("after");
+  const hasBefore = url.searchParams.has("before");
+  const after = hasAfter
+    ? numberParam(url, "after", 0, Number.MAX_SAFE_INTEGER, 0)
+    : 0;
+  const before = hasBefore
+    ? numberParam(url, "before", 1, Number.MAX_SAFE_INTEGER, 1)
+    : null;
   const root = await env.CONTROL_DB.prepare(
     `SELECT ${messageSelectColumns("me")}
      FROM message_envelopes me
@@ -366,12 +373,15 @@ export async function getThread(
       "Thread root message is not available",
     );
   }
-  const replies = await env.CONTROL_DB.prepare(
+  const sequenceOperator = before !== null ? "<" : ">";
+  const sequenceCursor = before !== null ? before : after;
+  const orderDirection = hasAfter && before === null ? "ASC" : "DESC";
+  const repliesResult = await env.CONTROL_DB.prepare(
     `SELECT ${messageSelectColumns("me")}
      FROM message_envelopes me
      WHERE me.thread_root_envelope_id = ?
        AND me.room_id = ?
-       AND me.server_sequence > ?
+       AND me.server_sequence ${sequenceOperator} ?
        AND me.state != 'purged'
        AND me.expires_at > CURRENT_TIMESTAMP
        AND NOT EXISTS (
@@ -380,21 +390,36 @@ export async function getThread(
          WHERE mv.envelope_id = me.envelope_id
            AND mv.account_id = ?
        )
-     ORDER BY me.server_sequence ASC
+     ORDER BY me.server_sequence ${orderDirection}
      LIMIT ?`,
   )
     .bind(
       ...messageSelectBindValues(auth),
       rootEnvelopeId,
       roomId,
-      after,
+      sequenceCursor,
       auth.account.account_id,
-      limit,
+      limit + 1,
     )
     .all<Record<string, unknown>>();
+  const rawReplies = repliesResult.results ?? [];
+  const hasMoreBefore =
+    (before !== null || !hasAfter) && rawReplies.length > limit;
+  const pageReplies = rawReplies.slice(0, limit);
+  const replies =
+    orderDirection === "DESC" ? [...pageReplies].reverse() : pageReplies;
+  const olderCursor = hasMoreBefore
+    ? String(
+        replies.reduce(
+          (min, reply) => Math.min(min, Number(reply.server_sequence)),
+          Number.MAX_SAFE_INTEGER,
+        ),
+      )
+    : null;
   return {
     root: publicMessage(root),
-    replies: (replies.results ?? []).map(publicMessage),
+    replies: replies.map(publicMessage),
+    olderCursor,
   };
 }
 

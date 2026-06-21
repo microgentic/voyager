@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { Moon, Sun, SquarePen } from '@lucide/svelte';
 	import { sections } from './sections';
-	import { auth, invitations, ui } from '$lib/stores';
+	import { auth, invitations, threads, ui } from '$lib/stores';
 	import { compose } from '$lib/stores/compose.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import { cn } from '$lib/utils/cn';
@@ -45,6 +45,13 @@
 					class="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
 				>
 					{invitations.count}
+				</span>
+			{/if}
+			{#if section.badge === 'threads' && threads.unreadCount > 0}
+				<span
+					class="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
+				>
+					{threads.unreadCount}
 				</span>
 			{/if}
 			{#if active}

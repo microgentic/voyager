@@ -408,6 +408,26 @@ export interface ThreadReplyInput extends SendMessageInput {
 export interface ThreadView {
 	root: MessageEnvelope;
 	replies: MessageEnvelope[];
+	olderCursor: string | null;
+}
+
+export interface ThreadState {
+	rootEnvelopeId: string;
+	roomId: string;
+	following: boolean;
+	muted: boolean;
+	lastReadSequence: number;
+	updatedAt: string;
+}
+
+export interface ThreadInboxItem {
+	room: Room;
+	root: MessageEnvelope;
+	following: boolean;
+	muted: boolean;
+	unreadCount: number;
+	lastReadSequence: number;
+	updatedAt: string;
 }
 
 export interface EditMessageInput {
