@@ -1342,6 +1342,30 @@ assertThreadsResponse(ownerThreadsAfterRefollow, "GET /v1/threads after follow")
 if (!ownerThreadsAfterRefollow.items.some((item) => item.root.envelopeId === threadRootId)) {
   throw new Error("refollowed thread did not return to the thread inbox");
 }
+const observerThreadRead = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread/read`, {
+  method: "POST",
+  headers: userHeaders
+});
+assertThreadStateResponse(observerThreadRead, "POST /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/read unparticipated");
+if (observerThreadRead.threadState.following !== false) {
+  throw new Error("reading an unparticipated thread should not create an explicit follow");
+}
+const observerThreadsAfterRead = await api("/v1/threads?limit=20", { headers: userHeaders });
+assertThreadsResponse(observerThreadsAfterRead, "GET /v1/threads unparticipated after read");
+if (observerThreadsAfterRead.items.some((item) => item.root.envelopeId === threadRootId)) {
+  throw new Error("unparticipated read-only thread appeared in the thread inbox");
+}
+const observerThreadFollow = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread/subscription`, {
+  method: "PATCH",
+  headers: userHeaders,
+  json: { following: true }
+});
+assertThreadStateResponse(observerThreadFollow, "PATCH /v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/subscription unparticipated follow");
+const observerThreadsAfterFollow = await api("/v1/threads?limit=20", { headers: userHeaders });
+assertThreadsResponse(observerThreadsAfterFollow, "GET /v1/threads unparticipated after follow");
+if (!observerThreadsAfterFollow.items.some((item) => item.root.envelopeId === threadRootId && item.following === true)) {
+  throw new Error("explicitly followed unparticipated thread did not appear in the thread inbox");
+}
 
 const threadMutationRealtimeToken = await api("/v1/realtime/token", {
   method: "POST",
@@ -1530,6 +1554,27 @@ if (
   directThreadOlderPage.thread.replies[0].envelopeId !== directThreadReply.message.envelopeId
 ) {
   throw new Error("thread older-page pagination did not return the previous reply");
+}
+const editedOlderDirectThreadReply = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadReply.message.envelopeId}`, {
+  method: "PATCH",
+  headers: userHeaders,
+  json: {
+    protocolType: "opaque-test",
+    ciphertext: "direct-thread-reply-edited-targeted-refresh",
+    clientEditedAt: new Date().toISOString()
+  }
+});
+assertMessageResponse(editedOlderDirectThreadReply, "PATCH older direct thread reply");
+const directThreadTargetedRefreshSlice = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread?after=${directThreadReply.message.serverSequence - 1}&limit=1`, {
+  headers: ownerHeaders
+});
+assertThreadResponse(directThreadTargetedRefreshSlice, "GET direct thread targeted refresh slice");
+if (
+  directThreadTargetedRefreshSlice.thread.replies.length !== 1 ||
+  directThreadTargetedRefreshSlice.thread.replies[0].envelopeId !== directThreadReply.message.envelopeId ||
+  directThreadTargetedRefreshSlice.thread.replies[0].ciphertext !== "direct-thread-reply-edited-targeted-refresh"
+) {
+  throw new Error("targeted thread refresh slice did not return the mutated older reply");
 }
 const directThreadView = await api(`/v1/rooms/${direct.room.roomId}/messages/${directThreadRoot.message.envelopeId}/thread`, {
   headers: ownerHeaders
