@@ -376,14 +376,15 @@ export async function getRealtimeSessionConfig(
   });
   const providerSessionId = stringPayload(payload, "sessionId", "realtime_session_missing");
   const session = await upsertRealtimeSession(env, auth, participant, providerSessionId);
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(call, config, {
     session: {
       ...publicRealtimeSession(session),
       sessionDescription: payload.sessionDescription ?? null,
     },
-    tracks: await availableRealtimeTracks(env, callId, providerSessionId),
-    availableTracks: await availableRealtimeTracks(env, callId, providerSessionId),
+    tracks: availableTracks,
+    availableTracks,
     message: "Realtime session ready",
   });
 }
@@ -403,9 +404,10 @@ export async function getRealtimeTrackConfig(
 
   const providerSessionId = stringField(body, "sessionId", { max: 160 });
   if (!providerSessionId) {
+    const availableTracks = await availableRealtimeTracks(env, callId);
     return realtimeResponse(call, config, {
-      tracks: await availableRealtimeTracks(env, callId),
-      availableTracks: await availableRealtimeTracks(env, callId),
+      tracks: availableTracks,
+      availableTracks,
       message: "Realtime tracks ready",
     });
   }
@@ -413,10 +415,11 @@ export async function getRealtimeTrackConfig(
   const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
   const requestedTracks = parseRealtimeTracks(body, call);
   if (requestedTracks.length === 0) {
+    const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
     return realtimeResponse(call, config, {
       session: publicRealtimeSession(session),
-      tracks: await availableRealtimeTracks(env, callId, providerSessionId),
-      availableTracks: await availableRealtimeTracks(env, callId, providerSessionId),
+      tracks: availableTracks,
+      availableTracks,
       message: "Realtime tracks ready",
     });
   }
@@ -439,13 +442,14 @@ export async function getRealtimeTrackConfig(
       status: call.status,
     });
   }
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(call, config, {
     session: publicRealtimeSession(session),
     sessionDescription: payload.sessionDescription ?? null,
     requiresImmediateRenegotiation: payload.requiresImmediateRenegotiation === true,
     tracks,
-    availableTracks: await availableRealtimeTracks(env, callId, providerSessionId),
+    availableTracks,
     message: "Realtime tracks ready",
   });
 }
@@ -469,12 +473,13 @@ export async function renegotiateRealtimeSession(
     method: "PUT",
     body: { sessionDescription: parseRequiredSessionDescription(body) },
   });
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(call, config, {
     session: publicRealtimeSession(session),
     sessionDescription: payload.sessionDescription ?? null,
-    tracks: await availableRealtimeTracks(env, callId, providerSessionId),
-    availableTracks: await availableRealtimeTracks(env, callId, providerSessionId),
+    tracks: availableTracks,
+    availableTracks,
     message: "Realtime session renegotiated",
   });
 }
@@ -503,12 +508,13 @@ export async function closeRealtimeTracks(
     },
   });
   await markRealtimeTracksClosed(env, session, tracks);
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(call, config, {
     session: publicRealtimeSession(session),
     sessionDescription: payload.sessionDescription ?? null,
-    tracks: await availableRealtimeTracks(env, callId, providerSessionId),
-    availableTracks: await availableRealtimeTracks(env, callId, providerSessionId),
+    tracks: availableTracks,
+    availableTracks,
     message: "Realtime tracks closed",
   });
 }
