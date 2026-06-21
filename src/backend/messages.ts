@@ -153,6 +153,7 @@ export async function sendMessageEnvelope(
   const attachmentIds = stringArrayField(body, "attachmentIds", {
     maxItems: 20,
   });
+  await assertAttachmentsReferenceable(env, auth, roomId, attachmentIds);
   const forwardSource = options.forwardSource ?? null;
 
   if (threadReply) {
@@ -490,6 +491,7 @@ export async function editMessageEnvelope(
   const attachmentIds = stringArrayField(body, "attachmentIds", {
     maxItems: 20,
   });
+  await assertAttachmentsReferenceable(env, auth, roomId, attachmentIds);
   const editedAt = sqliteTimestamp(Date.now());
 
   await env.CONTROL_DB.batch([
@@ -1245,6 +1247,36 @@ export function markAttachmentsReferencedStatements(
          AND state = 'uploaded'`,
     ).bind(...ids, roomId, auth.account.account_id),
   ];
+}
+
+async function assertAttachmentsReferenceable(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  attachmentIds: string[],
+): Promise<void> {
+  const ids = uniqueStrings(attachmentIds);
+  if (!ids.length) return;
+  const placeholders = ids.map(() => "?").join(", ");
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT COUNT(DISTINCT attachment_id) AS count
+     FROM attachments
+     WHERE attachment_id IN (${placeholders})
+       AND room_id = ?
+       AND uploader_account_id = ?
+       AND state IN ('uploaded', 'referenced')
+       AND original_object_key IS NOT NULL
+       AND original_bytes IS NOT NULL`,
+  )
+    .bind(...ids, roomId, auth.account.account_id)
+    .first<{ count: number }>();
+  if (Number(row?.count ?? 0) !== ids.length) {
+    throw new HttpError(
+      409,
+      "attachment_not_referenceable",
+      "All attachments must be uploaded by the sender before they can be referenced",
+    );
+  }
 }
 
 export async function getMessage(
