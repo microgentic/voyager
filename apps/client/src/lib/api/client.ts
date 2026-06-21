@@ -9,6 +9,9 @@ import type {
 	AuthResult,
 	BootstrapResult,
 	BootstrapStatus,
+	Call,
+	CallRealtimeConfig,
+	CreateCallInput,
 	DeleteMessagesResult,
 	DeliveryReceipt,
 	Device,
@@ -395,6 +398,84 @@ export class VoyagerClient {
 			`/v1/rooms/${encodeURIComponent(roomId)}/ownership-transfers/${encodeURIComponent(transferId)}/accept`
 		);
 		return res.transfer;
+	}
+
+	// --- Calls ---------------------------------------------------------------
+
+	async listRoomCalls(
+		roomId: string,
+		opts: { limit?: number; cursor?: string } = {}
+	): Promise<Paginated<Call>> {
+		const res = await this.request<{ calls: Call[]; nextCursor: string | null }>(
+			'GET',
+			`/v1/rooms/${encodeURIComponent(roomId)}/calls`,
+			{ query: { limit: opts.limit, cursor: opts.cursor } }
+		);
+		return { items: res.calls, nextCursor: res.nextCursor };
+	}
+
+	async createCall(roomId: string, input: CreateCallInput): Promise<Call> {
+		const res = await this.request<{ call: Call }>(
+			'POST',
+			`/v1/rooms/${encodeURIComponent(roomId)}/calls`,
+			{ json: input as unknown as Json }
+		);
+		return res.call;
+	}
+
+	async getCall(callId: string): Promise<Call> {
+		const res = await this.request<{ call: Call }>('GET', `/v1/calls/${encodeURIComponent(callId)}`);
+		return res.call;
+	}
+
+	async joinCall(callId: string): Promise<Call> {
+		const res = await this.request<{ call: Call }>('POST', `/v1/calls/${encodeURIComponent(callId)}/join`);
+		return res.call;
+	}
+
+	async leaveCall(callId: string): Promise<Call> {
+		const res = await this.request<{ call: Call }>('POST', `/v1/calls/${encodeURIComponent(callId)}/leave`);
+		return res.call;
+	}
+
+	async declineCall(callId: string): Promise<Call> {
+		const res = await this.request<{ call: Call }>('POST', `/v1/calls/${encodeURIComponent(callId)}/decline`);
+		return res.call;
+	}
+
+	async muteCall(callId: string): Promise<Call> {
+		const res = await this.request<{ call: Call }>('POST', `/v1/calls/${encodeURIComponent(callId)}/mute`);
+		return res.call;
+	}
+
+	async unmuteCall(callId: string): Promise<Call> {
+		const res = await this.request<{ call: Call }>('POST', `/v1/calls/${encodeURIComponent(callId)}/unmute`);
+		return res.call;
+	}
+
+	async updateCallParticipant(callId: string, input: { muted: boolean }): Promise<Call> {
+		const res = await this.request<{ call: Call }>(
+			'PATCH',
+			`/v1/calls/${encodeURIComponent(callId)}/participants/me`,
+			{ json: input }
+		);
+		return res.call;
+	}
+
+	async getCallRealtimeSessionConfig(callId: string): Promise<CallRealtimeConfig> {
+		const res = await this.request<{ realtime: CallRealtimeConfig }>(
+			'POST',
+			`/v1/calls/${encodeURIComponent(callId)}/realtime/session`
+		);
+		return res.realtime;
+	}
+
+	async getCallRealtimeTrackConfig(callId: string): Promise<CallRealtimeConfig> {
+		const res = await this.request<{ realtime: CallRealtimeConfig }>(
+			'POST',
+			`/v1/calls/${encodeURIComponent(callId)}/realtime/tracks`
+		);
+		return res.realtime;
 	}
 
 	// --- Messages & sync -----------------------------------------------------

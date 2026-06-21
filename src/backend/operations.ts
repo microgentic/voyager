@@ -4,6 +4,7 @@ export * from "./messages";
 export * from "./threads";
 export * from "./sync";
 export * from "./attachments";
+export * from "./calls";
 export * from "./sidebar";
 export * from "./agents";
 export * from "./maintenance";

@@ -2,7 +2,16 @@ import type { AuthContext, Env } from "./types";
 
 export const REALTIME_PROTOCOL = "voyager.realtime.v1";
 
-type RealtimeEventType = "room.message" | "room.sync" | "room.thread";
+type RealtimeEventType =
+  | "room.message"
+  | "room.sync"
+  | "room.thread"
+  | "call.invite"
+  | "call.ringing"
+  | "call.joined"
+  | "call.left"
+  | "call.ended"
+  | "call.updated";
 
 interface RealtimeEvent {
   type: RealtimeEventType;
@@ -14,6 +23,14 @@ interface RealtimeEvent {
   senderDeviceId?: string;
   rootEnvelopeId?: string;
   alsoSentToRoom?: boolean;
+  callId?: string;
+  callType?: "audio" | "video";
+  status?: string;
+  createdByPrincipalId?: string;
+  principalId?: string;
+  deviceId?: string;
+  reason?: string;
+  endedReason?: string;
 }
 
 interface SocketAttachment {
@@ -58,7 +75,15 @@ export async function notifyRoomRealtime(
     serverSequence: event.serverSequence,
     senderDeviceId: event.senderDeviceId,
     rootEnvelopeId: event.rootEnvelopeId,
-    alsoSentToRoom: event.alsoSentToRoom
+    alsoSentToRoom: event.alsoSentToRoom,
+    callId: event.callId,
+    callType: event.callType,
+    status: event.status,
+    createdByPrincipalId: event.createdByPrincipalId,
+    principalId: event.principalId,
+    deviceId: event.deviceId,
+    reason: event.reason,
+    endedReason: event.endedReason
   });
 }
 

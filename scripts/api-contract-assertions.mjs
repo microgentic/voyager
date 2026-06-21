@@ -27,6 +27,17 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/leave", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/ownership-transfers", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/ownership-transfers/{transferId}/accept", stability: "stable/current" },
+  { method: "GET", path: "/v1/rooms/{roomId}/calls", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/rooms/{roomId}/calls", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/calls/{callId}", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/join", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/leave", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/decline", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/mute", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/unmute", stability: "future-sensitive" },
+  { method: "PATCH", path: "/v1/calls/{callId}/participants/me", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/realtime/session", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/realtime/tracks", stability: "future-sensitive" },
   { method: "GET", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
@@ -134,6 +145,29 @@ export function assertSyncResponse(payload, context) {
 
 export function assertRoomResponse(payload, context) {
   assertRoom(success(payload, context).room, `${context}.room`);
+}
+
+export function assertCallResponse(payload, context) {
+  assertCall(success(payload, context).call, `${context}.call`);
+}
+
+export function assertCallsResponse(payload, context) {
+  const value = success(payload, context);
+  array(value.calls, `${context}.calls`).forEach((call, index) => assertCall(call, `${context}.calls[${index}]`));
+  nullableString(value.nextCursor, `${context}.nextCursor`);
+}
+
+export function assertCallRealtimeConfigResponse(payload, context) {
+  const value = success(payload, context);
+  const realtime = object(value.realtime, `${context}.realtime`);
+  literal(realtime.provider, "cloudflare_realtime", `${context}.realtime.provider`);
+  boolean(realtime.configured, `${context}.realtime.configured`);
+  string(realtime.callId, `${context}.realtime.callId`);
+  enumValue(realtime.callType, ["audio", "video"], `${context}.realtime.callType`);
+  enumValue(realtime.status, ["ringing", "active", "ended", "missed", "declined", "failed"], `${context}.realtime.status`);
+  string(realtime.message, `${context}.realtime.message`);
+  if ("session" in realtime && realtime.session !== null) object(realtime.session, `${context}.realtime.session`);
+  if ("tracks" in realtime) array(realtime.tracks, `${context}.realtime.tracks`);
 }
 
 export function assertPaginatedRoomsResponse(payload, context) {
@@ -259,6 +293,22 @@ export function assertRealtimeRoomThreadEvent(payload, context) {
   boolean(value.alsoSentToRoom, `${context}.alsoSentToRoom`);
 }
 
+export function assertRealtimeCallEvent(payload, context, expectedType) {
+  const value = object(payload, context);
+  literal(value.type, expectedType, `${context}.type`);
+  string(value.eventId, `${context}.eventId`);
+  string(value.createdAt, `${context}.createdAt`);
+  string(value.roomId, `${context}.roomId`);
+  string(value.callId, `${context}.callId`);
+  enumValue(value.callType, ["audio", "video"], `${context}.callType`);
+  if ("status" in value) enumValue(value.status, ["ringing", "active", "ended", "missed", "declined", "failed"], `${context}.status`);
+  if ("createdByPrincipalId" in value) string(value.createdByPrincipalId, `${context}.createdByPrincipalId`);
+  if ("principalId" in value) string(value.principalId, `${context}.principalId`);
+  if ("deviceId" in value) string(value.deviceId, `${context}.deviceId`);
+  if ("reason" in value) string(value.reason, `${context}.reason`);
+  if ("endedReason" in value) string(value.endedReason, `${context}.endedReason`);
+}
+
 export function assertRealtimeTokenResponse(payload, context) {
   const value = success(payload, context);
   string(value.realtimeToken, `${context}.realtimeToken`);
@@ -340,6 +390,43 @@ function assertRoom(value, context) {
   number(room.pinnedMessageCount, `${context}.pinnedMessageCount`);
   nullableString(room.latestPinnedMessageId, `${context}.latestPinnedMessageId`);
   array(room.members, `${context}.members`).forEach((member, index) => assertMembership(member, `${context}.members[${index}]`));
+}
+
+function assertCall(value, context) {
+  const call = object(value, context);
+  string(call.callId, `${context}.callId`);
+  string(call.roomId, `${context}.roomId`);
+  enumValue(call.callType, ["audio", "video"], `${context}.callType`);
+  enumValue(call.status, ["ringing", "active", "ended", "missed", "declined", "failed"], `${context}.status`);
+  string(call.createdByAccountId, `${context}.createdByAccountId`);
+  string(call.createdByPrincipalId, `${context}.createdByPrincipalId`);
+  string(call.createdByDeviceId, `${context}.createdByDeviceId`);
+  nullableString(call.startedAt, `${context}.startedAt`);
+  nullableString(call.endedAt, `${context}.endedAt`);
+  nullableString(call.endedReason, `${context}.endedReason`);
+  string(call.createdAt, `${context}.createdAt`);
+  string(call.updatedAt, `${context}.updatedAt`);
+  array(call.participants, `${context}.participants`).forEach((participant, index) =>
+    assertCallParticipant(participant, `${context}.participants[${index}]`)
+  );
+}
+
+function assertCallParticipant(value, context) {
+  const participant = object(value, context);
+  string(participant.callParticipantId, `${context}.callParticipantId`);
+  string(participant.callId, `${context}.callId`);
+  string(participant.accountId, `${context}.accountId`);
+  string(participant.principalId, `${context}.principalId`);
+  enumValue(participant.principalType, ["human", "agent"], `${context}.principalType`);
+  string(participant.displayName, `${context}.displayName`);
+  nullableString(participant.deviceId, `${context}.deviceId`);
+  enumValue(participant.role, ["participant", "moderator"], `${context}.role`);
+  enumValue(participant.status, ["invited", "ringing", "joining", "connected", "left", "declined", "missed", "failed"], `${context}.status`);
+  nullableString(participant.joinedAt, `${context}.joinedAt`);
+  nullableString(participant.leftAt, `${context}.leftAt`);
+  nullableString(participant.mutedAt, `${context}.mutedAt`);
+  string(participant.createdAt, `${context}.createdAt`);
+  string(participant.updatedAt, `${context}.updatedAt`);
 }
 
 function assertMembership(value, context) {

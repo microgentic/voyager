@@ -17,6 +17,10 @@
       {
         "name": "CONVERSATION_COORDINATOR",
         "class_name": "ConversationCoordinator"
+      },
+      {
+        "name": "CALL_COORDINATOR",
+        "class_name": "CallCoordinator"
       }
     ]
   },
@@ -28,6 +32,10 @@
     {
       "tag": "v2-conversation-coordinator",
       "new_sqlite_classes": ["ConversationCoordinator"]
+    },
+    {
+      "tag": "v3-call-coordinator",
+      "new_sqlite_classes": ["CallCoordinator"]
     }
   ],
   "d1_databases": [
