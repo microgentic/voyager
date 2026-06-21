@@ -161,7 +161,10 @@ export async function sendMessageEnvelope(
     )
       .bind(auth.device.device_id, idempotencyKey)
       .first<Record<string, unknown>>();
-    if (existingForIdempotency) {
+    if (
+      existingForIdempotency &&
+      isMatchingThreadReplyDuplicate(existingForIdempotency, roomId, threadReply)
+    ) {
       return duplicateSendMessageResult(
         env,
         auth,
@@ -730,6 +733,17 @@ async function assertThreadRootEligible(
       "Thread root message is not available",
     );
   }
+}
+
+function isMatchingThreadReplyDuplicate(
+  existing: Record<string, unknown>,
+  roomId: string,
+  threadReply: ThreadReply,
+): boolean {
+  return (
+    String(existing.room_id) === roomId &&
+    existing.thread_root_envelope_id === threadReply.rootEnvelopeId
+  );
 }
 
 async function duplicateSendMessageResult(
