@@ -30,6 +30,10 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
   { method: "PATCH", path: "/v1/rooms/{roomId}/messages/{envelopeId}", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/pin", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/rooms/{roomId}/messages/{envelopeId}/pin", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
@@ -291,6 +295,8 @@ function assertRoom(value, context) {
   string(room.createdAt, `${context}.createdAt`);
   string(room.updatedAt, `${context}.updatedAt`);
   nullableString(room.archivedAt, `${context}.archivedAt`);
+  number(room.pinnedMessageCount, `${context}.pinnedMessageCount`);
+  nullableString(room.latestPinnedMessageId, `${context}.latestPinnedMessageId`);
   array(room.members, `${context}.members`).forEach((member, index) => assertMembership(member, `${context}.members[${index}]`));
 }
 
@@ -327,11 +333,29 @@ function assertMessage(value, context) {
   nullableString(message.editedAt, `${context}.editedAt`);
   number(message.editCount, `${context}.editCount`);
   assertReceiptSummary(message.receiptSummary, `${context}.receiptSummary`);
+  assertReactionSummary(message.reactions, `${context}.reactions`);
+  assertMessagePin(message.pin, `${context}.pin`);
   enumValue(
     message.state,
     ["accepted", "available", "partially_acknowledged", "fully_acknowledged", "expired", "purged"],
     `${context}.state`
   );
+}
+
+function assertReactionSummary(value, context) {
+  array(value, context).forEach((reaction, index) => {
+    const item = object(reaction, `${context}[${index}]`);
+    string(item.reaction, `${context}[${index}].reaction`);
+    number(item.count, `${context}[${index}].count`);
+    boolean(item.reactedByMe, `${context}[${index}].reactedByMe`);
+  });
+}
+
+function assertMessagePin(value, context) {
+  const pin = object(value, context);
+  boolean(pin.pinned, `${context}.pinned`);
+  nullableString(pin.pinnedAt, `${context}.pinnedAt`);
+  nullableString(pin.pinnedByPrincipalId, `${context}.pinnedByPrincipalId`);
 }
 
 function assertReceiptSummary(value, context) {

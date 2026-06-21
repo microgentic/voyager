@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { ArrowDown, CheckSquare, Copy, Hand, Info, Pencil, Reply, RotateCcw, Trash2, X } from '@lucide/svelte';
+	import { ArrowDown, CheckSquare, Copy, Hand, Info, Pencil, Pin, PinOff, Reply, RotateCcw, Trash2, X } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, rooms, toasts, type ChatMessage } from '$lib/stores';
 	import MessageBubble from './MessageBubble.svelte';
@@ -20,6 +20,7 @@
 	} = $props();
 
 	const GROUP_GAP_MS = 5 * 60 * 1000;
+	const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 	type Row =
 		| { type: 'divider'; key: string; label: string }
@@ -109,7 +110,7 @@
 
 	function clampMenuPosition(x: number, y: number): { x: number; y: number } {
 		const width = 224;
-		const height = 320;
+		const height = 380;
 		const margin = 10;
 		return {
 			x: Math.max(margin, Math.min(x, window.innerWidth - width - margin)),
@@ -151,6 +152,30 @@
 		closeActionMenu();
 		selectedKeys = [];
 		onEdit?.(message);
+	}
+
+	async function reactTo(message: ChatMessage, reaction: string): Promise<void> {
+		closeActionMenu();
+		try {
+			await messages.toggleReaction(message, reaction);
+		} catch {
+			toasts.error('Could not update reaction.');
+		}
+	}
+
+	async function togglePinned(message: ChatMessage): Promise<void> {
+		closeActionMenu();
+		try {
+			await messages.setPinned(message, !message.pin.pinned);
+			toasts.success(message.pin.pinned ? 'Message unpinned.' : 'Message pinned.');
+		} catch {
+			toasts.error('Could not update pinned message.');
+		}
+	}
+
+	function canPin(message: ChatMessage): boolean {
+		if (!message.envelopeId || message.delivery !== 'sent') return false;
+		return room.type === 'direct' || rooms.canManage(room);
 	}
 
 	function selectAll(): void {
@@ -364,6 +389,21 @@
 			class="fixed z-50 w-56 overflow-hidden rounded-xl border border-border bg-elevated p-1.5 text-sm shadow-pop"
 			style={`left: ${actionMenu.x}px; top: ${actionMenu.y}px;`}
 		>
+			{#if actionMenu.message.envelopeId && actionMenu.message.delivery === 'sent'}
+				<div class="grid grid-cols-6 gap-1 p-1">
+					{#each QUICK_REACTIONS as reaction}
+						<button
+							type="button"
+							class="grid h-8 w-8 place-items-center rounded-lg text-base transition hover:bg-surface-2"
+							aria-label={`React with ${reaction}`}
+							onclick={() => void reactTo(actionMenu!.message, reaction)}
+						>
+							{reaction}
+						</button>
+					{/each}
+				</div>
+				<div class="my-1 h-px bg-border"></div>
+			{/if}
 			<button
 				type="button"
 				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
@@ -380,6 +420,21 @@
 				>
 					<Pencil class="h-4 w-4 opacity-80" />
 					<span>Edit</span>
+				</button>
+			{/if}
+			{#if canPin(actionMenu.message)}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+					onclick={() => void togglePinned(actionMenu!.message)}
+				>
+					{#if actionMenu.message.pin.pinned}
+						<PinOff class="h-4 w-4 opacity-80" />
+						<span>Unpin</span>
+					{:else}
+						<Pin class="h-4 w-4 opacity-80" />
+						<span>Pin</span>
+					{/if}
 				</button>
 			{/if}
 			<button

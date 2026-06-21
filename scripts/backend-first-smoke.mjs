@@ -960,6 +960,63 @@ await expectFailure(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.me
   }
 }, 403);
 
+const reactedDirectMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { reaction: "👍" }
+});
+assertMessageResponse(reactedDirectMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/reactions");
+const userReaction = reactedDirectMessage.message.reactions.find((reaction) => reaction.reaction === "👍");
+if (!userReaction || userReaction.count !== 1 || userReaction.reactedByMe !== true) {
+  throw new Error("reaction summary did not include current user reaction");
+}
+
+const ownerReactionView = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${directMessage.message.serverSequence - 1}&limit=1`, {
+  headers: ownerHeaders
+});
+assertMessagesResponse(ownerReactionView, "GET /v1/rooms/{roomId}/messages reaction owner view");
+const ownerReaction = ownerReactionView.messages[0]?.reactions.find((reaction) => reaction.reaction === "👍");
+if (!ownerReaction || ownerReaction.count !== 1 || ownerReaction.reactedByMe !== false) {
+  throw new Error("reaction summary did not preserve viewer-specific reactedByMe");
+}
+
+const removedReaction = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions/${encodeURIComponent("👍")}`, {
+  method: "DELETE",
+  headers: userHeaders
+});
+assertMessageResponse(removedReaction, "DELETE /v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}");
+if (removedReaction.message.reactions.some((reaction) => reaction.reaction === "👍")) {
+  throw new Error("deleted reaction remained in message summary");
+}
+
+const pinnedDirectMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/pin`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertMessageResponse(pinnedDirectMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/pin");
+if (!pinnedDirectMessage.message.pin.pinned || pinnedDirectMessage.message.pin.pinnedByPrincipalId !== owner.principal.principalId) {
+  throw new Error("pin response did not include active pin summary");
+}
+const pinnedRoom = await api(`/v1/rooms/${direct.room.roomId}`, { headers: ownerHeaders });
+assertRoomResponse(pinnedRoom, "GET /v1/rooms/{roomId} after pin");
+if (pinnedRoom.room.pinnedMessageCount !== 1 || pinnedRoom.room.latestPinnedMessageId !== directMessage.message.envelopeId) {
+  throw new Error("room did not expose pinned message summary after pin");
+}
+
+const unpinnedDirectMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/pin`, {
+  method: "DELETE",
+  headers: userHeaders
+});
+assertMessageResponse(unpinnedDirectMessage, "DELETE /v1/rooms/{roomId}/messages/{envelopeId}/pin");
+if (unpinnedDirectMessage.message.pin.pinned) {
+  throw new Error("unpin response still marked message as pinned");
+}
+const unpinnedRoom = await api(`/v1/rooms/${direct.room.roomId}`, { headers: ownerHeaders });
+assertRoomResponse(unpinnedRoom, "GET /v1/rooms/{roomId} after unpin");
+if (unpinnedRoom.room.pinnedMessageCount !== 0 || unpinnedRoom.room.latestPinnedMessageId !== null) {
+  throw new Error("room did not clear pinned message summary after unpin");
+}
+
 const realtimeEvent = await realtimeWatcher.wait;
 assertRealtimeRoomMessageEvent(realtimeEvent, "GET /v1/realtime room.message");
 if (realtimeEvent.roomId !== direct.room.roomId) {

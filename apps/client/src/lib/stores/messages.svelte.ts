@@ -1,6 +1,13 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api';
-import type { MessageEnvelope, MessageReceiptSummary, MessageState, ProtocolType } from '$lib/api/types';
+import type {
+	MessageEnvelope,
+	MessagePinSummary,
+	MessageReactionSummary,
+	MessageReceiptSummary,
+	MessageState,
+	ProtocolType
+} from '$lib/api/types';
 import { messageCodec, type DecodedMessage, type MessageContent } from '$lib/protocol/codec';
 import { idempotencyKey, localId } from '$lib/utils/id';
 import { parseServerDate } from '$lib/utils/time';
@@ -21,6 +28,8 @@ export interface ChatMessage {
 	editedAt: string | null;
 	editCount: number;
 	receiptSummary: MessageReceiptSummary;
+	reactions: MessageReactionSummary[];
+	pin: MessagePinSummary;
 	state: MessageState | 'local';
 	protocolType: ProtocolType;
 	content: DecodedMessage;
@@ -117,6 +126,8 @@ class MessagesStore {
 			editedAt: env.editedAt ?? null,
 			editCount: env.editCount ?? 0,
 			receiptSummary: env.receiptSummary ?? { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
+			reactions: env.reactions ?? [],
+			pin: env.pin ?? { pinned: false, pinnedAt: null, pinnedByPrincipalId: null },
 			state: env.state,
 			protocolType: env.protocolType,
 			content,
@@ -205,6 +216,8 @@ class MessagesStore {
 			editedAt: null,
 			editCount: 0,
 			receiptSummary: { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
+			reactions: [],
+			pin: { pinned: false, pinnedAt: null, pinnedByPrincipalId: null },
 			protocolType: messageCodec.protocolType,
 			content: {
 				schemaVersion: 1,
@@ -280,6 +293,23 @@ class MessagesStore {
 			this.byRoom = { ...this.byRoom, [message.roomId]: previous };
 			throw error;
 		}
+	}
+
+	async toggleReaction(message: ChatMessage, reaction: string): Promise<void> {
+		if (!message.envelopeId || message.delivery !== 'sent') return;
+		const existing = message.reactions.find((item) => item.reaction === reaction);
+		const envelope = existing?.reactedByMe
+			? await api.removeReaction(message.roomId, message.envelopeId, reaction)
+			: await api.addReaction(message.roomId, message.envelopeId, reaction);
+		await this.ingest([envelope]);
+	}
+
+	async setPinned(message: ChatMessage, pinned: boolean): Promise<void> {
+		if (!message.envelopeId || message.delivery !== 'sent') return;
+		const envelope = pinned
+			? await api.pinMessage(message.roomId, message.envelopeId)
+			: await api.unpinMessage(message.roomId, message.envelopeId);
+		await this.ingest([envelope]);
 	}
 
 	async retry(message: ChatMessage): Promise<void> {

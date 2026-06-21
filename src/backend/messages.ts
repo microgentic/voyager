@@ -7,7 +7,12 @@ import {
   type JsonObject,
   type SendMessageResult,
 } from "./internal-types";
-import { getSendRoomContext, requireRoomMembership } from "./rooms";
+import {
+  getRoom,
+  getSendRoomContext,
+  requireRoomManager,
+  requireRoomMembership,
+} from "./rooms";
 import {
   byteLength,
   durationSince,
@@ -25,19 +30,37 @@ export function messageSelectColumns(alias = "me"): string {
     (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id) AS receipt_total,
     (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id AND drs.status = 'pending') AS receipt_pending,
     (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id AND drs.status IN ('stored', 'read')) AS receipt_delivered,
-    (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id AND drs.status = 'read') AS receipt_read`;
+    (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id AND drs.status = 'read') AS receipt_read,
+    (SELECT COALESCE(json_group_array(json_object(
+       'reaction', reaction,
+       'count', reaction_count,
+       'reactedByMe', reacted_by_me
+     )), '[]')
+     FROM (
+       SELECT
+         mr.reaction AS reaction,
+         COUNT(*) AS reaction_count,
+         MAX(CASE WHEN mr.principal_id = ? THEN 1 ELSE 0 END) AS reacted_by_me
+       FROM message_reactions mr
+       WHERE mr.envelope_id = ${alias}.envelope_id
+       GROUP BY mr.reaction
+       ORDER BY reaction_count DESC, mr.reaction ASC
+     )) AS reaction_summary,
+    (SELECT mp.pinned_at FROM message_pins mp WHERE mp.envelope_id = ${alias}.envelope_id AND mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL ORDER BY mp.pinned_at DESC LIMIT 1) AS pinned_at,
+    (SELECT mp.pinned_by_principal_id FROM message_pins mp WHERE mp.envelope_id = ${alias}.envelope_id AND mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL ORDER BY mp.pinned_at DESC LIMIT 1) AS pinned_by_principal_id`;
 }
 
 export async function getPublicMessage(
   env: Env,
   envelopeId: string,
+  viewerPrincipalId: string,
 ): Promise<JsonObject> {
   const message = await env.CONTROL_DB.prepare(
     `SELECT ${messageSelectColumns("me")}
      FROM message_envelopes me
      WHERE me.envelope_id = ?`,
   )
-    .bind(envelopeId)
+    .bind(viewerPrincipalId, envelopeId)
     .first<Record<string, unknown>>();
   if (!message) {
     throw new HttpError(404, "message_not_found", "Message not found");
@@ -168,7 +191,11 @@ export async function sendMessageEnvelope(
     });
     logSendMessagePerformance(requestId, roomId, existing, metrics);
     return {
-      message: await getPublicMessage(env, String(existing.envelope_id)),
+      message: await getPublicMessage(
+        env,
+        String(existing.envelope_id),
+        auth.principal.principal_id,
+      ),
       metrics,
     };
   }
@@ -188,7 +215,11 @@ export async function sendMessageEnvelope(
   ]);
   const postWriteMs = durationSince(postWriteStartedAt);
 
-  const message = await getPublicMessage(env, envelopeId);
+  const message = await getPublicMessage(
+    env,
+    envelopeId,
+    auth.principal.principal_id,
+  );
   const realtimeStartedAt = performance.now();
   await notifyRoomRealtime(env, roomId, {
     type: "room.message",
@@ -234,7 +265,7 @@ export async function listRoomMessages(
      ORDER BY server_sequence ASC
      LIMIT ?`,
   )
-    .bind(roomId, after, auth.account.account_id, limit)
+    .bind(auth.principal.principal_id, roomId, after, auth.account.account_id, limit)
     .all<Record<string, unknown>>();
   return (result.results ?? []).map(publicMessage);
 }
@@ -364,7 +395,198 @@ export async function editMessageEnvelope(
     senderDeviceId: auth.device.device_id,
   }).catch((error) => console.warn("realtime notification failed", error));
 
-  return getPublicMessage(env, envelopeId);
+  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+}
+
+export async function setMessageReaction(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  envelopeId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  await requireActiveMessageInteraction(env, auth, roomId, envelopeId);
+  const reaction = normalizeReaction(
+    stringField(body, "reaction", { required: true, min: 1, max: 32 })!,
+  );
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `INSERT OR IGNORE INTO message_reactions (
+         reaction_id, envelope_id, room_id, account_id, principal_id, reaction
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      randomId("react"),
+      envelopeId,
+      roomId,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      reaction,
+    ),
+    touchRoomVersionStatement(env, roomId),
+  ]);
+  await notifyMessageSync(env, auth, roomId, envelopeId);
+  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+}
+
+export async function deleteMessageReaction(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  envelopeId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  await requireActiveMessageInteraction(env, auth, roomId, envelopeId);
+  const reaction = normalizeReaction(
+    stringField(body, "reaction", { required: true, min: 1, max: 32 })!,
+  );
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      "DELETE FROM message_reactions WHERE envelope_id = ? AND principal_id = ? AND reaction = ?",
+    ).bind(envelopeId, auth.principal.principal_id, reaction),
+    touchRoomVersionStatement(env, roomId),
+  ]);
+  await notifyMessageSync(env, auth, roomId, envelopeId);
+  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+}
+
+export async function pinMessage(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  envelopeId: string,
+): Promise<JsonObject> {
+  await requirePinPermission(env, auth, roomId);
+  await getActiveMessageInRoom(env, roomId, envelopeId);
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `INSERT INTO message_pins (
+         pin_id, room_id, envelope_id, pinned_by_account_id, pinned_by_principal_id,
+         pinned_by_device_id, pinned_at, unpinned_by_principal_id, unpinned_by_device_id, unpinned_at
+       ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, NULL, NULL)
+       ON CONFLICT(room_id, envelope_id) DO UPDATE SET
+         pinned_by_account_id = excluded.pinned_by_account_id,
+         pinned_by_principal_id = excluded.pinned_by_principal_id,
+         pinned_by_device_id = excluded.pinned_by_device_id,
+         pinned_at = CURRENT_TIMESTAMP,
+         unpinned_by_principal_id = NULL,
+         unpinned_by_device_id = NULL,
+         unpinned_at = NULL`,
+    ).bind(
+      randomId("pin"),
+      roomId,
+      envelopeId,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      auth.device.device_id,
+    ),
+    touchRoomVersionStatement(env, roomId),
+  ]);
+  await notifyMessageSync(env, auth, roomId, envelopeId);
+  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+}
+
+export async function unpinMessage(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  envelopeId: string,
+): Promise<JsonObject> {
+  await requirePinPermission(env, auth, roomId);
+  await getActiveMessageInRoom(env, roomId, envelopeId);
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `UPDATE message_pins
+       SET unpinned_by_principal_id = ?,
+           unpinned_by_device_id = ?,
+           unpinned_at = CURRENT_TIMESTAMP
+       WHERE room_id = ?
+         AND envelope_id = ?
+         AND unpinned_at IS NULL`,
+    ).bind(auth.principal.principal_id, auth.device.device_id, roomId, envelopeId),
+    touchRoomVersionStatement(env, roomId),
+  ]);
+  await notifyMessageSync(env, auth, roomId, envelopeId);
+  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+}
+
+async function requireActiveMessageInteraction(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  envelopeId: string,
+): Promise<Record<string, unknown>> {
+  const context = await getSendRoomContext(env, auth, roomId);
+  if (context.room_status !== "active") {
+    throw new HttpError(409, "room_not_active", "Room is not active");
+  }
+  return getActiveMessageInRoom(env, roomId, envelopeId);
+}
+
+async function getActiveMessageInRoom(
+  env: Env,
+  roomId: string,
+  envelopeId: string,
+): Promise<Record<string, unknown>> {
+  const message = await env.CONTROL_DB.prepare(
+    `SELECT *
+     FROM message_envelopes
+     WHERE envelope_id = ?
+       AND room_id = ?
+       AND state NOT IN ('expired', 'purged')
+       AND expires_at > CURRENT_TIMESTAMP`,
+  )
+    .bind(envelopeId, roomId)
+    .first<Record<string, unknown>>();
+  if (!message) {
+    throw new HttpError(404, "message_not_found", "Message not found");
+  }
+  return message;
+}
+
+async function requirePinPermission(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+): Promise<void> {
+  const context = await getSendRoomContext(env, auth, roomId);
+  if (context.room_status !== "active") {
+    throw new HttpError(409, "room_not_active", "Room is not active");
+  }
+  const room = await getRoom(env, roomId);
+  if (room.type === "direct") return;
+  await requireRoomManager(env, auth, roomId);
+}
+
+function normalizeReaction(reaction: string): string {
+  if (/[\u0000-\u001f\u007f]/u.test(reaction)) {
+    throw new HttpError(400, "invalid_reaction", "Reaction is invalid");
+  }
+  return reaction;
+}
+
+function touchRoomVersionStatement(
+  env: Env,
+  roomId: string,
+): D1PreparedStatement {
+  return env.CONTROL_DB.prepare(
+    "UPDATE rooms SET version = version + 1 WHERE room_id = ?",
+  ).bind(roomId);
+}
+
+async function notifyMessageSync(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  envelopeId: string,
+): Promise<void> {
+  const message = await getMessage(env, envelopeId);
+  if (!message) return;
+  await notifyRoomRealtime(env, roomId, {
+    type: "room.sync",
+    envelopeId,
+    serverSequence: Number(message.server_sequence),
+    senderDeviceId: auth.device.device_id,
+  }).catch((error) => console.warn("realtime notification failed", error));
 }
 
 export async function deleteMessagesForMe(

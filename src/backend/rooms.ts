@@ -25,6 +25,12 @@ import {
   publicRoomInvitation,
 } from "./serializers";
 
+export function roomSelectColumns(alias = "r"): string {
+  return `${alias}.*,
+    (SELECT COUNT(*) FROM message_pins mp WHERE mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL) AS pinned_message_count,
+    (SELECT mp.envelope_id FROM message_pins mp WHERE mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL ORDER BY mp.pinned_at DESC LIMIT 1) AS latest_pinned_message_id`;
+}
+
 export async function listRooms(
   env: Env,
   auth: AuthContext,
@@ -32,7 +38,7 @@ export async function listRooms(
 ): Promise<JsonObject> {
   const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
   const result = await env.CONTROL_DB.prepare(
-    `SELECT r.*
+    `SELECT ${roomSelectColumns("r")}
      FROM rooms r
      JOIN room_memberships rm ON rm.room_id = r.room_id
      WHERE rm.principal_id = ? AND rm.status = 'active' AND r.status != 'deleted'
@@ -686,7 +692,7 @@ export async function getActivePrincipals(
 
 export async function getRoom(env: Env, roomId: string): Promise<RoomRow> {
   const room = await env.CONTROL_DB.prepare(
-    "SELECT * FROM rooms WHERE room_id = ?",
+    `SELECT ${roomSelectColumns("r")} FROM rooms r WHERE r.room_id = ?`,
   )
     .bind(roomId)
     .first<RoomRow>();
