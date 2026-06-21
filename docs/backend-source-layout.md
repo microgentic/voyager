@@ -22,10 +22,30 @@ clearer home than the former single large `src/backend.ts` file.
 - `src/backend/internal-types.ts` contains backend-private constants and row,
   response, metric, pagination, and coordinator payload types shared by the
   backend modules.
-- `src/backend/operations.ts` contains the current backend domain operations:
-  principals, key packages, rooms, room invitations, messages, attachments,
-  sidebar collections, agent requests, admin room/maintenance reads, serializers,
-  and local helper utilities.
+- `src/backend/operations.ts` is a compatibility barrel that re-exports the
+  domain operation modules for route and coordinator imports.
+- `src/backend/identity.ts` contains principal, device-key-package, and
+  identity-adjacent read/write operations.
+- `src/backend/rooms.ts` contains room CRUD, room authorization helpers,
+  membership, human room invitations, ownership transfers, room quota checks,
+  and room member serialization helpers.
+- `src/backend/messages.ts` contains message send/list/acknowledgement,
+  delivery receipt, message idempotency, attachment-reference, and message
+  realtime hint operations.
+- `src/backend/sync.ts` contains account sync, startup bootstrap, and pending
+  message reads.
+- `src/backend/attachments.ts` contains R2-backed opaque attachment allocation,
+  upload, completion, download, deletion, and attachment ownership helpers.
+- `src/backend/sidebar.ts` contains sidebar collection and collection-item
+  operations.
+- `src/backend/agents.ts` contains agent request review and agent principal
+  creation operations.
+- `src/backend/maintenance.ts` contains admin room listing, maintenance run
+  history, and cleanup execution.
+- `src/backend/serializers.ts` contains public API response serializers shared
+  across domain modules.
+- `src/backend/utils.ts` contains validation, pagination, timing, counted-write,
+  JSON, timestamp, and string helper utilities.
 
 ## Refactor Rules
 
@@ -36,9 +56,10 @@ clearer home than the former single large `src/backend.ts` file.
   behavior should live outside the route handler.
 - `conversation-coordinator.ts` should remain the only module that knows the
   internal Conversation DO request format.
-- `operations.ts` is intentionally a transitional domain module. Split it
-  further by cohesive product area only when a feature PR naturally touches that
-  area, for example `rooms`, `messages`, `attachments`, or `sidebar`.
+- Add new backend behavior to the smallest matching domain module. If no
+  matching module exists, create one around a product concept rather than around
+  a single helper function.
+- Keep `operations.ts` as a barrel only. Do not add implementation logic there.
 - Avoid tiny one-function files. Prefer modules that group behavior a future
   reviewer would naturally read together.
 

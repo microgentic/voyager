@@ -19,7 +19,7 @@ The active backend does not try to decrypt user content. Messages are stored as 
 
 The backend is designed to let development proceed without app stores, push providers, paid services, live agent runtimes, billing systems, custom domains, or signing infrastructure. That means clients can be developed against HTTP contracts, curl, and smoke scripts first. Realtime, push, mobile packaging, and production assurance work can be layered in later without replacing the core account, room, message, attachment, and admin models.
 
-Source organization is documented in `docs/backend-source-layout.md`. The active backend route handler and Conversation Durable Object are now exported through a small `src/backend.ts` barrel, with route orchestration, Conversation DO coordination, backend-private types, and current domain operations separated under `src/backend/`.
+Source organization is documented in `docs/backend-source-layout.md`. The active backend route handler and Conversation Durable Object are now exported through a small `src/backend.ts` barrel, with route orchestration, Conversation DO coordination, backend-private types, serializers, shared utilities, and domain operations separated under `src/backend/`.
 
 ## 2. Current Backend Capability
 
