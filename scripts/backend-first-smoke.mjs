@@ -722,6 +722,41 @@ if (declinedInvitation.invitation.status !== "declined") {
   throw new Error("declined room invitation did not return declined status");
 }
 
+const groupPinPermissionMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `group-pin-permission-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "encrypted-group-pin-permission-smoke-payload"
+  }
+});
+assertMessageResponse(groupPinPermissionMessage, "POST /v1/rooms/{roomId}/messages group pin permission");
+await expectFailure(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "POST",
+  headers: inviteeHeaders
+}, 403);
+const groupPinnedMessage = await api(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertMessageResponse(groupPinnedMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/pin group owner");
+if (!groupPinnedMessage.message.pin.pinned) {
+  throw new Error("group owner pin did not return active pin summary");
+}
+await expectFailure(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "DELETE",
+  headers: inviteeHeaders
+}, 403);
+const groupUnpinnedMessage = await api(`/v1/rooms/${group.room.roomId}/messages/${groupPinPermissionMessage.message.envelopeId}/pin`, {
+  method: "DELETE",
+  headers: ownerHeaders
+});
+assertMessageResponse(groupUnpinnedMessage, "DELETE /v1/rooms/{roomId}/messages/{envelopeId}/pin group owner");
+if (groupUnpinnedMessage.message.pin.pinned) {
+  throw new Error("group owner unpin response still marked message as pinned");
+}
+
 const promotedMember = await api(`/v1/rooms/${group.room.roomId}/members/${accepted.principal.principalId}/role`, {
   method: "PATCH",
   headers: ownerHeaders,
@@ -971,21 +1006,35 @@ if (!userReaction || userReaction.count !== 1 || userReaction.reactedByMe !== tr
   throw new Error("reaction summary did not include current user reaction");
 }
 
+const replacedReactionMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { reaction: "❤️" }
+});
+assertMessageResponse(replacedReactionMessage, "POST /v1/rooms/{roomId}/messages/{envelopeId}/reactions replacement");
+if (replacedReactionMessage.message.reactions.some((reaction) => reaction.reaction === "👍")) {
+  throw new Error("reaction replacement kept the previous reaction active");
+}
+const replacementReaction = replacedReactionMessage.message.reactions.find((reaction) => reaction.reaction === "❤️");
+if (!replacementReaction || replacementReaction.count !== 1 || replacementReaction.reactedByMe !== true) {
+  throw new Error("reaction replacement did not expose the new active reaction");
+}
+
 const ownerReactionView = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${directMessage.message.serverSequence - 1}&limit=1`, {
   headers: ownerHeaders
 });
 assertMessagesResponse(ownerReactionView, "GET /v1/rooms/{roomId}/messages reaction owner view");
-const ownerReaction = ownerReactionView.messages[0]?.reactions.find((reaction) => reaction.reaction === "👍");
+const ownerReaction = ownerReactionView.messages[0]?.reactions.find((reaction) => reaction.reaction === "❤️");
 if (!ownerReaction || ownerReaction.count !== 1 || ownerReaction.reactedByMe !== false) {
   throw new Error("reaction summary did not preserve viewer-specific reactedByMe");
 }
 
-const removedReaction = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions/${encodeURIComponent("👍")}`, {
+const removedReaction = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/reactions/${encodeURIComponent("❤️")}`, {
   method: "DELETE",
   headers: userHeaders
 });
 assertMessageResponse(removedReaction, "DELETE /v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}");
-if (removedReaction.message.reactions.some((reaction) => reaction.reaction === "👍")) {
+if (removedReaction.message.reactions.some((reaction) => reaction.reaction === "❤️")) {
   throw new Error("deleted reaction remained in message summary");
 }
 

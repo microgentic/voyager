@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS message_reactions (
   principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE CASCADE,
   reaction TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(envelope_id, principal_id, reaction)
+  UNIQUE(envelope_id, principal_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_reactions_envelope

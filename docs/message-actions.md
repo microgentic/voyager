@@ -47,7 +47,8 @@ message-send, realtime, or sync source-of-truth model.
   - room realtime sends a sync hint so other clients refresh the edited
     envelope.
 - Reactions are backend-backed message metadata:
-  - each principal can add one row per reaction value per message;
+  - each principal has one active reaction per message;
+  - posting a different reaction replaces the principal's previous reaction;
   - reaction summaries are returned on message envelopes;
   - `reactedByMe` is viewer-specific, while `count` is room-wide;
   - reaction changes emit a room sync hint for the affected envelope.
@@ -96,7 +97,8 @@ row replacement.
 }
 ```
 
-The add route is idempotent for the current principal. Removing a reaction uses
+The add route is idempotent for the current principal and replaces that
+principal's previous reaction on the same message. Removing a reaction uses
 `DELETE /v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}` and only
 removes the current principal's row.
 

@@ -411,9 +411,14 @@ export async function setMessageReaction(
   );
   await env.CONTROL_DB.batch([
     env.CONTROL_DB.prepare(
-      `INSERT OR IGNORE INTO message_reactions (
+      `INSERT INTO message_reactions (
          reaction_id, envelope_id, room_id, account_id, principal_id, reaction
-       ) VALUES (?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(envelope_id, principal_id) DO UPDATE SET
+         room_id = excluded.room_id,
+         account_id = excluded.account_id,
+         reaction = excluded.reaction,
+         created_at = CURRENT_TIMESTAMP`,
     ).bind(
       randomId("react"),
       envelopeId,
