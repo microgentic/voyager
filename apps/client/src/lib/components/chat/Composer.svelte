@@ -1,15 +1,28 @@
 <script lang="ts">
-	import { Paperclip, SendHorizontal, X, Sparkles, Archive, Ban } from '@lucide/svelte';
+	import { tick } from 'svelte';
+	import { Paperclip, SendHorizontal, X, Sparkles, Archive, Ban, CornerUpLeft, Pencil } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import type { AttachmentRef } from '$lib/protocol/codec';
 	import { api, isApiError } from '$lib/api';
-	import { messages, rooms, sync, ui, toasts } from '$lib/stores';
+	import { messages, rooms, sync, ui, toasts, type ChatMessage } from '$lib/stores';
 	import Textarea from '$lib/components/ui/Textarea.svelte';
 	import { cn } from '$lib/utils/cn';
 	import { formatBytes } from '$lib/utils/format';
 	import { localId } from '$lib/utils/id';
 
-	let { room }: { room: Room } = $props();
+	let {
+		room,
+		replyTo = null,
+		editingMessage = null,
+		onCancelContext,
+		onSent
+	}: {
+		room: Room;
+		replyTo?: ChatMessage | null;
+		editingMessage?: ChatMessage | null;
+		onCancelContext?: () => void;
+		onSent?: () => void;
+	} = $props();
 
 	interface Pending {
 		id: string;
@@ -26,12 +39,19 @@
 	let pending = $state<Pending[]>([]);
 	let textareaEl = $state<HTMLTextAreaElement>();
 	let fileInput = $state<HTMLInputElement>();
+	let hydratedEditKey = '';
 
 	const membership = $derived(rooms.myMembership(room));
 	const blocked = $derived(!membership || membership.status !== 'active');
 	const archived = $derived(room.status !== 'active');
 	const uploading = $derived(pending.some((p) => p.status === 'uploading'));
-	const ready = $derived(text.trim().length > 0 || pending.some((p) => p.status === 'ready'));
+	const editing = $derived(Boolean(editingMessage));
+	const activeContext = $derived(editingMessage ?? replyTo);
+	const ready = $derived(text.trim().length > 0 || (!editing && pending.some((p) => p.status === 'ready')));
+	const contextTitle = $derived(
+		editingMessage ? 'Edit message' : replyTo ? `Reply to ${replyTo.mine ? 'yourself' : (room.members.find((m) => m.principalId === replyTo.senderPrincipalId)?.displayName ?? 'message')}` : ''
+	);
+	const contextBody = $derived(activeContext?.content.undecodable ? 'Message can’t be displayed' : (activeContext?.content.body ?? '').trim());
 
 	async function addFiles(files: FileList | null) {
 		if (!files) return;
@@ -77,15 +97,26 @@
 		text = '';
 		pending = [];
 		try {
-			await messages.sendText(room.roomId, {
-				contentType: markdown ? 'text/markdown' : 'text/plain',
-				body,
-				attachments
-			});
+			if (editingMessage) {
+				await messages.editText(editingMessage, {
+					contentType: markdown ? 'text/markdown' : 'text/plain',
+					body,
+					replyToMessageId: editingMessage.content.replyToMessageId,
+					attachments: editingMessage.content.attachments
+				});
+			} else {
+				await messages.sendText(room.roomId, {
+					contentType: markdown ? 'text/markdown' : 'text/plain',
+					body,
+					replyToMessageId: replyTo?.envelopeId ?? null,
+					attachments
+				});
+			}
+			onSent?.();
 			sync.pokeNow();
 		} catch {
 			// The optimistic bubble is now marked failed (with retry) by the store.
-			toasts.error('Message failed to send. Tap the message to retry.');
+			toasts.error(editingMessage ? 'Message edit failed.' : 'Message failed to send. Tap the message to retry.');
 		} finally {
 			sending = false;
 			textareaEl?.focus();
@@ -103,6 +134,20 @@
 			void send();
 		}
 	}
+
+	$effect(() => {
+		const key = editingMessage?.key ?? '';
+		if (key === hydratedEditKey) return;
+		hydratedEditKey = key;
+		if (!editingMessage) return;
+		text = editingMessage.content.body;
+		markdown = editingMessage.content.contentType === 'text/markdown';
+		pending = [];
+		void tick().then(() => {
+			textareaEl?.focus();
+			notifyComposerFocus();
+		});
+	});
 </script>
 
 {#if blocked}
@@ -115,6 +160,29 @@
 	</div>
 {:else}
 	<div class="shrink-0 border-t border-border bg-surface pb-[calc(var(--sab)+0.5rem)] pl-[calc(var(--sal)+0.5rem)] pr-[calc(var(--sar)+1.5rem)] pt-2 sm:px-3">
+		{#if activeContext}
+			<div class="mb-2 flex min-w-0 items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm">
+				<div class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary-soft text-primary">
+					{#if editingMessage}<Pencil class="h-4 w-4" />{:else}<CornerUpLeft class="h-4 w-4" />{/if}
+				</div>
+				<div class="min-w-0 flex-1">
+					<div class="font-semibold text-foreground">{contextTitle}</div>
+					<div class="truncate text-xs text-muted">{contextBody || 'Attachment message'}</div>
+				</div>
+				<button
+					type="button"
+					class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-surface-3 hover:text-foreground"
+					aria-label="Cancel message context"
+					onclick={() => {
+						text = '';
+						onCancelContext?.();
+					}}
+				>
+					<X class="h-4 w-4" />
+				</button>
+			</div>
+		{/if}
+
 		{#if pending.length > 0}
 			<div class="mb-2 flex flex-wrap gap-2 px-1">
 				{#each pending as item (item.id)}
@@ -147,6 +215,7 @@
 			/>
 			<button
 				onclick={() => fileInput?.click()}
+				disabled={editing}
 				class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground sm:h-10 sm:w-10"
 				aria-label="Attach files"
 			>

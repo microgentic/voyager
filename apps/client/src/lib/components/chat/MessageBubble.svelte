@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock } from '@lucide/svelte';
+	import { Check, CheckCheck, Clock, CircleAlert, Bot, Lock, CornerUpLeft } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
 	import { messages, type ChatMessage } from '$lib/stores';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
@@ -36,6 +36,12 @@
 	const senderName = $derived(sender?.displayName ?? 'Unknown');
 	const showName = $derived(isGroup && !mine && isFirstOfGroup);
 	const showAvatar = $derived(!mine && isLastOfGroup);
+	const replyMessage = $derived(messages.findByEnvelopeId(room.roomId, message.content.replyToMessageId));
+	const replySender = $derived(
+		replyMessage ? room.members.find((m) => m.principalId === replyMessage.senderPrincipalId) : undefined
+	);
+	const replyAuthor = $derived(replyMessage?.mine ? 'You' : (replySender?.displayName ?? 'Message'));
+	const replyText = $derived(replyMessage?.content.undecodable ? 'Message can’t be displayed' : (replyMessage?.content.body.trim() ?? 'Original message'));
 
 	const hasBody = $derived(message.content.body.trim().length > 0);
 	const html = $derived(
@@ -46,6 +52,7 @@
 				: renderPlainText(message.content.body)
 	);
 	const time = $derived(formatClock(message.serverReceivedAt ?? message.clientCreatedAt));
+	const receiptStatus = $derived(message.receiptSummary.status);
 
 	let longPressTimer: number | undefined;
 	let pointerStart: { x: number; y: number } | null = null;
@@ -152,6 +159,21 @@
 				</div>
 			{/if}
 
+			{#if message.content.replyToMessageId}
+				<div
+					class={cn(
+						'mb-1.5 flex max-w-full gap-2 rounded-xl px-2.5 py-2 text-xs',
+						mine ? 'bg-white/10 text-white/85' : 'bg-surface/70 text-muted'
+					)}
+				>
+					<CornerUpLeft class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+					<div class="min-w-0">
+						<div class={cn('truncate font-semibold', mine ? 'text-white' : 'text-foreground')}>{replyAuthor}</div>
+						<div class="truncate">{replyText}</div>
+					</div>
+				</div>
+			{/if}
+
 			{#if message.content.undecodable}
 				<p class="flex items-center gap-1.5 italic opacity-80">
 					<Lock class="h-4 w-4" /> Message can’t be displayed
@@ -175,6 +197,9 @@
 					mine ? 'text-white/70' : 'text-faint'
 				)}
 			>
+				{#if message.editCount > 0}
+					<span>edited</span>
+				{/if}
 				<span>{time}</span>
 				{#if mine}
 					{#if message.delivery === 'sending'}
@@ -187,8 +212,10 @@
 						>
 							<CircleAlert class="h-3.5 w-3.5" />
 						</button>
-					{:else if message.state === 'fully_acknowledged'}
-						<CheckCheck class="h-4 w-4" />
+					{:else if receiptStatus === 'read'}
+						<CheckCheck class="h-4 w-4 text-white" />
+					{:else if receiptStatus === 'delivered'}
+						<CheckCheck class="h-4 w-4 text-white/75" />
 					{:else}
 						<Check class="h-4 w-4" />
 					{/if}

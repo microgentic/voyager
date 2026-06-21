@@ -17,6 +17,7 @@ import {
   createRoomInvitation,
   declineRoomInvitation,
   durationSince,
+  editMessageEnvelope,
   leaveRoom,
   proposeOwnershipTransfer,
   removeRoomMember,
@@ -219,6 +220,7 @@ export function parseConversationMutationRequest(
     operation,
     requestId,
     body: optionalObject(body, "body"),
+    envelopeId: stringField(body, "envelopeId", { max: 80 }),
     principalId: stringField(body, "principalId", { max: 80 }),
     roomInvitationId: stringField(body, "roomInvitationId", { max: 80 }),
     transferId: stringField(body, "transferId", { max: 80 }),
@@ -236,7 +238,7 @@ export function requiredMutationBody(
 
 export function requiredMutationField(
   payload: ConversationMutationRequest,
-  key: "principalId" | "roomInvitationId" | "transferId",
+  key: "envelopeId" | "principalId" | "roomInvitationId" | "transferId",
 ): string {
   const value = payload[key];
   if (!value) {
@@ -273,6 +275,14 @@ export async function runConversationMutation(
       );
     case "room.archive":
       return archiveRoom(env, payload.auth, payload.roomId);
+    case "message.edit":
+      return editMessageEnvelope(
+        env,
+        payload.auth,
+        payload.roomId,
+        requiredMutationField(payload, "envelopeId"),
+        requiredMutationBody(payload),
+      );
     case "room.member.add":
       await requireActiveRoom(env, payload.roomId);
       return addRoomMember(

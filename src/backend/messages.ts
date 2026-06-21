@@ -20,6 +20,31 @@ import {
 } from "./utils";
 import { publicMessage } from "./serializers";
 
+export function messageSelectColumns(alias = "me"): string {
+  return `${alias}.*,
+    (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id) AS receipt_total,
+    (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id AND drs.status = 'pending') AS receipt_pending,
+    (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id AND drs.status IN ('stored', 'read')) AS receipt_delivered,
+    (SELECT COUNT(*) FROM delivery_receipts drs WHERE drs.envelope_id = ${alias}.envelope_id AND drs.status = 'read') AS receipt_read`;
+}
+
+export async function getPublicMessage(
+  env: Env,
+  envelopeId: string,
+): Promise<JsonObject> {
+  const message = await env.CONTROL_DB.prepare(
+    `SELECT ${messageSelectColumns("me")}
+     FROM message_envelopes me
+     WHERE me.envelope_id = ?`,
+  )
+    .bind(envelopeId)
+    .first<Record<string, unknown>>();
+  if (!message) {
+    throw new HttpError(404, "message_not_found", "Message not found");
+  }
+  return publicMessage(message);
+}
+
 export async function sendMessageEnvelope(
   env: Env,
   auth: AuthContext,
@@ -142,7 +167,10 @@ export async function sendMessageEnvelope(
       realtimeMs,
     });
     logSendMessagePerformance(requestId, roomId, existing, metrics);
-    return { message: publicMessage(existing), metrics };
+    return {
+      message: await getPublicMessage(env, String(existing.envelope_id)),
+      metrics,
+    };
   }
 
   const postWriteStartedAt = performance.now();
@@ -160,7 +188,7 @@ export async function sendMessageEnvelope(
   ]);
   const postWriteMs = durationSince(postWriteStartedAt);
 
-  const message = publicMessage(inserted);
+  const message = await getPublicMessage(env, envelopeId);
   const realtimeStartedAt = performance.now();
   await notifyRoomRealtime(env, roomId, {
     type: "room.message",
@@ -191,7 +219,7 @@ export async function listRoomMessages(
   const after = numberParam(url, "after", 0, Number.MAX_SAFE_INTEGER, 0);
   const limit = numberParam(url, "limit", 1, 200, 50);
   const result = await env.CONTROL_DB.prepare(
-    `SELECT me.*
+    `SELECT ${messageSelectColumns("me")}
      FROM message_envelopes me
      WHERE me.room_id = ?
        AND me.server_sequence > ?
@@ -209,6 +237,134 @@ export async function listRoomMessages(
     .bind(roomId, after, auth.account.account_id, limit)
     .all<Record<string, unknown>>();
   return (result.results ?? []).map(publicMessage);
+}
+
+export async function editMessageEnvelope(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  envelopeId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const context = await getSendRoomContext(env, auth, roomId);
+  if (context.room_status !== "active") {
+    throw new HttpError(409, "room_not_active", "Room is not active");
+  }
+
+  const current = await getMessage(env, envelopeId);
+  if (
+    !current ||
+    current.room_id !== roomId ||
+    current.state === "purged" ||
+    current.state === "expired"
+  ) {
+    throw new HttpError(404, "message_not_found", "Message not found");
+  }
+  if (current.sender_principal_id !== auth.principal.principal_id) {
+    throw new HttpError(
+      403,
+      "message_author_required",
+      "Only the sender can edit this message",
+    );
+  }
+
+  const ciphertext = stringField(body, "ciphertext", {
+    required: true,
+    min: 1,
+    max: MAX_MESSAGE_BYTES,
+  })!;
+  const ciphertextBytes = byteLength(ciphertext);
+  if (ciphertextBytes > MAX_MESSAGE_BYTES) {
+    throw new HttpError(
+      413,
+      "message_too_large",
+      "Encrypted envelope is too large",
+    );
+  }
+  const protocolType = stringField(body, "protocolType", {
+    required: true,
+    max: 60,
+  })!;
+  if (
+    ![
+      "opaque-test",
+      "mls_application",
+      "mls_commit",
+      "mls_proposal",
+      "mls_welcome",
+    ].includes(protocolType)
+  ) {
+    throw new HttpError(
+      400,
+      "invalid_protocol_type",
+      "Protocol type is not allowed",
+    );
+  }
+  const clientEditedAt =
+    stringField(body, "clientEditedAt", { max: 80 }) ?? null;
+  const attachmentIds = stringArrayField(body, "attachmentIds", {
+    maxItems: 20,
+  });
+  const editedAt = sqliteTimestamp(Date.now());
+
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
+      `INSERT INTO message_edits (
+         edit_id, envelope_id, room_id, editor_account_id, editor_principal_id,
+         editor_device_id, previous_protocol_type, previous_ciphertext,
+         previous_ciphertext_bytes, new_protocol_type, new_ciphertext,
+         new_ciphertext_bytes, client_edited_at, edited_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      randomId("medit"),
+      envelopeId,
+      roomId,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      auth.device.device_id,
+      current.protocol_type,
+      current.ciphertext,
+      current.ciphertext_bytes,
+      protocolType,
+      ciphertext,
+      ciphertextBytes,
+      clientEditedAt,
+      editedAt,
+    ),
+    env.CONTROL_DB.prepare(
+      `UPDATE message_envelopes
+       SET protocol_type = ?,
+           ciphertext = ?,
+           ciphertext_bytes = ?,
+           edited_at = ?,
+           edit_count = edit_count + 1
+       WHERE envelope_id = ?
+         AND room_id = ?
+         AND sender_principal_id = ?
+         AND state NOT IN ('expired', 'purged')`,
+    ).bind(
+      protocolType,
+      ciphertext,
+      ciphertextBytes,
+      editedAt,
+      envelopeId,
+      roomId,
+      auth.principal.principal_id,
+    ),
+    ...markAttachmentsReferencedStatements(env, auth, roomId, attachmentIds),
+    env.CONTROL_DB.prepare(
+      "UPDATE rooms SET version = version + 1, updated_at = CURRENT_TIMESTAMP WHERE room_id = ?",
+    ).bind(roomId),
+  ]);
+
+  await notifyRoomRealtime(env, roomId, {
+    type: "room.sync",
+    envelopeId,
+    serverSequence: Number(current.server_sequence),
+    senderDeviceId: auth.device.device_id,
+  }).catch((error) => console.warn("realtime notification failed", error));
+
+  return getPublicMessage(env, envelopeId);
 }
 
 export async function deleteMessagesForMe(
@@ -336,6 +492,12 @@ export async function acknowledgeMessage(
     )
     .run();
   await updateMessageReceiptState(env, envelopeId);
+  await notifyRoomRealtime(env, roomId, {
+    type: "room.sync",
+    envelopeId,
+    serverSequence: Number(message.server_sequence),
+    senderDeviceId: auth.device.device_id,
+  }).catch((error) => console.warn("realtime notification failed", error));
   return getReceipt(env, envelopeId, auth.device.device_id);
 }
 

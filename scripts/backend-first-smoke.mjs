@@ -927,6 +927,38 @@ assertServerTiming(
 );
 const directMessage = directMessageResult.payload;
 assertMessageResponse(directMessage, "POST /v1/rooms/{roomId}/messages");
+if (directMessage.message.receiptSummary.status !== "sent" || directMessage.message.receiptSummary.pending < 1) {
+  throw new Error("new direct message did not expose sent/pending receipt summary");
+}
+
+const editedDirectMessage = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: {
+    protocolType: "opaque-test",
+    ciphertext: "encrypted-direct-smoke-payload-edited",
+    clientEditedAt: new Date().toISOString()
+  }
+});
+assertMessageResponse(editedDirectMessage, "PATCH /v1/rooms/{roomId}/messages/{envelopeId}");
+if (editedDirectMessage.message.envelopeId !== directMessage.message.envelopeId) {
+  throw new Error("edited message returned a different envelope id");
+}
+if (editedDirectMessage.message.ciphertext !== "encrypted-direct-smoke-payload-edited") {
+  throw new Error("edited message did not return updated ciphertext");
+}
+if (!editedDirectMessage.message.editedAt || editedDirectMessage.message.editCount !== 1) {
+  throw new Error("edited message did not include edit metadata");
+}
+
+await expectFailure(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}`, {
+  method: "PATCH",
+  headers: userHeaders,
+  json: {
+    protocolType: "opaque-test",
+    ciphertext: "forbidden-edit-smoke-payload"
+  }
+}, 403);
 
 const realtimeEvent = await realtimeWatcher.wait;
 assertRealtimeRoomMessageEvent(realtimeEvent, "GET /v1/realtime room.message");
@@ -1060,8 +1092,15 @@ const senderHistory = await api(`/v1/rooms/${direct.room.roomId}/messages?after=
   headers: ownerHeaders
 });
 assertMessagesResponse(senderHistory, "GET /v1/rooms/{roomId}/messages sender after delete-for-me");
-if (!senderHistory.messages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
+const senderVisibleMessage = senderHistory.messages.find((message) => message.envelopeId === directMessage.message.envelopeId);
+if (!senderVisibleMessage) {
   throw new Error("delete-for-me hid the message from another account");
+}
+if (senderVisibleMessage.receiptSummary.status !== "delivered") {
+  throw new Error(`delete-for-me did not clear pending receipt state: ${senderVisibleMessage.receiptSummary.status}`);
+}
+if (senderVisibleMessage.ciphertext !== "encrypted-direct-smoke-payload-edited" || senderVisibleMessage.editCount !== 1) {
+  throw new Error("edited message was not recovered through room history");
 }
 
 const hiddenSync = await api("/v1/sync", { headers: userHeaders });
@@ -1082,8 +1121,17 @@ if (hiddenBootstrapResult.payload.bootstrap.pendingMessages.some((message) => me
 await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/ack`, {
   method: "POST",
   headers: userHeaders,
-  json: { status: "stored" }
+  json: { status: "read" }
 });
+
+const senderReadHistory = await api(`/v1/rooms/${direct.room.roomId}/messages?after=${directMessage.message.serverSequence - 1}`, {
+  headers: ownerHeaders
+});
+assertMessagesResponse(senderReadHistory, "GET /v1/rooms/{roomId}/messages sender after read");
+const readMessage = senderReadHistory.messages.find((message) => message.envelopeId === directMessage.message.envelopeId);
+if (!readMessage || readMessage.receiptSummary.status !== "read") {
+  throw new Error("read receipt summary did not update after recipient read ack");
+}
 
 const attachmentBody = new TextEncoder().encode("encrypted-smoke-blob");
 

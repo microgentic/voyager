@@ -40,6 +40,7 @@ export interface ConversationMutationRequest {
   operation: string;
   requestId: string;
   body?: Record<string, unknown>;
+  envelopeId?: string;
   principalId?: string;
   roomInvitationId?: string;
   transferId?: string;

@@ -1,6 +1,6 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api';
-import type { MessageEnvelope, MessageState, ProtocolType } from '$lib/api/types';
+import type { MessageEnvelope, MessageReceiptSummary, MessageState, ProtocolType } from '$lib/api/types';
 import { messageCodec, type DecodedMessage, type MessageContent } from '$lib/protocol/codec';
 import { idempotencyKey, localId } from '$lib/utils/id';
 import { parseServerDate } from '$lib/utils/time';
@@ -18,6 +18,9 @@ export interface ChatMessage {
 	serverSequence: number;
 	serverReceivedAt: string | null;
 	clientCreatedAt: string | null;
+	editedAt: string | null;
+	editCount: number;
+	receiptSummary: MessageReceiptSummary;
 	state: MessageState | 'local';
 	protocolType: ProtocolType;
 	content: DecodedMessage;
@@ -111,6 +114,9 @@ class MessagesStore {
 			serverSequence: env.serverSequence,
 			serverReceivedAt: env.serverReceivedAt,
 			clientCreatedAt: env.clientCreatedAt,
+			editedAt: env.editedAt ?? null,
+			editCount: env.editCount ?? 0,
+			receiptSummary: env.receiptSummary ?? { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
 			state: env.state,
 			protocolType: env.protocolType,
 			content,
@@ -149,11 +155,24 @@ class MessagesStore {
 	}
 
 	/** Pull everything after our cursor (forward-only; the backend has no before-cursor yet). */
-	async fetchNew(roomId: string): Promise<void> {
-		const after = this.cursor[roomId] ?? 0;
+	async fetchNew(roomId: string, opts: { overlap?: number } = {}): Promise<void> {
+		const current = this.cursor[roomId] ?? 0;
+		const after = Math.max(0, current - (opts.overlap ?? 0));
 		const envelopes = await api.listMessages(roomId, { after, limit: PAGE });
 		await this.ingest(envelopes);
-		if (envelopes.length === PAGE) await this.fetchNew(roomId);
+		if (envelopes.length === PAGE) await this.fetchNew(roomId, opts);
+	}
+
+	async fetchSequence(roomId: string, serverSequence: number): Promise<void> {
+		if (!Number.isFinite(serverSequence) || serverSequence <= 0) {
+			await this.fetchNew(roomId, { overlap: 50 });
+			return;
+		}
+		const envelopes = await api.listMessages(roomId, {
+			after: Math.max(0, serverSequence - 1),
+			limit: 1
+		});
+		await this.ingest(envelopes.filter((envelope) => envelope.serverSequence === serverSequence));
 	}
 
 	async ensureLoaded(roomId: string): Promise<void> {
@@ -183,6 +202,9 @@ class MessagesStore {
 			serverReceivedAt: null,
 			clientCreatedAt: createdAt,
 			state: 'local',
+			editedAt: null,
+			editCount: 0,
+			receiptSummary: { total: 0, pending: 0, delivered: 0, read: 0, status: 'sent' },
 			protocolType: messageCodec.protocolType,
 			content: {
 				schemaVersion: 1,
@@ -214,6 +236,48 @@ class MessagesStore {
 			await this.ingest([envelope]);
 		} catch (error) {
 			this.setDelivery(roomId, key, 'failed');
+			throw error;
+		}
+	}
+
+	async editText(message: ChatMessage, content: MessageContent): Promise<void> {
+		if (!message.envelopeId || !message.mine || message.delivery !== 'sent') return;
+		const createdAt = message.content.createdAt ?? message.clientCreatedAt ?? new Date().toISOString();
+		const editedAt = new Date().toISOString();
+		const previous = this.list(message.roomId);
+		this.byRoom = {
+			...this.byRoom,
+			[message.roomId]: previous.map((item) =>
+				item.key === message.key
+					? {
+							...item,
+							content: {
+								...item.content,
+								contentType: content.contentType,
+								body: content.body,
+								replyToMessageId: content.replyToMessageId ?? null,
+								attachments: content.attachments ?? item.content.attachments ?? []
+							},
+							editedAt,
+							editCount: Math.max(1, item.editCount)
+						}
+					: item
+			)
+		};
+		try {
+			const encoded = await messageCodec.encode(content, {
+				senderPrincipalId: message.senderPrincipalId,
+				createdAt
+			});
+			const envelope = await api.editMessage(message.roomId, message.envelopeId, {
+				ciphertext: encoded.ciphertext,
+				protocolType: encoded.protocolType,
+				clientEditedAt: editedAt,
+				attachmentIds: content.attachments?.map((a) => a.attachmentId)
+			});
+			await this.ingest([envelope]);
+		} catch (error) {
+			this.byRoom = { ...this.byRoom, [message.roomId]: previous };
 			throw error;
 		}
 	}
@@ -257,6 +321,11 @@ class MessagesStore {
 			...this.byRoom,
 			[roomId]: this.list(roomId).filter((m) => !keySet.has(m.key))
 		};
+	}
+
+	findByEnvelopeId(roomId: string, envelopeId: string | null | undefined): ChatMessage | undefined {
+		if (!envelopeId) return undefined;
+		return this.list(roomId).find((message) => message.envelopeId === envelopeId);
 	}
 
 	private setDelivery(roomId: string, idemKey: string, delivery: Delivery): void {

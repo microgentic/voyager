@@ -11,6 +11,7 @@ import type {
 	DeliveryReceipt,
 	Device,
 	DeviceInput,
+	EditMessageInput,
 	KeyPackage,
 	MeResult,
 	Membership,
@@ -417,6 +418,15 @@ export class VoyagerClient {
 			{ json: { scope: 'for_me', envelopeIds } }
 		);
 		return res.deleted;
+	}
+
+	async editMessage(roomId: string, envelopeId: string, input: EditMessageInput): Promise<MessageEnvelope> {
+		const res = await this.request<{ message: MessageEnvelope }>(
+			'PATCH',
+			`/v1/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(envelopeId)}`,
+			{ json: { ...input } }
+		);
+		return res.message;
 	}
 
 	async ackMessage(
