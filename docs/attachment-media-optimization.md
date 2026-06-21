@@ -9,6 +9,8 @@ PR 1 of the media/calling roadmap adds the backend foundation for optimized atta
 - `PUT /v1/attachments/{attachmentId}/blob?variant=preview` and `?variant=thumbnail` upload additional private R2 objects.
 - `GET /v1/attachments/{attachmentId}/blob?variant=...` downloads the requested variant after normal room membership authorization.
 - Uploads stream request bodies to R2 when `Content-Length` is available; the fallback path still buffers to preserve compatibility with clients that cannot provide a length.
+- `expectedBytes` is a total attachment budget across all variants. Replacing a variant subtracts the previous byte count before applying the new one.
+- Preview or thumbnail uploads do not make an attachment sendable. The primary `original` variant must be uploaded before completion or message reference.
 - Deleting an attachment deletes all known variant objects.
 - Allocation enforces a small pending-attachment cap per device to prevent unbounded abandoned allocations.
 - Maintenance cleanup deletes known variant objects for expired attachments before marking those rows expired.

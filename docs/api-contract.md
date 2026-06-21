@@ -291,7 +291,7 @@ Room invitations are the human membership path. Reused, expired, declined, or re
 | `POST` | `/v1/attachments/{attachmentId}/complete` | `{ attachment }` |
 | `DELETE` | `/v1/attachments/{attachmentId}` | `{ ok: true }` |
 
-Attachment bytes are opaque private blobs from the backend perspective. R2 stores the objects; D1 stores lifecycle state, media metadata, and variant references. `GET /blob` and `PUT /blob` without a query parameter default to the `original` variant for backward compatibility.
+Attachment bytes are opaque private blobs from the backend perspective. R2 stores the objects; D1 stores lifecycle state, media metadata, and variant references. `GET /blob` and `PUT /blob` without a query parameter default to the `original` variant for backward compatibility. `expectedBytes` is the total byte budget for all uploaded variants combined, not a per-variant limit.
 
 Attachment metadata is additive and client-supplied:
 
@@ -333,7 +333,9 @@ Attachment metadata is additive and client-supplied:
 
 The backend does not generate thumbnails or inspect image plaintext in `/v1`; optimized variants are produced by the client and uploaded as separate authenticated R2 objects. Buckets remain private, downloads remain bearer-authenticated, and `Cache-Control` is `no-store`.
 
-Attachment allocation is limited by account policy bytes per attachment and by a per-device pending allocation cap. Maintenance cleanup expires old attachment rows and removes known R2 variant objects once their retention window has passed.
+An attachment is not complete or referenceable from a message until its `original` variant has been uploaded. The `original` variant is the primary blob for that attachment; it may be an optimized client-generated primary image rather than the source camera file. Preview and thumbnail uploads alone do not make an attachment sendable.
+
+Attachment allocation is limited by account policy bytes per attachment, total uploaded variant bytes, and by a per-device pending allocation cap. Maintenance cleanup expires old attachment rows and removes known R2 variant objects once their retention window has passed.
 
 ### Sidebar Collections
 

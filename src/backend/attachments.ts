@@ -120,6 +120,9 @@ export async function uploadAttachmentBlob(
       "Attachment body exceeds allocation",
     );
   }
+  if (contentLength !== null) {
+    assertProjectedVariantBudget(attachment, variant, contentLength);
+  }
 
   const objectKey = objectKeyForVariant(attachment, variant, true);
   const contentType =
@@ -143,6 +146,7 @@ export async function uploadAttachmentBlob(
         "Attachment body exceeds allocation",
       );
     }
+    assertProjectedVariantBudget(attachment, variant, buffered.byteLength);
     await env.ATTACHMENTS_BUCKET.put(objectKey, buffered, {
       httpMetadata: { contentType },
       customMetadata: { attachmentId, roomId: attachment.room_id, variant },
@@ -189,8 +193,7 @@ async function updateUploadedVariant(
       : ["thumbnail_object_key", "thumbnail_bytes"];
   await env.CONTROL_DB.prepare(
     `UPDATE attachments
-     SET state = 'uploaded',
-         uploaded_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP),
+     SET uploaded_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP),
          ${column[0]} = ?,
          ${column[1]} = ?
      WHERE attachment_id = ?`,
@@ -294,6 +297,39 @@ function variantByteLength(
   return attachment.thumbnail_bytes;
 }
 
+function currentVariantBytes(attachment: AttachmentRow): number {
+  return (
+    Number(attachment.original_bytes ?? 0) +
+    Number(attachment.preview_bytes ?? 0) +
+    Number(attachment.thumbnail_bytes ?? 0)
+  );
+}
+
+function existingVariantBytes(
+  attachment: AttachmentRow,
+  variant: AttachmentVariant,
+): number {
+  return Number(variantByteLength(attachment, variant) ?? 0);
+}
+
+function assertProjectedVariantBudget(
+  attachment: AttachmentRow,
+  variant: AttachmentVariant,
+  uploadedBytes: number,
+): void {
+  const projected =
+    currentVariantBytes(attachment) -
+    existingVariantBytes(attachment, variant) +
+    uploadedBytes;
+  if (projected > attachment.expected_bytes) {
+    throw new HttpError(
+      413,
+      "attachment_too_large",
+      "Attachment variants exceed allocation",
+    );
+  }
+}
+
 export async function completeAttachment(
   env: Env,
   auth: AuthContext,
@@ -307,6 +343,13 @@ export async function completeAttachment(
       409,
       "attachment_not_uploaded",
       "Attachment has not been uploaded",
+    );
+  }
+  if (!attachment.original_object_key || attachment.original_bytes === null) {
+    throw new HttpError(
+      409,
+      "attachment_original_required",
+      "Attachment original variant must be uploaded before completion",
     );
   }
   const mediaKind = stringField(body, "mediaKind", { max: 20 });

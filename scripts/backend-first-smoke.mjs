@@ -1744,6 +1744,64 @@ if (
   throw new Error("attachment allocation did not preserve media metadata");
 }
 
+const thumbnailOnlyAttachment = await api(`/v1/rooms/${group.room.roomId}/attachments`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    expectedBytes: 128,
+    contentCategory: "image",
+    mediaKind: "image",
+    originalFilename: "thumbnail-only.webp",
+    declaredMimeType: "image/webp"
+  }
+});
+assertAttachmentResponse(thumbnailOnlyAttachment, "POST /v1/rooms/{roomId}/attachments thumbnail-only");
+const uploadedThumbnailOnlyAttachment = await api(`/v1/attachments/${thumbnailOnlyAttachment.attachment.attachmentId}/blob?variant=thumbnail`, {
+  method: "PUT",
+  headers: ownerHeaders,
+  body: attachmentThumbnailBody
+});
+assertAttachmentResponse(uploadedThumbnailOnlyAttachment, "PUT /v1/attachments/{attachmentId}/blob thumbnail-only");
+if (uploadedThumbnailOnlyAttachment.attachment.state !== "allocated") {
+  throw new Error("thumbnail-only upload should not make an attachment referenceable");
+}
+await expectFailure(`/v1/attachments/${thumbnailOnlyAttachment.attachment.attachmentId}/complete`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { ciphertextBytes: attachmentThumbnailBody.byteLength }
+}, 409);
+await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `thumbnail-only-attachment-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "thumbnail-only-attachment-should-not-send",
+    attachmentIds: [thumbnailOnlyAttachment.attachment.attachmentId]
+  }
+}, 409);
+
+const overBudgetAttachment = await api(`/v1/rooms/${group.room.roomId}/attachments`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    expectedBytes: attachmentBody.byteLength + 1,
+    contentCategory: "image",
+    mediaKind: "image"
+  }
+});
+assertAttachmentResponse(overBudgetAttachment, "POST /v1/rooms/{roomId}/attachments over budget");
+await api(`/v1/attachments/${overBudgetAttachment.attachment.attachmentId}/blob`, {
+  method: "PUT",
+  headers: ownerHeaders,
+  body: attachmentBody
+});
+await expectFailure(`/v1/attachments/${overBudgetAttachment.attachment.attachmentId}/blob?variant=preview`, {
+  method: "PUT",
+  headers: ownerHeaders,
+  body: attachmentPreviewBody
+}, 413);
+
 const uploadedOriginalAttachment = await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob`, {
   method: "PUT",
   headers: ownerHeaders,
