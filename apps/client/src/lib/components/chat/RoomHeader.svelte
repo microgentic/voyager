@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { ArrowLeft, MoreVertical, Search, Users } from '@lucide/svelte';
+	import { ArrowLeft, Loader2, MoreVertical, Phone, Search, Users } from '@lucide/svelte';
 	import type { Room } from '$lib/api/types';
-	import { rooms, ui } from '$lib/stores';
+	import { calls, rooms, ui } from '$lib/stores';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import { avatarGradient } from '$lib/utils/avatar';
@@ -22,6 +22,8 @@
 	const agentDirect = $derived(rooms.isAgentDirect(room));
 	const name = $derived(rooms.displayName(room));
 	const activeCount = $derived(rooms.activeMembers(room).length);
+	const canStartAudioCall = $derived(calls.canStart(room));
+	const startingAudioCall = $derived(calls.startingRoomId === room.roomId);
 	const subtitle = $derived(
 		room.status === 'archived'
 			? 'Archived'
@@ -74,6 +76,22 @@
 				<span class="block truncate text-xs text-muted">{subtitle}</span>
 			</span>
 		</button>
+
+		{#if !agentDirect}
+			<button
+				onclick={() => calls.startAudioCall(room)}
+				disabled={!canStartAudioCall || startingAudioCall}
+				title="Start audio call"
+				class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+				aria-label="Start audio call"
+			>
+				{#if startingAudioCall}
+					<Loader2 class="h-5 w-5 animate-spin" />
+				{:else}
+					<Phone class="h-5 w-5" />
+				{/if}
+			</button>
+		{/if}
 
 		<button
 			onclick={onToggleSearch}

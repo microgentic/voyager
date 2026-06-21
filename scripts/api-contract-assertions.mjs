@@ -38,6 +38,8 @@ export const endpointStabilityCatalog = [
   { method: "PATCH", path: "/v1/calls/{callId}/participants/me", stability: "future-sensitive" },
   { method: "POST", path: "/v1/calls/{callId}/realtime/session", stability: "future-sensitive" },
   { method: "POST", path: "/v1/calls/{callId}/realtime/tracks", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/realtime/renegotiate", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/realtime/tracks/close", stability: "future-sensitive" },
   { method: "GET", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
@@ -166,8 +168,16 @@ export function assertCallRealtimeConfigResponse(payload, context) {
   enumValue(realtime.callType, ["audio", "video"], `${context}.realtime.callType`);
   enumValue(realtime.status, ["ringing", "active", "ended", "missed", "declined", "failed"], `${context}.realtime.status`);
   string(realtime.message, `${context}.realtime.message`);
+  if ("iceServers" in realtime) array(realtime.iceServers, `${context}.realtime.iceServers`);
   if ("session" in realtime && realtime.session !== null) object(realtime.session, `${context}.realtime.session`);
+  if ("sessionDescription" in realtime && realtime.sessionDescription !== null) {
+    object(realtime.sessionDescription, `${context}.realtime.sessionDescription`);
+  }
   if ("tracks" in realtime) array(realtime.tracks, `${context}.realtime.tracks`);
+  if ("availableTracks" in realtime) array(realtime.availableTracks, `${context}.realtime.availableTracks`);
+  if ("requiresImmediateRenegotiation" in realtime) {
+    boolean(realtime.requiresImmediateRenegotiation, `${context}.realtime.requiresImmediateRenegotiation`);
+  }
 }
 
 export function assertPaginatedRoomsResponse(payload, context) {

@@ -1,6 +1,6 @@
 import { audit, requireAdmin } from "../db";
 import { randomId } from "../crypto";
-import { HttpError, json, readJsonObject, requireMethod, routeParams, stringField } from "../http";
+import { HttpError, json, readJsonObject, readOptionalJsonObject, requireMethod, routeParams, stringField } from "../http";
 import type { AuthContext, Env } from "../types";
 import {
   callMutationTimingHeaders,
@@ -62,8 +62,10 @@ import {
   updateSidebarCollection,
   uploadAttachmentBlob,
   addSidebarCollectionItem,
+  closeRealtimeTracks,
   runCleanup,
   markThreadRead,
+  renegotiateRealtimeSession,
   updateThreadSubscription,
 } from "./operations";
 
@@ -746,16 +748,51 @@ export async function handleBackendFirstRoutes(
     );
   }
 
+  const callRealtimeRenegotiateMatch = routeParams(
+    /^\/v1\/calls\/([^/]+)\/realtime\/renegotiate$/,
+    url.pathname,
+  );
+  if (callRealtimeRenegotiateMatch) {
+    requireMethod(request, "POST");
+    return json({
+      ok: true,
+      realtime: await renegotiateRealtimeSession(
+        env,
+        auth,
+        callRealtimeRenegotiateMatch[1],
+        await readOptionalJsonObject(request),
+      ),
+    });
+  }
+
+  const callRealtimeCloseTracksMatch = routeParams(
+    /^\/v1\/calls\/([^/]+)\/realtime\/tracks\/close$/,
+    url.pathname,
+  );
+  if (callRealtimeCloseTracksMatch) {
+    requireMethod(request, "POST");
+    return json({
+      ok: true,
+      realtime: await closeRealtimeTracks(
+        env,
+        auth,
+        callRealtimeCloseTracksMatch[1],
+        await readOptionalJsonObject(request),
+      ),
+    });
+  }
+
   const callRealtimeMatch = routeParams(
     /^\/v1\/calls\/([^/]+)\/realtime\/(session|tracks)$/,
     url.pathname,
   );
   if (callRealtimeMatch) {
     requireMethod(request, "POST");
+    const body = await readOptionalJsonObject(request);
     const realtime =
       callRealtimeMatch[2] === "session"
-        ? await getRealtimeSessionConfig(env, auth, callRealtimeMatch[1])
-        : await getRealtimeTrackConfig(env, auth, callRealtimeMatch[1]);
+        ? await getRealtimeSessionConfig(env, auth, callRealtimeMatch[1], body)
+        : await getRealtimeTrackConfig(env, auth, callRealtimeMatch[1], body);
     return json({ ok: true, realtime });
   }
 

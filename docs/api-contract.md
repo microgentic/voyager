@@ -182,6 +182,8 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `PATCH` | `/v1/calls/{callId}/participants/me` | `{ call }` |
 | `POST` | `/v1/calls/{callId}/realtime/session` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/realtime/renegotiate` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/realtime/tracks/close` | `{ realtime }` |
 | `GET` | `/v1/rooms/{roomId}/messages` | `{ messages }` |
 | `POST` | `/v1/rooms/{roomId}/messages` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/delete` | `{ deleted: { scope, envelopeIds } }` |
@@ -292,7 +294,7 @@ Room invitations are the human membership path. Reused, expired, declined, or re
 
 ### Calls
 
-Call endpoints are a future-sensitive foundation for audio and video. PR 3 adds durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and realtime hints. It does not publish media tracks, store media, or claim end-to-end encrypted calls.
+Call endpoints are a future-sensitive foundation for audio and video. The current audio surface combines durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and Cloudflare Realtime session/track negotiation. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -307,6 +309,8 @@ Call endpoints are a future-sensitive foundation for audio and video. PR 3 adds 
 | `PATCH` | `/v1/calls/{callId}/participants/me` | `{ call }` |
 | `POST` | `/v1/calls/{callId}/realtime/session` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/realtime/renegotiate` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/realtime/tracks/close` | `{ realtime }` |
 
 `POST /v1/rooms/{roomId}/calls` accepts:
 
@@ -341,7 +345,33 @@ Call responses expose durable metadata only:
 }
 ```
 
-Only active room members may create, read, or join calls. Archived rooms reject new calls. A room may have one live call (`ringing` or `active`) at a time. Realtime media endpoints currently return a Cloudflare Realtime capability shape with `configured: false`; PR 4 will replace that with actual audio session/track integration.
+Only active room members may create, read, or join calls. Archived rooms reject new calls. A room may have one live call (`ringing` or `active`) at a time. Realtime media endpoints require a connected call participant. If Cloudflare Realtime credentials are absent, they return the same additive shape with `configured: false`, `session: null`, empty track arrays, and STUN/TURN capability data suitable for local/dev handling.
+
+Realtime session responses may include:
+
+```json
+{
+  "provider": "cloudflare_realtime",
+  "configured": true,
+  "callId": "call_...",
+  "callType": "audio",
+  "status": "ringing",
+  "iceServers": [{ "urls": "stun:stun.cloudflare.com:3478" }],
+  "session": {
+    "sessionId": "provider-session-id",
+    "status": "active",
+    "createdAt": "2026-06-21 12:00:00",
+    "updatedAt": "2026-06-21 12:00:00"
+  },
+  "sessionDescription": { "type": "answer", "sdp": "..." },
+  "tracks": [],
+  "availableTracks": [],
+  "requiresImmediateRenegotiation": false,
+  "message": "Realtime session ready"
+}
+```
+
+`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates the caller's Cloudflare Realtime session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, and remote `sessionId` when subscribing to another participant's track. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription`. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session.
 
 ### Attachments
 

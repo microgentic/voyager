@@ -10,7 +10,11 @@ import type {
 	BootstrapResult,
 	BootstrapStatus,
 	Call,
+	CallRealtimeCloseTracksInput,
 	CallRealtimeConfig,
+	CallRealtimeRenegotiateInput,
+	CallRealtimeSessionInput,
+	CallRealtimeTracksInput,
 	CreateCallInput,
 	DeleteMessagesResult,
 	DeliveryReceipt,
@@ -462,18 +466,50 @@ export class VoyagerClient {
 		return res.call;
 	}
 
-	async getCallRealtimeSessionConfig(callId: string): Promise<CallRealtimeConfig> {
+	async getCallRealtimeSessionConfig(
+		callId: string,
+		input: CallRealtimeSessionInput = {}
+	): Promise<CallRealtimeConfig> {
 		const res = await this.request<{ realtime: CallRealtimeConfig }>(
 			'POST',
-			`/v1/calls/${encodeURIComponent(callId)}/realtime/session`
+			`/v1/calls/${encodeURIComponent(callId)}/realtime/session`,
+			{ json: input as unknown as Json }
 		);
 		return res.realtime;
 	}
 
-	async getCallRealtimeTrackConfig(callId: string): Promise<CallRealtimeConfig> {
+	async getCallRealtimeTrackConfig(
+		callId: string,
+		input: CallRealtimeTracksInput = {}
+	): Promise<CallRealtimeConfig> {
 		const res = await this.request<{ realtime: CallRealtimeConfig }>(
 			'POST',
-			`/v1/calls/${encodeURIComponent(callId)}/realtime/tracks`
+			`/v1/calls/${encodeURIComponent(callId)}/realtime/tracks`,
+			{ json: input as unknown as Json }
+		);
+		return res.realtime;
+	}
+
+	async renegotiateCallRealtimeSession(
+		callId: string,
+		input: CallRealtimeRenegotiateInput
+	): Promise<CallRealtimeConfig> {
+		const res = await this.request<{ realtime: CallRealtimeConfig }>(
+			'POST',
+			`/v1/calls/${encodeURIComponent(callId)}/realtime/renegotiate`,
+			{ json: input as unknown as Json }
+		);
+		return res.realtime;
+	}
+
+	async closeCallRealtimeTracks(
+		callId: string,
+		input: CallRealtimeCloseTracksInput
+	): Promise<CallRealtimeConfig> {
+		const res = await this.request<{ realtime: CallRealtimeConfig }>(
+			'POST',
+			`/v1/calls/${encodeURIComponent(callId)}/realtime/tracks/close`,
+			{ json: input as unknown as Json }
 		);
 		return res.realtime;
 	}

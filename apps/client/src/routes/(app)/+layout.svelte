@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { auth, ui, rooms, messages, threads, principals, invitations, collections, sync, realtime } from '$lib/stores';
+	import { auth, ui, rooms, messages, threads, principals, invitations, collections, sync, realtime, calls } from '$lib/stores';
 	import DesktopTitlebar from '$lib/components/shell/DesktopTitlebar.svelte';
 	import NavRail from '$lib/components/nav/NavRail.svelte';
 	import TabBar from '$lib/components/nav/TabBar.svelte';
@@ -17,12 +17,18 @@
 		}
 		sync.start({ immediate: !bootstrap });
 		realtime.start();
+		void recoverCalls(!!bootstrap);
 		deferNonCriticalLoads();
 		return () => {
 			realtime.stop();
 			sync.stop();
 		};
 	});
+
+	async function recoverCalls(hasBootstrap: boolean): Promise<void> {
+		if (!hasBootstrap) await rooms.load();
+		await calls.recoverLiveCalls();
+	}
 
 	function deferNonCriticalLoads(): void {
 		const load = () => {
