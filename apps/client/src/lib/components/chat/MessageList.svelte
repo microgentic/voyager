@@ -23,6 +23,7 @@
 	} = $props();
 
 	const GROUP_GAP_MS = 5 * 60 * 1000;
+	const DELETE_FOR_EVERYONE_WINDOW_MS = 48 * 60 * 60 * 1000;
 	const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 	type Row =
@@ -206,7 +207,17 @@
 
 	function canDeleteForEveryone(message: ChatMessage): boolean {
 		if (!message.envelopeId || message.delivery !== 'sent' || message.deletedForEveryone.deleted) return false;
-		return message.mine || (room.type !== 'direct' && rooms.canManage(room));
+		// Owners/admins may delete any active message; the sender only within the
+		// backend's 48h window. The backend stays authoritative — this just hides
+		// the action when it would predictably fail.
+		if (room.type !== 'direct' && rooms.canManage(room)) return true;
+		return message.mine && withinDeleteForEveryoneWindow(message);
+	}
+
+	function withinDeleteForEveryoneWindow(message: ChatMessage): boolean {
+		const sentAt = parseServerDate(message.serverReceivedAt ?? message.clientCreatedAt);
+		if (!sentAt) return true;
+		return Date.now() - sentAt.getTime() <= DELETE_FOR_EVERYONE_WINDOW_MS;
 	}
 
 	function selectAll(): void {
@@ -526,14 +537,16 @@
 				</div>
 				<div class="my-1 h-px bg-border"></div>
 			{/if}
-			<button
-				type="button"
-				class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
-				onclick={() => replyTo(actionMenu!.message)}
-			>
-				<Reply class="h-4 w-4 opacity-80" />
-				<span>Reply</span>
-			</button>
+			{#if !actionMenu.message.deletedForEveryone.deleted}
+				<button
+					type="button"
+					class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-surface-2"
+					onclick={() => replyTo(actionMenu!.message)}
+				>
+					<Reply class="h-4 w-4 opacity-80" />
+					<span>Reply</span>
+				</button>
+			{/if}
 			{#if actionMenu.message.mine && actionMenu.message.delivery === 'sent' && !actionMenu.message.content.undecodable && !actionMenu.message.deletedForEveryone.deleted}
 				<button
 					type="button"

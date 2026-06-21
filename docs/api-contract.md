@@ -212,9 +212,6 @@ Message responses include additive edit and delivery metadata:
     "pinnedByPrincipalId": "prn_..."
   },
   "forwardedFrom": {
-    "roomId": "room_...",
-    "envelopeId": "msg_...",
-    "senderPrincipalId": "prn_...",
     "forwardedByPrincipalId": "prn_..."
   },
   "deletedForEveryone": {
@@ -228,7 +225,7 @@ Message responses include additive edit and delivery metadata:
 
 `receiptSummary.status` is the client-facing mirror signal: `sent`, `delivered`, or `read`. Receipt rows remain per-device internally, and the compact status advances when at least one recipient device reaches the delivered/read state; use the numeric counts for detailed delivery diagnostics. `PATCH /v1/rooms/{roomId}/messages/{envelopeId}` lets the original sender replace the current opaque payload for an active, non-expired message. The previous opaque payload is preserved in `message_edits`; the active message keeps the same `envelopeId` and `serverSequence`.
 
-`POST /v1/rooms/{roomId}/messages/{envelopeId}/forward` is a client-mediated forward: the client re-encodes the displayable content for `targetRoomId`, and the backend validates that the source message is visible to the caller and not deleted-for-everyone. The new target-room envelope carries `forwardedFrom`; D1 remains authoritative and the source ciphertext is never interpreted by the backend.
+`POST /v1/rooms/{roomId}/messages/{envelopeId}/forward` is a client-mediated forward: the client re-encodes the displayable content for `targetRoomId`, and the backend validates that the source message is visible to the caller and not deleted-for-everyone. Forward provenance is server-asserted and can only be set through this route — a normal `POST /v1/rooms/{roomId}/messages` cannot mark a message as forwarded. The new target-room envelope's public `forwardedFrom` exposes only `forwardedByPrincipalId`; the source room, envelope, and original sender are retained in D1 and the audit log for traceability but are not exposed to target-room members. D1 remains authoritative and the source ciphertext is never interpreted by the backend.
 
 Reactions are room message metadata. `POST /reactions` accepts `{ "reaction": "👍" }` and is idempotent per `(message, principal)`: a caller has one active reaction per message, and posting a different reaction replaces the previous one. `DELETE /reactions/{reaction}` removes only the caller's matching active reaction. Message `reactions[].reactedByMe` is viewer-specific; counts are room-wide.
 

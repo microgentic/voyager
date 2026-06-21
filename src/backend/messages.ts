@@ -4,6 +4,7 @@ import { notifyRoomRealtime } from "../realtime";
 import type { AuthContext, Env } from "../types";
 import {
   MAX_MESSAGE_BYTES,
+  type ForwardSource,
   type JsonObject,
   type SendMessageResult,
 } from "./internal-types";
@@ -76,6 +77,7 @@ export async function sendMessageEnvelope(
   roomId: string,
   body: Record<string, unknown>,
   requestId: string,
+  options: { forwardSource?: ForwardSource | null } = {},
 ): Promise<SendMessageResult> {
   const startedAt = performance.now();
   const context = await getSendRoomContext(env, auth, roomId);
@@ -129,7 +131,7 @@ export async function sendMessageEnvelope(
   const attachmentIds = stringArrayField(body, "attachmentIds", {
     maxItems: 20,
   });
-  const forwardSource = await getForwardSource(env, auth, body);
+  const forwardSource = options.forwardSource ?? null;
   const insertStartedAt = performance.now();
   const inserted = await env.CONTROL_DB.prepare(
     `INSERT INTO message_envelopes (
@@ -946,28 +948,17 @@ export async function getMessage(
     .first<Record<string, unknown>>();
 }
 
-async function getForwardSource(
+// Forward provenance is server-asserted: only the dedicated /forward route may
+// resolve a source, and the result is threaded to sendMessageEnvelope as an
+// internal option. Normal sends never carry forward metadata, so a caller
+// cannot fabricate it through the public send body.
+export async function resolveForwardSource(
   env: Env,
   auth: AuthContext,
-  body: Record<string, unknown>,
-): Promise<{
-  roomId: string;
-  envelopeId: string;
-  senderPrincipalId: string;
-} | null> {
-  const roomId = stringField(body, "forwardedFromRoomId", { max: 80 }) ?? null;
-  const envelopeId =
-    stringField(body, "forwardedFromEnvelopeId", { max: 80 }) ?? null;
-  if (!roomId && !envelopeId) return null;
-  if (!roomId || !envelopeId) {
-    throw new HttpError(
-      400,
-      "invalid_forward_source",
-      "Forward source requires both room and envelope ids",
-    );
-  }
-
-  await requireRoomMembership(env, auth, roomId);
+  sourceRoomId: string,
+  sourceEnvelopeId: string,
+): Promise<ForwardSource> {
+  await requireRoomMembership(env, auth, sourceRoomId);
   const source = await env.CONTROL_DB.prepare(
     `SELECT envelope_id, room_id, sender_principal_id
      FROM message_envelopes me
@@ -983,7 +974,7 @@ async function getForwardSource(
            AND mv.account_id = ?
        )`,
   )
-    .bind(roomId, envelopeId, auth.account.account_id)
+    .bind(sourceRoomId, sourceEnvelopeId, auth.account.account_id)
     .first<Record<string, unknown>>();
   if (!source) {
     throw new HttpError(
@@ -993,8 +984,8 @@ async function getForwardSource(
     );
   }
   return {
-    roomId,
-    envelopeId,
+    roomId: sourceRoomId,
+    envelopeId: sourceEnvelopeId,
     senderPrincipalId: String(source.sender_principal_id),
   };
 }

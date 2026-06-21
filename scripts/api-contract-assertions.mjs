@@ -348,9 +348,6 @@ function assertMessage(value, context) {
 function assertForwardedFrom(value, context) {
   if (value === null) return;
   const forwarded = object(value, context);
-  string(forwarded.roomId, `${context}.roomId`);
-  string(forwarded.envelopeId, `${context}.envelopeId`);
-  string(forwarded.senderPrincipalId, `${context}.senderPrincipalId`);
   string(forwarded.forwardedByPrincipalId, `${context}.forwardedByPrincipalId`);
 }
 

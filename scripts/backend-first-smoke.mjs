@@ -1102,13 +1102,34 @@ assertMessageResponse(forwardedToGroup, "POST /v1/rooms/{roomId}/messages/{envel
 if (forwardedToGroup.message.roomId !== group.room.roomId) {
   throw new Error("forwarded message did not land in the target room");
 }
+if (forwardedToGroup.message.forwardedFrom?.forwardedByPrincipalId !== owner.principal.principalId) {
+  throw new Error("forwarded message did not expose the forwarding principal");
+}
+const forwardedKeys = Object.keys(forwardedToGroup.message.forwardedFrom ?? {});
 if (
-  forwardedToGroup.message.forwardedFrom?.roomId !== direct.room.roomId ||
-  forwardedToGroup.message.forwardedFrom?.envelopeId !== directMessage.message.envelopeId ||
-  forwardedToGroup.message.forwardedFrom?.senderPrincipalId !== owner.principal.principalId ||
-  forwardedToGroup.message.forwardedFrom?.forwardedByPrincipalId !== owner.principal.principalId
+  forwardedKeys.includes("roomId") ||
+  forwardedKeys.includes("envelopeId") ||
+  forwardedKeys.includes("senderPrincipalId")
 ) {
-  throw new Error("forwarded message did not expose source metadata");
+  throw new Error("forwardedFrom must not expose source room, envelope, or sender metadata");
+}
+
+// Forward provenance must be server-asserted: a normal send cannot fabricate it
+// by smuggling forward fields through the public message body.
+const forgedForward = await api(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `forge-forward-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "normal-send-should-not-be-forwarded",
+    forwardedFromRoomId: direct.room.roomId,
+    forwardedFromEnvelopeId: directMessage.message.envelopeId
+  }
+});
+assertMessageResponse(forgedForward, "POST /v1/rooms/{roomId}/messages forged forward metadata");
+if (forgedForward.message.forwardedFrom !== null) {
+  throw new Error("normal send must not accept forwardedFrom metadata from the request body");
 }
 
 const duplicatePayload = {

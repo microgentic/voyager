@@ -153,9 +153,6 @@ export interface MessageEnvelope {
 }
 
 export interface MessageForwardedFrom {
-	roomId: string;
-	envelopeId: string;
-	senderPrincipalId: string;
 	forwardedByPrincipalId: string;
 }
 

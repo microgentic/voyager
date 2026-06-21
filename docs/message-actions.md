@@ -67,7 +67,11 @@ message-send, realtime, or sync source-of-truth model.
   - the backend validates the source message is visible to the forwarding
     account and not deleted-for-everyone;
   - the client re-encodes the displayable content for the target room;
-  - the target message envelope includes `forwardedFrom`.
+  - forward provenance is server-asserted: it can only be set through the
+    `/forward` route, never accepted from a normal send body;
+  - the target message envelope's public `forwardedFrom` exposes only
+    `forwardedByPrincipalId`; the source room, envelope, and original sender are
+    retained server-side (D1 + audit log) but not exposed to target-room members.
 - Delete-for-everyone is backend-backed tombstoning:
   - the sender can delete their own message for everyone within 48 hours;
   - group/channel owners and admins can delete any active message for everyone;

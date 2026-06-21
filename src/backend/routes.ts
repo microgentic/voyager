@@ -40,6 +40,7 @@ import {
   mutationTimingHeaders,
   publishKeyPackage,
   readTimingHeaders,
+  resolveForwardSource,
   reviewAgentRequest,
   revokeKeyPackage,
   claimKeyPackage,
@@ -699,17 +700,20 @@ export async function handleBackendFirstRoutes(
         "Forward target must be a different room",
       );
     }
+    const forwardSource = await resolveForwardSource(
+      env,
+      auth,
+      messageForwardMatch[1],
+      messageForwardMatch[2],
+    );
     const { message, metrics } =
       await sendMessageThroughConversationCoordinator(
         env,
         auth,
         targetRoomId,
-        {
-          ...body,
-          forwardedFromRoomId: messageForwardMatch[1],
-          forwardedFromEnvelopeId: messageForwardMatch[2],
-        },
+        body,
         requestId,
+        { forwardSource },
       );
     await audit(env, {
       actorAccountId: auth.account.account_id,
