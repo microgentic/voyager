@@ -229,6 +229,19 @@ export function assertRealtimeRoomMessageEvent(payload, context) {
   string(value.senderDeviceId, `${context}.senderDeviceId`);
 }
 
+export function assertRealtimeRoomThreadEvent(payload, context) {
+  const value = object(payload, context);
+  literal(value.type, "room.thread", `${context}.type`);
+  string(value.eventId, `${context}.eventId`);
+  string(value.createdAt, `${context}.createdAt`);
+  string(value.roomId, `${context}.roomId`);
+  string(value.envelopeId, `${context}.envelopeId`);
+  number(value.serverSequence, `${context}.serverSequence`);
+  string(value.senderDeviceId, `${context}.senderDeviceId`);
+  string(value.rootEnvelopeId, `${context}.rootEnvelopeId`);
+  boolean(value.alsoSentToRoom, `${context}.alsoSentToRoom`);
+}
+
 export function assertRealtimeTokenResponse(payload, context) {
   const value = success(payload, context);
   string(value.realtimeToken, `${context}.realtimeToken`);

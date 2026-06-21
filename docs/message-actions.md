@@ -93,7 +93,8 @@ message-send, realtime, or sync source-of-truth model.
   - the main timeline returns normal messages plus only the replies that were
     also sent to the room; thread-only replies never leak into room history,
     `/v1/sync`, or unread counts;
-  - roots carry a `threadSummary` (reply count + last reply) computed on read;
+  - roots carry a viewer-aware `threadSummary` (reply count + last reply)
+    computed on read, excluding replies hidden from that account;
   - replies are full messages: edit, reactions, forward, and deletion behave the
     same as in the main timeline, and tombstoning a reply tombstones it in both
     places when it was also sent to the room;
@@ -194,10 +195,11 @@ The root is returned even when it is a tombstone so the pane can show context.
 
 Reuses the send pipeline through the `ConversationCoordinator`. The root and
 `alsoSendToRoom` intent are server-asserted from the route and threaded to the
-send path internally, so a normal send cannot fabricate thread metadata. The new
-envelope emits a `room.thread` realtime hint carrying the root id so clients
-refresh the root summary in place (its `serverSequence` does not move) and pull
-the reply into the main timeline only when it was also sent there.
+send path internally, so a normal send cannot fabricate thread metadata. New
+thread replies and later mutations to existing thread replies emit `room.thread`
+realtime hints carrying the root id so clients refresh the root summary in place
+(its `serverSequence` does not move) and pull the reply into the main timeline
+only when it was also sent there.
 
 ## Deferred
 

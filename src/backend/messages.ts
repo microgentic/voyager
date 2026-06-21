@@ -52,23 +52,41 @@ export function messageSelectColumns(alias = "me"): string {
      )) AS reaction_summary,
     (SELECT mp.pinned_at FROM message_pins mp WHERE mp.envelope_id = ${alias}.envelope_id AND mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL ORDER BY mp.pinned_at DESC LIMIT 1) AS pinned_at,
     (SELECT mp.pinned_by_principal_id FROM message_pins mp WHERE mp.envelope_id = ${alias}.envelope_id AND mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL ORDER BY mp.pinned_at DESC LIMIT 1) AS pinned_by_principal_id,
-    (SELECT COUNT(*) FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP) AS thread_reply_count,
-    (SELECT tr.envelope_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_envelope_id,
-    (SELECT tr.sender_principal_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_sender_principal_id,
-    (SELECT tr.server_received_at FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_at`;
+    (SELECT COUNT(*) FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?)) AS thread_reply_count,
+    (SELECT tr.envelope_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_envelope_id,
+    (SELECT tr.sender_principal_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_sender_principal_id,
+    (SELECT tr.server_received_at FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_at`;
+}
+
+export function messageSelectBindValues(auth: AuthContext): string[] {
+  return [
+    auth.principal.principal_id,
+    auth.account.account_id,
+    auth.account.account_id,
+    auth.account.account_id,
+    auth.account.account_id,
+  ];
 }
 
 export async function getPublicMessage(
   env: Env,
   envelopeId: string,
   viewerPrincipalId: string,
+  viewerAccountId: string,
 ): Promise<JsonObject> {
   const message = await env.CONTROL_DB.prepare(
     `SELECT ${messageSelectColumns("me")}
      FROM message_envelopes me
      WHERE me.envelope_id = ?`,
   )
-    .bind(viewerPrincipalId, envelopeId)
+    .bind(
+      viewerPrincipalId,
+      viewerAccountId,
+      viewerAccountId,
+      viewerAccountId,
+      viewerAccountId,
+      envelopeId,
+    )
     .first<Record<string, unknown>>();
   if (!message) {
     throw new HttpError(404, "message_not_found", "Message not found");
@@ -224,6 +242,7 @@ export async function sendMessageEnvelope(
         env,
         String(existing.envelope_id),
         auth.principal.principal_id,
+        auth.account.account_id,
       ),
       metrics,
     };
@@ -248,6 +267,7 @@ export async function sendMessageEnvelope(
     env,
     envelopeId,
     auth.principal.principal_id,
+    auth.account.account_id,
   );
   const realtimeStartedAt = performance.now();
   await notifyRoomRealtime(
@@ -299,7 +319,13 @@ export async function listRoomMessages(
      ORDER BY server_sequence ASC
      LIMIT ?`,
   )
-    .bind(auth.principal.principal_id, roomId, after, auth.account.account_id, limit)
+    .bind(
+      ...messageSelectBindValues(auth),
+      roomId,
+      after,
+      auth.account.account_id,
+      limit,
+    )
     .all<Record<string, unknown>>();
   return (result.results ?? []).map(publicMessage);
 }
@@ -333,7 +359,7 @@ export async function getThread(
        )`,
   )
     .bind(
-      auth.principal.principal_id,
+      ...messageSelectBindValues(auth),
       rootEnvelopeId,
       roomId,
       auth.account.account_id,
@@ -364,7 +390,7 @@ export async function getThread(
      LIMIT ?`,
   )
     .bind(
-      auth.principal.principal_id,
+      ...messageSelectBindValues(auth),
       rootEnvelopeId,
       roomId,
       after,
@@ -497,14 +523,14 @@ export async function editMessageEnvelope(
     ).bind(roomId),
   ]);
 
-  await notifyRoomRealtime(env, roomId, {
-    type: "room.sync",
-    envelopeId,
-    serverSequence: Number(current.server_sequence),
-    senderDeviceId: auth.device.device_id,
-  }).catch((error) => console.warn("realtime notification failed", error));
+  await notifyMessageSync(env, auth, roomId, envelopeId);
 
-  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+  return getPublicMessage(
+    env,
+    envelopeId,
+    auth.principal.principal_id,
+    auth.account.account_id,
+  );
 }
 
 export async function setMessageReaction(
@@ -539,7 +565,12 @@ export async function setMessageReaction(
     touchRoomVersionStatement(env, roomId),
   ]);
   await notifyMessageSync(env, auth, roomId, envelopeId);
-  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+  return getPublicMessage(
+    env,
+    envelopeId,
+    auth.principal.principal_id,
+    auth.account.account_id,
+  );
 }
 
 export async function deleteMessageReaction(
@@ -560,7 +591,12 @@ export async function deleteMessageReaction(
     touchRoomVersionStatement(env, roomId),
   ]);
   await notifyMessageSync(env, auth, roomId, envelopeId);
-  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+  return getPublicMessage(
+    env,
+    envelopeId,
+    auth.principal.principal_id,
+    auth.account.account_id,
+  );
 }
 
 export async function pinMessage(
@@ -596,7 +632,12 @@ export async function pinMessage(
     touchRoomVersionStatement(env, roomId),
   ]);
   await notifyMessageSync(env, auth, roomId, envelopeId);
-  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+  return getPublicMessage(
+    env,
+    envelopeId,
+    auth.principal.principal_id,
+    auth.account.account_id,
+  );
 }
 
 export async function unpinMessage(
@@ -620,7 +661,12 @@ export async function unpinMessage(
     touchRoomVersionStatement(env, roomId),
   ]);
   await notifyMessageSync(env, auth, roomId, envelopeId);
-  return getPublicMessage(env, envelopeId, auth.principal.principal_id);
+  return getPublicMessage(
+    env,
+    envelopeId,
+    auth.principal.principal_id,
+    auth.account.account_id,
+  );
 }
 
 async function requireActiveMessageInteraction(
@@ -762,12 +808,45 @@ async function notifyMessageSync(
 ): Promise<void> {
   const message = await getMessage(env, envelopeId);
   if (!message) return;
-  await notifyRoomRealtime(env, roomId, {
+  await notifyRoomRealtime(
+    env,
+    roomId,
+    messageSyncRealtimeEvent(message, auth.device.device_id),
+  ).catch((error) => console.warn("realtime notification failed", error));
+}
+
+function messageSyncRealtimeEvent(
+  message: Record<string, unknown>,
+  senderDeviceId: string,
+): {
+  type: "room.sync" | "room.thread";
+  envelopeId: string;
+  serverSequence: number;
+  senderDeviceId: string;
+  rootEnvelopeId?: string;
+  alsoSentToRoom?: boolean;
+} {
+  const envelopeId = String(message.envelope_id);
+  const serverSequence = Number(message.server_sequence);
+  const rootEnvelopeId = message.thread_root_envelope_id;
+  if (typeof rootEnvelopeId === "string" && rootEnvelopeId.length > 0) {
+    return {
+      type: "room.thread",
+      envelopeId,
+      serverSequence,
+      senderDeviceId,
+      rootEnvelopeId,
+      alsoSentToRoom:
+        message.also_sent_to_room === true ||
+        Number(message.also_sent_to_room ?? 0) === 1,
+    };
+  }
+  return {
     type: "room.sync",
     envelopeId,
-    serverSequence: Number(message.server_sequence),
-    senderDeviceId: auth.device.device_id,
-  }).catch((error) => console.warn("realtime notification failed", error));
+    serverSequence,
+    senderDeviceId,
+  };
 }
 
 export async function deleteMessagesForMe(
@@ -1015,12 +1094,7 @@ export async function acknowledgeMessage(
     )
     .run();
   await updateMessageReceiptState(env, envelopeId);
-  await notifyRoomRealtime(env, roomId, {
-    type: "room.sync",
-    envelopeId,
-    serverSequence: Number(message.server_sequence),
-    senderDeviceId: auth.device.device_id,
-  }).catch((error) => console.warn("realtime notification failed", error));
+  await notifyMessageSync(env, auth, roomId, envelopeId);
   return getReceipt(env, envelopeId, auth.device.device_id);
 }
 

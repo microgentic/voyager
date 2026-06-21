@@ -1,7 +1,7 @@
 import { publicAccount } from "../http";
 import type { AuthContext, Env } from "../types";
 import type { AppBootstrapResult, JsonObject } from "./internal-types";
-import { messageSelectColumns } from "./messages";
+import { messageSelectBindValues, messageSelectColumns } from "./messages";
 import { listRooms } from "./rooms";
 import { durationSince, numberParam } from "./utils";
 import { publicDevice, publicMessage, publicPrincipal } from "./serializers";
@@ -74,7 +74,7 @@ export async function listPendingMessages(
      LIMIT ?`,
   )
     .bind(
-      auth.principal.principal_id,
+      ...messageSelectBindValues(auth),
       auth.device.device_id,
       auth.account.account_id,
       limit,

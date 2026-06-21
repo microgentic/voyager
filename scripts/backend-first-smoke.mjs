@@ -16,6 +16,7 @@ import {
   assertPaginatedRoomInvitationsResponse,
   assertPaginatedRoomsResponse,
   assertRealtimeRoomMessageEvent,
+  assertRealtimeRoomThreadEvent,
   assertRealtimeTokenResponse,
   assertRoomInvitationResponse,
   assertRoomResponse,
@@ -83,7 +84,12 @@ function realtimeUrl() {
   return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/realtime`;
 }
 
-async function openRealtimeMessageWatcher(token, expectedRoomId, timeoutMs = 5_000) {
+async function openRealtimeEventWatcher(
+  token,
+  expectedRoomId,
+  expectedType,
+  timeoutMs = 5_000,
+) {
   if (typeof WebSocket === "undefined") {
     throw new Error("Node WebSocket global is required for realtime smoke coverage");
   }
@@ -126,11 +132,11 @@ async function openRealtimeMessageWatcher(token, expectedRoomId, timeoutMs = 5_0
         if (payload.type === "ready" && !ready) {
           ready = true;
           clearTimeout(readyTimeout);
-          messageTimeout = setTimeout(() => finishMessage(new Error("timed out waiting for realtime room.message event")), timeoutMs);
+          messageTimeout = setTimeout(() => finishMessage(new Error(`timed out waiting for realtime ${expectedType} event`)), timeoutMs);
           resolveReady({ wait, close });
           return;
         }
-        if (payload.type === "room.message" && payload.roomId === expectedRoomId) {
+        if (payload.type === expectedType && payload.roomId === expectedRoomId) {
           finishMessage(payload);
         }
       } catch (error) {
@@ -143,9 +149,17 @@ async function openRealtimeMessageWatcher(token, expectedRoomId, timeoutMs = 5_0
     });
     socket.addEventListener("close", () => {
       if (!ready) failReady(new Error("realtime websocket closed before ready"));
-      else if (!settled) finishMessage(new Error("realtime websocket closed before room.message event"));
+      else if (!settled) finishMessage(new Error(`realtime websocket closed before ${expectedType} event`));
     });
   });
+}
+
+async function openRealtimeMessageWatcher(token, expectedRoomId, timeoutMs = 5_000) {
+  return openRealtimeEventWatcher(token, expectedRoomId, "room.message", timeoutMs);
+}
+
+async function openRealtimeThreadWatcher(token, expectedRoomId, timeoutMs = 5_000) {
+  return openRealtimeEventWatcher(token, expectedRoomId, "room.thread", timeoutMs);
 }
 
 async function expectRealtimeConnectFailure(token, timeoutMs = 5_000) {
@@ -1273,6 +1287,55 @@ if (threadView.thread.root.envelopeId !== threadRootId) {
 }
 if (!threadView.thread.replies.some((message) => message.envelopeId === threadReply.message.envelopeId)) {
   throw new Error("thread endpoint did not include the reply");
+}
+
+const threadMutationRealtimeToken = await api("/v1/realtime/token", {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertRealtimeTokenResponse(threadMutationRealtimeToken, "POST /v1/realtime/token thread mutation");
+const threadMutationRealtimeWatcher = await openRealtimeThreadWatcher(
+  threadMutationRealtimeToken.realtimeToken,
+  group.room.roomId
+);
+const editedThreadReply = await api(`/v1/rooms/${group.room.roomId}/messages/${threadReply.message.envelopeId}`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: {
+    protocolType: "opaque-test",
+    ciphertext: "thread-reply-1-smoke-payload-edited",
+    clientEditedAt: new Date().toISOString()
+  }
+});
+assertMessageResponse(editedThreadReply, "PATCH thread reply emits room.thread");
+const threadMutationRealtimeEvent = await threadMutationRealtimeWatcher.wait;
+assertRealtimeRoomThreadEvent(threadMutationRealtimeEvent, "GET /v1/realtime room.thread after thread reply edit");
+if (
+  threadMutationRealtimeEvent.roomId !== group.room.roomId ||
+  threadMutationRealtimeEvent.envelopeId !== threadReply.message.envelopeId ||
+  threadMutationRealtimeEvent.rootEnvelopeId !== threadRootId ||
+  threadMutationRealtimeEvent.serverSequence !== threadReply.message.serverSequence ||
+  threadMutationRealtimeEvent.senderDeviceId !== owner.device.deviceId ||
+  threadMutationRealtimeEvent.alsoSentToRoom !== false
+) {
+  throw new Error("thread reply mutation did not emit a precise room.thread realtime event");
+}
+
+const hiddenThreadReply = await api(`/v1/rooms/${group.room.roomId}/messages/delete`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { scope: "for_me", envelopeIds: [threadReply.message.envelopeId] }
+});
+assertDeleteMessagesResponse(hiddenThreadReply, "POST delete thread reply for me");
+const userThreadAfterHide = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  headers: userHeaders
+});
+assertThreadResponse(userThreadAfterHide, "GET thread after viewer hides reply");
+if (userThreadAfterHide.thread.replies.some((message) => message.envelopeId === threadReply.message.envelopeId)) {
+  throw new Error("delete-for-me did not hide the thread reply from the viewer");
+}
+if (userThreadAfterHide.thread.root.threadSummary !== null) {
+  throw new Error("threadSummary counted a reply hidden for the viewer");
 }
 
 const threadReplyBroadcast = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
