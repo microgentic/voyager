@@ -5,6 +5,11 @@ export interface Env {
   CONVERSATION_COORDINATOR: DurableObjectNamespace;
   CALL_COORDINATOR: DurableObjectNamespace;
   BOOTSTRAP_TOKEN?: string;
+  CLOUDFLARE_REALTIME_APP_ID?: string;
+  CLOUDFLARE_REALTIME_APP_SECRET?: string;
+  CLOUDFLARE_REALTIME_API_BASE?: string;
+  CLOUDFLARE_REALTIME_TURN_USERNAME?: string;
+  CLOUDFLARE_REALTIME_TURN_CREDENTIAL?: string;
   // Comma-separated extra origins allowed by CORS (e.g. the production web host).
   // Dev/localhost and Tauri app origins are always allowed.
   CORS_ALLOWED_ORIGINS?: string;

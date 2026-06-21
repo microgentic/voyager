@@ -696,19 +696,35 @@ if (fetchedCall.call.callId !== createdCall.call.callId) {
 
 const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
   method: "POST",
-  headers: userHeaders
+  headers: ownerHeaders
 });
 assertCallRealtimeConfigResponse(realtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session");
 if (realtimeSessionConfig.realtime.configured !== false) {
-  throw new Error("PR 3 realtime session config must not claim media is configured");
+  throw new Error("unconfigured realtime session config must not claim media is configured");
 }
 const realtimeTrackConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
   method: "POST",
-  headers: userHeaders
+  headers: ownerHeaders
 });
 assertCallRealtimeConfigResponse(realtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks");
 if (!Array.isArray(realtimeTrackConfig.realtime.tracks) || realtimeTrackConfig.realtime.tracks.length !== 0) {
-  throw new Error("PR 3 realtime track config must not expose media tracks");
+  throw new Error("unconfigured realtime track config must not expose media tracks");
+}
+const realtimeRenegotiateConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/renegotiate`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertCallRealtimeConfigResponse(realtimeRenegotiateConfig, "POST /v1/calls/{callId}/realtime/renegotiate");
+if (realtimeRenegotiateConfig.realtime.configured !== false) {
+  throw new Error("unconfigured realtime renegotiate config must not claim media is configured");
+}
+const realtimeCloseTracksConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks/close`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertCallRealtimeConfigResponse(realtimeCloseTracksConfig, "POST /v1/calls/{callId}/realtime/tracks/close");
+if (realtimeCloseTracksConfig.realtime.configured !== false) {
+  throw new Error("unconfigured realtime close-tracks config must not claim media is configured");
 }
 
 await expectFailure(`/v1/rooms/${direct.room.roomId}/calls`, {

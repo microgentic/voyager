@@ -1,9 +1,11 @@
 import { randomId } from "../crypto";
-import { HttpError, stringField } from "../http";
+import { HttpError, optionalObject, stringField } from "../http";
 import { notifyRoomRealtime } from "../realtime";
 import type { AuthContext, Env } from "../types";
 import type {
   CallParticipantRow,
+  CallRealtimeSessionRow,
+  CallRealtimeTrackRow,
   CallRow,
   JsonObject,
   MembershipRow,
@@ -15,9 +17,13 @@ import { requireActiveRoom, requireRoomMembership } from "./rooms";
 type CallType = CallRow["call_type"];
 type CallStatus = CallRow["status"];
 type CallParticipantStatus = CallParticipantRow["status"];
+type CallRealtimeTrackKind = CallRealtimeTrackRow["kind"];
+type CallRealtimeTrackLocation = CallRealtimeTrackRow["location"];
 
 const LIVE_CALL_STATUSES: CallStatus[] = ["ringing", "active"];
 const CONNECTABLE_STATUSES: CallStatus[] = ["ringing", "active"];
+const REALTIME_PROVIDER = "cloudflare_realtime" as const;
+const DEFAULT_REALTIME_API_BASE = "https://rtc.live.cloudflare.com/v1";
 
 export async function createCall(
   env: Env,
@@ -222,6 +228,7 @@ export async function leaveCall(
     left: true,
     clearMute: true,
   });
+  await closeParticipantRealtimeSessions(env, callId, participant.call_participant_id);
   await insertCallEvent(env, auth, callId, "call.left", {
     roomId: call.room_id,
     deviceId: auth.device.device_id,
@@ -351,36 +358,165 @@ export async function getRealtimeSessionConfig(
   env: Env,
   auth: AuthContext,
   callId: string,
+  body: Record<string, unknown> = {},
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
-  return {
-    provider: "cloudflare_realtime",
-    configured: false,
-    callId,
-    callType: call.call_type,
-    status: call.status,
-    session: null,
-    message: "Realtime media integration is reserved for the audio PR.",
-  };
+  assertConnectableCall(call);
+  const participant = await requireConnectedParticipant(env, auth, callId);
+  const config = realtimeConfig(env);
+  if (!config.configured) return realtimeUnavailable(call, config);
+
+  const payload = await realtimeApiRequest(env, config, "/sessions/new", {
+    method: "POST",
+    query: { correlationId: `${callId}:${participant.call_participant_id}` },
+    body: {
+      sessionDescription: parseOptionalSessionDescription(body),
+    },
+  });
+  const providerSessionId = stringPayload(payload, "sessionId", "realtime_session_missing");
+  const session = await upsertRealtimeSession(env, auth, participant, providerSessionId);
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
+
+  return realtimeResponse(call, config, {
+    session: {
+      ...publicRealtimeSession(session),
+      sessionDescription: payload.sessionDescription ?? null,
+    },
+    tracks: availableTracks,
+    availableTracks,
+    message: "Realtime session ready",
+  });
 }
 
 export async function getRealtimeTrackConfig(
   env: Env,
   auth: AuthContext,
   callId: string,
+  body: Record<string, unknown> = {},
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
-  return {
-    provider: "cloudflare_realtime",
-    configured: false,
-    callId,
-    callType: call.call_type,
-    status: call.status,
-    tracks: [],
-    message: "Realtime media track publishing is reserved for the audio PR.",
-  };
+  assertConnectableCall(call);
+  await requireConnectedParticipant(env, auth, callId);
+  const config = realtimeConfig(env);
+  if (!config.configured) return realtimeUnavailable(call, config);
+
+  const providerSessionId = stringField(body, "sessionId", { max: 160 });
+  if (!providerSessionId) {
+    const availableTracks = await availableRealtimeTracks(env, callId);
+    return realtimeResponse(call, config, {
+      tracks: availableTracks,
+      availableTracks,
+      message: "Realtime tracks ready",
+    });
+  }
+
+  const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
+  const requestedTracks = parseRealtimeTracks(body, call);
+  if (requestedTracks.length === 0) {
+    const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
+    return realtimeResponse(call, config, {
+      session: publicRealtimeSession(session),
+      tracks: availableTracks,
+      availableTracks,
+      message: "Realtime tracks ready",
+    });
+  }
+
+  const payload = await realtimeApiRequest(env, config, `/sessions/${encodeURIComponent(providerSessionId)}/tracks/new`, {
+    method: "POST",
+    body: {
+      sessionDescription: parseOptionalSessionDescription(body),
+      tracks: requestedTracks.map(providerTrackInput),
+      autoDiscover: body.autoDiscover === true,
+    },
+  });
+  const tracks = tracksFromPayload(payload, requestedTracks);
+  await upsertRealtimeTracks(env, auth, session, tracks);
+  if (tracks.some((track) => track.location === "local")) {
+    await emitCallEvent(env, call.room_id, {
+      type: "call.updated",
+      callId,
+      callType: call.call_type,
+      status: call.status,
+    });
+  }
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
+
+  return realtimeResponse(call, config, {
+    session: publicRealtimeSession(session),
+    sessionDescription: payload.sessionDescription ?? null,
+    requiresImmediateRenegotiation: payload.requiresImmediateRenegotiation === true,
+    tracks,
+    availableTracks,
+    message: "Realtime tracks ready",
+  });
+}
+
+export async function renegotiateRealtimeSession(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown> = {},
+): Promise<JsonObject> {
+  const call = await getCall(env, callId);
+  await requireRoomMembership(env, auth, call.room_id);
+  assertConnectableCall(call);
+  await requireConnectedParticipant(env, auth, callId);
+  const config = realtimeConfig(env);
+  if (!config.configured) return realtimeUnavailable(call, config);
+
+  const providerSessionId = stringField(body, "sessionId", { required: true, max: 160 })!;
+  const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
+  const payload = await realtimeApiRequest(env, config, `/sessions/${encodeURIComponent(providerSessionId)}/renegotiate`, {
+    method: "PUT",
+    body: { sessionDescription: parseRequiredSessionDescription(body) },
+  });
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
+
+  return realtimeResponse(call, config, {
+    session: publicRealtimeSession(session),
+    sessionDescription: payload.sessionDescription ?? null,
+    tracks: availableTracks,
+    availableTracks,
+    message: "Realtime session renegotiated",
+  });
+}
+
+export async function closeRealtimeTracks(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown> = {},
+): Promise<JsonObject> {
+  const call = await getCall(env, callId);
+  await requireRoomMembership(env, auth, call.room_id);
+  await requireConnectedParticipant(env, auth, callId);
+  const config = realtimeConfig(env);
+  if (!config.configured) return realtimeUnavailable(call, config);
+
+  const providerSessionId = stringField(body, "sessionId", { required: true, max: 160 })!;
+  const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
+  const tracks = parseCloseRealtimeTracks(body);
+  const payload = await realtimeApiRequest(env, config, `/sessions/${encodeURIComponent(providerSessionId)}/tracks/close`, {
+    method: "PUT",
+    body: {
+      sessionDescription: parseOptionalSessionDescription(body),
+      tracks,
+      force: body.force === true,
+    },
+  });
+  await markRealtimeTracksClosed(env, session, tracks);
+  const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
+
+  return realtimeResponse(call, config, {
+    session: publicRealtimeSession(session),
+    sessionDescription: payload.sessionDescription ?? null,
+    tracks: availableTracks,
+    availableTracks,
+    message: "Realtime tracks closed",
+  });
 }
 
 export async function getCall(env: Env, callId: string): Promise<CallRow> {
@@ -539,6 +675,22 @@ async function requireCurrentParticipant(
   return participant;
 }
 
+async function requireConnectedParticipant(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+): Promise<CallParticipantRow> {
+  const participant = await requireCurrentParticipant(env, auth, callId);
+  if (participant.status !== "connected") {
+    throw new HttpError(
+      409,
+      "call_not_joined",
+      "Join the call before connecting media",
+    );
+  }
+  return participant;
+}
+
 async function updateParticipantStatus(
   env: Env,
   callParticipantId: string,
@@ -637,6 +789,7 @@ async function endCall(
   )
     .bind(call.call_id)
     .run();
+  await closeCallRealtimeSessions(env, call.call_id);
   await insertCallEvent(env, null, call.call_id, "call.ended", {
     roomId: call.room_id,
     status,
@@ -672,6 +825,582 @@ async function openInviteCount(env: Env, callId: string): Promise<number> {
     .bind(callId)
     .first<{ count: number }>();
   return row?.count ?? 0;
+}
+
+interface RealtimeConfig {
+  configured: boolean;
+  appId?: string;
+  appSecret?: string;
+  apiBase: string;
+  iceServers: JsonObject[];
+}
+
+interface RealtimeSessionDescription {
+  sdp: string;
+  type: string;
+}
+
+interface RealtimeTrackInput {
+  location: CallRealtimeTrackLocation;
+  sessionId?: string;
+  trackName: string;
+  kind: CallRealtimeTrackKind;
+  mid?: string;
+  bidirectionalMediaStream?: boolean;
+}
+
+interface CloseRealtimeTrackInput {
+  mid: string;
+}
+
+function realtimeConfig(env: Env): RealtimeConfig {
+  const appId = trimmedEnv(env.CLOUDFLARE_REALTIME_APP_ID);
+  const appSecret = trimmedEnv(env.CLOUDFLARE_REALTIME_APP_SECRET);
+  const apiBase = trimmedEnv(env.CLOUDFLARE_REALTIME_API_BASE) ?? DEFAULT_REALTIME_API_BASE;
+  const iceServers: JsonObject[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
+  const turnUsername = trimmedEnv(env.CLOUDFLARE_REALTIME_TURN_USERNAME);
+  const turnCredential = trimmedEnv(env.CLOUDFLARE_REALTIME_TURN_CREDENTIAL);
+  if (turnUsername && turnCredential) {
+    iceServers.push({
+      urls: [
+        "turn:turn.cloudflare.com:3478?transport=udp",
+        "turn:turn.cloudflare.com:3478?transport=tcp",
+        "turns:turn.cloudflare.com:5349?transport=tcp",
+      ],
+      username: turnUsername,
+      credential: turnCredential,
+    });
+  }
+
+  return {
+    configured: Boolean(appId && appSecret),
+    appId,
+    appSecret,
+    apiBase: apiBase.replace(/\/+$/, ""),
+    iceServers,
+  };
+}
+
+function trimmedEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function realtimeUnavailable(call: CallRow, config: RealtimeConfig): JsonObject {
+  return realtimeResponse(call, config, {
+    session: null,
+    tracks: [],
+    availableTracks: [],
+    message: "Cloudflare Realtime is not configured for this environment.",
+  });
+}
+
+function realtimeResponse(
+  call: CallRow,
+  config: RealtimeConfig,
+  extra: JsonObject,
+): JsonObject {
+  return {
+    provider: REALTIME_PROVIDER,
+    configured: config.configured,
+    callId: call.call_id,
+    callType: call.call_type,
+    status: call.status,
+    iceServers: config.iceServers,
+    ...extra,
+  };
+}
+
+async function realtimeApiRequest(
+  _env: Env,
+  config: RealtimeConfig,
+  path: string,
+  options: {
+    method: "GET" | "POST" | "PUT";
+    query?: Record<string, string>;
+    body?: Record<string, unknown>;
+  },
+): Promise<Record<string, unknown>> {
+  if (!config.appId || !config.appSecret) {
+    throw new HttpError(
+      503,
+      "realtime_not_configured",
+      "Cloudflare Realtime is not configured",
+    );
+  }
+
+  const url = new URL(`${config.apiBase}/apps/${encodeURIComponent(config.appId)}${path}`);
+  for (const [key, value] of Object.entries(options.query ?? {})) {
+    url.searchParams.set(key, value);
+  }
+  const response = await fetch(url.toString(), {
+    method: options.method,
+    headers: {
+      authorization: `Bearer ${config.appSecret}`,
+      accept: "application/json",
+      ...(options.body ? { "content-type": "application/json" } : {}),
+    },
+    body: options.body ? JSON.stringify(stripUndefined(options.body)) : undefined,
+  });
+
+  const contentType = response.headers.get("content-type") ?? "";
+  let payload: unknown = {};
+  if (contentType.includes("application/json")) {
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+  } else if (!response.ok) {
+    payload = { errorDescription: await response.text().catch(() => "") };
+  }
+  const objectPayload =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  const providerError = typeof objectPayload.errorCode === "string" ? objectPayload.errorCode : undefined;
+  if (!response.ok || providerError) {
+    const description =
+      typeof objectPayload.errorDescription === "string" && objectPayload.errorDescription.trim()
+        ? objectPayload.errorDescription
+        : "Cloudflare Realtime request failed";
+    throw new HttpError(502, "realtime_provider_error", description, {
+      status: response.status,
+      errorCode: providerError,
+    });
+  }
+  return objectPayload;
+}
+
+function stripUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .map(([key, entry]) => [key, stripUndefined(entry)]),
+  );
+}
+
+function parseOptionalSessionDescription(
+  body: Record<string, unknown>,
+): RealtimeSessionDescription | undefined {
+  const sessionDescription = optionalObject(body, "sessionDescription");
+  return sessionDescription ? parseSessionDescription(sessionDescription) : undefined;
+}
+
+function parseRequiredSessionDescription(
+  body: Record<string, unknown>,
+): RealtimeSessionDescription {
+  const sessionDescription = optionalObject(body, "sessionDescription");
+  if (!sessionDescription) {
+    throw new HttpError(400, "missing_field", "Missing required field: sessionDescription");
+  }
+  return parseSessionDescription(sessionDescription);
+}
+
+function parseSessionDescription(
+  body: Record<string, unknown>,
+): RealtimeSessionDescription {
+  const sdp = stringField(body, "sdp", { required: true, min: 1, max: 2_000_000 })!;
+  const type = stringField(body, "type", { required: true, max: 20 })!;
+  if (!["offer", "answer", "pranswer", "rollback"].includes(type)) {
+    throw new HttpError(400, "invalid_field", "Field is invalid: sessionDescription.type");
+  }
+  return { sdp, type };
+}
+
+function parseRealtimeTracks(
+  body: Record<string, unknown>,
+  call: CallRow,
+): RealtimeTrackInput[] {
+  const rawTracks = body.tracks;
+  if (rawTracks === undefined || rawTracks === null) return [];
+  if (!Array.isArray(rawTracks)) {
+    throw new HttpError(400, "invalid_field", "Field must be an array: tracks");
+  }
+  if (rawTracks.length > 20) {
+    throw new HttpError(400, "invalid_field", "Field has too many items: tracks");
+  }
+  return rawTracks.map((rawTrack, index) => {
+    if (!rawTrack || typeof rawTrack !== "object" || Array.isArray(rawTrack)) {
+      throw new HttpError(400, "invalid_field", `Field must be an object: tracks[${index}]`);
+    }
+    const track = rawTrack as Record<string, unknown>;
+    const location = parseTrackLocation(track, `tracks[${index}].location`);
+    const kind = parseTrackKind(track, `tracks[${index}].kind`);
+    if (call.call_type === "audio" && kind !== "audio") {
+      throw new HttpError(400, "invalid_track_kind", "Audio calls can only publish audio tracks");
+    }
+    const sessionId = stringField(track, "sessionId", { max: 160 });
+    if (location === "remote" && !sessionId) {
+      throw new HttpError(400, "missing_field", `Missing required field: tracks[${index}].sessionId`);
+    }
+    const bidirectionalMediaStream = track.bidirectionalMediaStream;
+    if (bidirectionalMediaStream !== undefined && typeof bidirectionalMediaStream !== "boolean") {
+      throw new HttpError(
+        400,
+        "invalid_field",
+        `Field must be a boolean: tracks[${index}].bidirectionalMediaStream`,
+      );
+    }
+    return {
+      location,
+      sessionId,
+      trackName: stringField(track, "trackName", { max: 160 }) ?? randomId("rtrack"),
+      kind,
+      mid: stringField(track, "mid", { max: 80 }),
+      bidirectionalMediaStream: bidirectionalMediaStream === true ? true : undefined,
+    };
+  });
+}
+
+function parseTrackLocation(
+  track: Record<string, unknown>,
+  field: string,
+): CallRealtimeTrackLocation {
+  const location = stringField(track, "location", { required: true, max: 20 });
+  if (location !== "local" && location !== "remote") {
+    throw new HttpError(400, "invalid_field", `Field is invalid: ${field}`);
+  }
+  return location;
+}
+
+function parseTrackKind(
+  track: Record<string, unknown>,
+  field: string,
+): CallRealtimeTrackKind {
+  const kind = stringField(track, "kind", { max: 20 }) ?? "audio";
+  if (kind !== "audio" && kind !== "video" && kind !== "screen" && kind !== "data") {
+    throw new HttpError(400, "invalid_field", `Field is invalid: ${field}`);
+  }
+  return kind;
+}
+
+function parseCloseRealtimeTracks(body: Record<string, unknown>): CloseRealtimeTrackInput[] {
+  const rawTracks = body.tracks;
+  if (!Array.isArray(rawTracks) || rawTracks.length === 0) {
+    throw new HttpError(400, "invalid_field", "Field must be a non-empty array: tracks");
+  }
+  if (rawTracks.length > 20) {
+    throw new HttpError(400, "invalid_field", "Field has too many items: tracks");
+  }
+  return rawTracks.map((rawTrack, index) => {
+    if (!rawTrack || typeof rawTrack !== "object" || Array.isArray(rawTrack)) {
+      throw new HttpError(400, "invalid_field", `Field must be an object: tracks[${index}]`);
+    }
+    const mid = stringField(rawTrack as Record<string, unknown>, "mid", {
+      required: true,
+      max: 80,
+    })!;
+    return { mid };
+  });
+}
+
+function providerTrackInput(track: RealtimeTrackInput): JsonObject {
+  return {
+    location: track.location,
+    sessionId: track.sessionId,
+    trackName: track.trackName,
+    kind: track.kind,
+    mid: track.mid,
+    bidirectionalMediaStream: track.bidirectionalMediaStream,
+  };
+}
+
+function tracksFromPayload(
+  payload: Record<string, unknown>,
+  fallback: RealtimeTrackInput[],
+): RealtimeTrackInput[] {
+  const payloadTracks = payload.tracks;
+  if (!Array.isArray(payloadTracks)) return fallback;
+  return payloadTracks.map((rawTrack, index) => {
+    const fallbackTrack = fallback[index] ?? {
+      location: "local" as const,
+      trackName: randomId("rtrack"),
+      kind: "audio" as const,
+    };
+    if (!rawTrack || typeof rawTrack !== "object" || Array.isArray(rawTrack)) return fallbackTrack;
+    const track = rawTrack as Record<string, unknown>;
+    return {
+      location: providerString(track.location) === "remote" ? "remote" : fallbackTrack.location,
+      sessionId: providerString(track.sessionId) ?? fallbackTrack.sessionId,
+      trackName: providerString(track.trackName) ?? fallbackTrack.trackName,
+      kind: providerKind(track.kind) ?? fallbackTrack.kind,
+      mid: providerString(track.mid) ?? fallbackTrack.mid,
+      bidirectionalMediaStream:
+        typeof track.bidirectionalMediaStream === "boolean"
+          ? track.bidirectionalMediaStream
+          : fallbackTrack.bidirectionalMediaStream,
+    };
+  });
+}
+
+function providerString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function providerKind(value: unknown): CallRealtimeTrackKind | undefined {
+  if (value === "audio" || value === "video" || value === "screen" || value === "data") return value;
+  return undefined;
+}
+
+async function upsertRealtimeSession(
+  env: Env,
+  auth: AuthContext,
+  participant: CallParticipantRow,
+  providerSessionId: string,
+): Promise<CallRealtimeSessionRow> {
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO call_realtime_sessions (
+       call_realtime_session_id, call_id, call_participant_id, account_id,
+       principal_id, device_id, provider, provider_session_id, status
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
+     ON CONFLICT(provider, provider_session_id) DO UPDATE SET
+       call_id = excluded.call_id,
+       call_participant_id = excluded.call_participant_id,
+       account_id = excluded.account_id,
+       principal_id = excluded.principal_id,
+       device_id = excluded.device_id,
+       status = 'active',
+       closed_at = NULL,
+       updated_at = CURRENT_TIMESTAMP`,
+  )
+    .bind(
+      randomId("crs"),
+      participant.call_id,
+      participant.call_participant_id,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      auth.device.device_id,
+      REALTIME_PROVIDER,
+      providerSessionId,
+    )
+    .run();
+  const session = await env.CONTROL_DB.prepare(
+    `SELECT *
+     FROM call_realtime_sessions
+     WHERE provider = ? AND provider_session_id = ?`,
+  )
+    .bind(REALTIME_PROVIDER, providerSessionId)
+    .first<CallRealtimeSessionRow>();
+  if (!session) {
+    throw new HttpError(500, "realtime_session_not_saved", "Realtime session was not saved");
+  }
+  return session;
+}
+
+async function requireOwnedRealtimeSession(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  providerSessionId: string,
+): Promise<CallRealtimeSessionRow> {
+  const session = await env.CONTROL_DB.prepare(
+    `SELECT *
+     FROM call_realtime_sessions
+     WHERE call_id = ?
+       AND provider = ?
+       AND provider_session_id = ?
+       AND account_id = ?
+       AND principal_id = ?
+       AND device_id = ?
+       AND status = 'active'
+     LIMIT 1`,
+  )
+    .bind(
+      callId,
+      REALTIME_PROVIDER,
+      providerSessionId,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      auth.device.device_id,
+    )
+    .first<CallRealtimeSessionRow>();
+  if (!session) {
+    throw new HttpError(
+      404,
+      "realtime_session_not_found",
+      "Realtime session not found",
+    );
+  }
+  return session;
+}
+
+async function upsertRealtimeTracks(
+  env: Env,
+  auth: AuthContext,
+  session: CallRealtimeSessionRow,
+  tracks: RealtimeTrackInput[],
+): Promise<void> {
+  for (const track of tracks) {
+    const ownerProviderSessionId =
+      track.location === "remote" ? track.sessionId ?? null : session.provider_session_id;
+    await env.CONTROL_DB.prepare(
+      `INSERT INTO call_realtime_tracks (
+         call_realtime_track_id, call_id, call_realtime_session_id, provider,
+         provider_session_id, owner_provider_session_id, provider_track_name,
+         location, kind, mid, account_id, principal_id, device_id, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+       ON CONFLICT(call_realtime_session_id, provider_track_name, location) DO UPDATE SET
+         owner_provider_session_id = excluded.owner_provider_session_id,
+         kind = excluded.kind,
+         mid = excluded.mid,
+         status = 'active',
+         closed_at = NULL,
+         updated_at = CURRENT_TIMESTAMP`,
+    )
+      .bind(
+        randomId("crt"),
+        session.call_id,
+        session.call_realtime_session_id,
+        REALTIME_PROVIDER,
+        session.provider_session_id,
+        ownerProviderSessionId,
+        track.trackName,
+        track.location,
+        track.kind,
+        track.mid ?? null,
+        auth.account.account_id,
+        auth.principal.principal_id,
+        auth.device.device_id,
+      )
+      .run();
+  }
+}
+
+async function availableRealtimeTracks(
+  env: Env,
+  callId: string,
+  excludingProviderSessionId?: string,
+): Promise<JsonObject[]> {
+  const result = await env.CONTROL_DB.prepare(
+    `SELECT t.*, p.display_name, p.principal_type
+     FROM call_realtime_tracks t
+     JOIN principals p ON p.principal_id = t.principal_id
+     WHERE t.call_id = ?
+       AND t.provider = ?
+       AND t.status = 'active'
+       AND t.location = 'local'
+       AND (? IS NULL OR t.provider_session_id <> ?)
+     ORDER BY t.created_at ASC`,
+  )
+    .bind(
+      callId,
+      REALTIME_PROVIDER,
+      excludingProviderSessionId ?? null,
+      excludingProviderSessionId ?? null,
+    )
+    .all<
+      CallRealtimeTrackRow & {
+        display_name: string;
+        principal_type: string;
+      }
+    >();
+  return (result.results ?? []).map((track) => ({
+    location: "remote",
+    sessionId: track.provider_session_id,
+    trackName: track.provider_track_name,
+    kind: track.kind,
+    mid: track.mid,
+    principalId: track.principal_id,
+    deviceId: track.device_id,
+    displayName: track.display_name,
+    principalType: track.principal_type,
+  }));
+}
+
+async function markRealtimeTracksClosed(
+  env: Env,
+  session: CallRealtimeSessionRow,
+  tracks: CloseRealtimeTrackInput[],
+): Promise<void> {
+  const mids = tracks.map((track) => track.mid);
+  const placeholders = mids.map(() => "?").join(", ");
+  await env.CONTROL_DB.prepare(
+    `UPDATE call_realtime_tracks
+     SET status = 'closed',
+         closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE call_realtime_session_id = ?
+       AND status = 'active'
+       AND mid IN (${placeholders})`,
+  )
+    .bind(session.call_realtime_session_id, ...mids)
+    .run();
+}
+
+async function closeParticipantRealtimeSessions(
+  env: Env,
+  callId: string,
+  callParticipantId: string,
+): Promise<void> {
+  await env.CONTROL_DB.prepare(
+    `UPDATE call_realtime_tracks
+     SET status = 'closed',
+         closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE status = 'active'
+       AND call_id = ?
+       AND call_realtime_session_id IN (
+         SELECT call_realtime_session_id
+         FROM call_realtime_sessions
+         WHERE call_id = ? AND call_participant_id = ?
+       )`,
+  )
+    .bind(callId, callId, callParticipantId)
+    .run();
+  await env.CONTROL_DB.prepare(
+    `UPDATE call_realtime_sessions
+     SET status = 'closed',
+         closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE call_id = ?
+       AND call_participant_id = ?
+       AND status = 'active'`,
+  )
+    .bind(callId, callParticipantId)
+    .run();
+}
+
+async function closeCallRealtimeSessions(env: Env, callId: string): Promise<void> {
+  await env.CONTROL_DB.prepare(
+    `UPDATE call_realtime_tracks
+     SET status = 'closed',
+         closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE call_id = ? AND status = 'active'`,
+  )
+    .bind(callId)
+    .run();
+  await env.CONTROL_DB.prepare(
+    `UPDATE call_realtime_sessions
+     SET status = 'closed',
+         closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE call_id = ? AND status = 'active'`,
+  )
+    .bind(callId)
+    .run();
+}
+
+function publicRealtimeSession(session: CallRealtimeSessionRow): JsonObject {
+  return {
+    sessionId: session.provider_session_id,
+    status: session.status,
+    createdAt: session.created_at,
+    updatedAt: session.updated_at,
+  };
+}
+
+function stringPayload(
+  payload: Record<string, unknown>,
+  key: string,
+  code: string,
+): string {
+  const value = payload[key];
+  if (typeof value === "string" && value.trim()) return value.trim();
+  throw new HttpError(502, code, "Cloudflare Realtime response was missing expected data");
 }
 
 async function insertCallEvent(

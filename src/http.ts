@@ -86,6 +86,12 @@ export async function readJsonObject(request: Request): Promise<Record<string, u
   return parsed as Record<string, unknown>;
 }
 
+export async function readOptionalJsonObject(request: Request): Promise<Record<string, unknown>> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return {};
+  return readJsonObject(request);
+}
+
 export function stringField(
   body: Record<string, unknown>,
   key: string,

@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { ui } from '$lib/stores';
 	import { cn } from '$lib/utils/cn';
+	import CallSurface from '$lib/components/calls/CallSurface.svelte';
 	import ConversationListPane from '$lib/components/nav/ConversationListPane.svelte';
 
 	let { children } = $props();
@@ -135,3 +136,4 @@
 		</section>
 	{/if}
 </div>
+<CallSurface />

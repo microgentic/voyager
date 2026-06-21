@@ -462,14 +462,85 @@ export interface CreateCallInput {
 	callType: CallType;
 }
 
+export interface CallIceServer {
+	urls: string | string[];
+	username?: string;
+	credential?: string;
+}
+
+export interface CallRealtimeSessionDescription {
+	type: 'offer' | 'answer' | 'pranswer' | 'rollback';
+	sdp: string;
+}
+
+export type CallRealtimeTrackLocation = 'local' | 'remote';
+export type CallRealtimeTrackKind = 'audio' | 'video' | 'screen' | 'data';
+
+export interface CallRealtimeSession {
+	sessionId: string;
+	status?: 'active' | 'closed' | 'failed';
+	createdAt?: string;
+	updatedAt?: string;
+	sessionDescription?: CallRealtimeSessionDescription | null;
+}
+
+export interface CallRealtimeTrack {
+	location: CallRealtimeTrackLocation;
+	sessionId?: string;
+	trackName: string;
+	kind: CallRealtimeTrackKind;
+	mid?: string | null;
+	principalId?: string;
+	deviceId?: string;
+	displayName?: string | null;
+	principalType?: PrincipalType;
+	bidirectionalMediaStream?: boolean;
+}
+
+export interface CallRealtimeSessionInput {
+	sessionDescription?: CallRealtimeSessionDescription;
+}
+
+export interface CallRealtimeTrackInput {
+	location: CallRealtimeTrackLocation;
+	sessionId?: string;
+	trackName?: string;
+	kind?: CallRealtimeTrackKind;
+	mid?: string | null;
+	bidirectionalMediaStream?: boolean;
+}
+
+export interface CallRealtimeTracksInput {
+	sessionId?: string;
+	sessionDescription?: CallRealtimeSessionDescription;
+	tracks?: CallRealtimeTrackInput[];
+	autoDiscover?: boolean;
+}
+
+export interface CallRealtimeRenegotiateInput {
+	sessionId: string;
+	sessionDescription: CallRealtimeSessionDescription;
+}
+
+export interface CallRealtimeCloseTracksInput {
+	sessionId: string;
+	sessionDescription?: CallRealtimeSessionDescription;
+	tracks: Array<{ mid: string }>;
+	force?: boolean;
+}
+
 export interface CallRealtimeConfig {
 	provider: 'cloudflare_realtime';
 	configured: boolean;
 	callId: string;
 	callType: CallType;
 	status: CallStatus;
-	session?: unknown | null;
-	tracks?: unknown[];
+	iceServers?: CallIceServer[];
+	session?: CallRealtimeSession | null;
+	sessionDescription?: CallRealtimeSessionDescription | null;
+	tracks?: CallRealtimeTrack[];
+	availableTracks?: CallRealtimeTrack[];
+	requiresImmediateRenegotiation?: boolean;
 	message: string;
 }
 

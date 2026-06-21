@@ -222,6 +222,41 @@ export interface CallEventRow {
   created_at: string;
 }
 
+export interface CallRealtimeSessionRow {
+  call_realtime_session_id: string;
+  call_id: string;
+  call_participant_id: string;
+  account_id: string;
+  principal_id: string;
+  device_id: string;
+  provider: "cloudflare_realtime";
+  provider_session_id: string;
+  status: "active" | "closed" | "failed";
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+}
+
+export interface CallRealtimeTrackRow {
+  call_realtime_track_id: string;
+  call_id: string;
+  call_realtime_session_id: string;
+  provider: "cloudflare_realtime";
+  provider_session_id: string;
+  owner_provider_session_id: string | null;
+  provider_track_name: string;
+  location: "local" | "remote";
+  kind: "audio" | "video" | "screen" | "data";
+  mid: string | null;
+  account_id: string;
+  principal_id: string;
+  device_id: string;
+  status: "active" | "closed" | "failed";
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+}
+
 export interface RoomInvitationRow {
   room_invitation_id: string;
   room_id: string;

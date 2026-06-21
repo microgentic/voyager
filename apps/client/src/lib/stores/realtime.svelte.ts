@@ -1,6 +1,7 @@
 import { api } from '$lib/api';
-import type { RealtimeEvent } from '$lib/api/types';
+import type { RealtimeCallEvent, RealtimeEvent } from '$lib/api/types';
 import { auth } from './auth.svelte';
+import { calls } from './calls.svelte';
 import { messages } from './messages.svelte';
 import { sync } from './sync.svelte';
 import { threads } from './threads.svelte';
@@ -151,6 +152,12 @@ class RealtimeStore {
 			this.lastServerSequence = event.serverSequence ?? null;
 			if (event.roomId) sync.pokeRoomNow(event.roomId, event.serverSequence);
 			else sync.pokeNow();
+			return;
+		}
+		if (event.type.startsWith('call.')) {
+			this.lastEventAt = new Date();
+			this.lastRoomId = event.roomId;
+			void calls.handleRealtimeEvent(event as RealtimeCallEvent);
 		}
 	}
 

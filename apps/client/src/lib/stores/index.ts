@@ -5,6 +5,7 @@ export { messages, type ChatMessage } from './messages.svelte';
 export { threads } from './threads.svelte';
 export { sync } from './sync.svelte';
 export { realtime } from './realtime.svelte';
+export { calls } from './calls.svelte';
 export { principals } from './principals.svelte';
 export { invitations } from './invitations.svelte';
 export { collections } from './collections.svelte';
