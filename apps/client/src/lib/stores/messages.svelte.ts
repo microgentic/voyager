@@ -184,9 +184,9 @@ class MessagesStore {
 		};
 	}
 
-	async ingest(envelopes: MessageEnvelope[]): Promise<void> {
-		if (!envelopes.length) return;
-		const decoded = await Promise.all(
+	private async decodeEnvelopes(envelopes: MessageEnvelope[]): Promise<ChatMessage[]> {
+		if (!envelopes.length) return [];
+		return Promise.all(
 			envelopes.map(async (env) =>
 				this.toChatMessage(
 					env,
@@ -196,6 +196,11 @@ class MessagesStore {
 				)
 			)
 		);
+	}
+
+	async ingest(envelopes: MessageEnvelope[]): Promise<void> {
+		const decoded = await this.decodeEnvelopes(envelopes);
+		if (!decoded.length) return;
 		this.applyMessages(decoded);
 	}
 
@@ -236,7 +241,10 @@ class MessagesStore {
 	/** Load (or refresh) a thread: its root summary into the main timeline and its replies into the thread store. */
 	async openThread(roomId: string, rootEnvelopeId: string): Promise<void> {
 		const view = await api.getThread(roomId, rootEnvelopeId);
-		await this.ingest([view.root, ...view.replies]);
+		const [root, ...replies] = await this.decodeEnvelopes([view.root, ...view.replies]);
+		if (root) this.applyMessages([root]);
+		this.applyMessages(replies);
+		this.reconcileThread(rootEnvelopeId, replies);
 	}
 
 	/** Refresh a thread after a realtime hint without disturbing optimistic state. */
@@ -519,6 +527,41 @@ class MessagesStore {
 		}
 	}
 
+	private reconcileThread(rootEnvelopeId: string, serverReplies: ChatMessage[]): void {
+		const serverEnvelopeIds = new Set(serverReplies.map((m) => m.envelopeId).filter(Boolean));
+		const serverIdempotencyKeys = new Set(serverReplies.map((m) => m.idempotencyKey).filter(Boolean));
+		const optimistic = this.threadList(rootEnvelopeId).filter((m) => {
+			if (m.delivery === 'sent' && m.envelopeId) return false;
+			if (m.envelopeId && serverEnvelopeIds.has(m.envelopeId)) return false;
+			if (m.idempotencyKey && serverIdempotencyKeys.has(m.idempotencyKey)) return false;
+			return true;
+		});
+		this.threads = {
+			...this.threads,
+			[rootEnvelopeId]: sortMessages([...serverReplies, ...optimistic])
+		};
+	}
+
+	private threadRootsForEnvelopeIds(roomId: string, envelopeIds: string[]): string[] {
+		const ids = new Set(envelopeIds);
+		const roots = new Set<string>();
+		for (const message of this.list(roomId)) {
+			if (!message.envelopeId || !ids.has(message.envelopeId)) continue;
+			if (message.threadRootEnvelopeId) roots.add(message.threadRootEnvelopeId);
+		}
+		for (const [rootEnvelopeId, list] of Object.entries(this.threads)) {
+			if (
+				list.some(
+					(message) =>
+						message.roomId === roomId && message.envelopeId && ids.has(message.envelopeId)
+				)
+			) {
+				roots.add(rootEnvelopeId);
+			}
+		}
+		return Array.from(roots);
+	}
+
 	async retry(message: ChatMessage): Promise<void> {
 		if (message.delivery !== 'failed') return;
 		// Drop the failed placeholder and resend its content through the right path.
@@ -562,7 +605,9 @@ class MessagesStore {
 		const ids = Array.from(new Set(envelopeIds.filter(Boolean)));
 		if (!ids.length) return [];
 		const result = await api.deleteMessagesForMe(roomId, ids);
+		const threadRoots = this.threadRootsForEnvelopeIds(roomId, result.envelopeIds);
 		this.removeEnvelopeIds(roomId, result.envelopeIds);
+		for (const rootEnvelopeId of threadRoots) void this.syncThread(roomId, rootEnvelopeId);
 		return result.envelopeIds;
 	}
 
@@ -614,6 +659,16 @@ class MessagesStore {
 			...this.byRoom,
 			[roomId]: this.list(roomId).filter((m) => !m.envelopeId || !ids.has(m.envelopeId))
 		};
+		const nextThreads = { ...this.threads };
+		let changed = false;
+		for (const [rootEnvelopeId, list] of Object.entries(this.threads)) {
+			const filtered = list.filter((m) => !m.envelopeId || !ids.has(m.envelopeId));
+			if (filtered.length !== list.length) {
+				nextThreads[rootEnvelopeId] = filtered;
+				changed = true;
+			}
+		}
+		if (changed) this.threads = nextThreads;
 	}
 
 	removeKeys(roomId: string, keys: string[]): void {

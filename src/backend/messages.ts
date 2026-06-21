@@ -52,10 +52,10 @@ export function messageSelectColumns(alias = "me"): string {
      )) AS reaction_summary,
     (SELECT mp.pinned_at FROM message_pins mp WHERE mp.envelope_id = ${alias}.envelope_id AND mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL ORDER BY mp.pinned_at DESC LIMIT 1) AS pinned_at,
     (SELECT mp.pinned_by_principal_id FROM message_pins mp WHERE mp.envelope_id = ${alias}.envelope_id AND mp.room_id = ${alias}.room_id AND mp.unpinned_at IS NULL ORDER BY mp.pinned_at DESC LIMIT 1) AS pinned_by_principal_id,
-    (SELECT COUNT(*) FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?)) AS thread_reply_count,
-    (SELECT tr.envelope_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_envelope_id,
-    (SELECT tr.sender_principal_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_sender_principal_id,
-    (SELECT tr.server_received_at FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_at`;
+    (SELECT COUNT(*) FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.room_id = ${alias}.room_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?)) AS thread_reply_count,
+    (SELECT tr.envelope_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.room_id = ${alias}.room_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_envelope_id,
+    (SELECT tr.sender_principal_id FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.room_id = ${alias}.room_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_sender_principal_id,
+    (SELECT tr.server_received_at FROM message_envelopes tr WHERE tr.thread_root_envelope_id = ${alias}.envelope_id AND tr.room_id = ${alias}.room_id AND tr.state != 'purged' AND tr.expires_at > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM message_visibility mv WHERE mv.envelope_id = tr.envelope_id AND mv.account_id = ?) ORDER BY tr.server_sequence DESC LIMIT 1) AS thread_last_reply_at`;
 }
 
 export function messageSelectBindValues(auth: AuthContext): string[] {
@@ -111,10 +111,6 @@ export async function sendMessageEnvelope(
     throw new HttpError(409, "room_not_active", "Room is not active");
   }
   const threadReply = options.threadReply ?? null;
-  if (threadReply) {
-    await assertThreadRootEligible(env, auth, roomId, threadReply.rootEnvelopeId);
-  }
-  const contextMs = durationSince(startedAt);
   const idempotencyKey = stringField(body, "idempotencyKey", {
     required: true,
     min: 8,
@@ -152,16 +148,39 @@ export async function sendMessageEnvelope(
       "Protocol type is not allowed",
     );
   }
-  const envelopeId = randomId("msg");
-  const expiresAt = sqliteTimestamp(
-    Date.now() + Number(context.message_retention_days) * 24 * 60 * 60 * 1000,
-  );
   const clientCreatedAt =
     stringField(body, "clientCreatedAt", { max: 80 }) ?? null;
   const attachmentIds = stringArrayField(body, "attachmentIds", {
     maxItems: 20,
   });
   const forwardSource = options.forwardSource ?? null;
+
+  if (threadReply) {
+    const existingForIdempotency = await env.CONTROL_DB.prepare(
+      "SELECT * FROM message_envelopes WHERE sender_device_id = ? AND idempotency_key = ?",
+    )
+      .bind(auth.device.device_id, idempotencyKey)
+      .first<Record<string, unknown>>();
+    if (existingForIdempotency) {
+      return duplicateSendMessageResult(
+        env,
+        auth,
+        roomId,
+        requestId,
+        existingForIdempotency,
+        startedAt,
+        durationSince(startedAt),
+        0,
+      );
+    }
+    await assertThreadRootEligible(env, auth, roomId, threadReply.rootEnvelopeId);
+  }
+  const contextMs = durationSince(startedAt);
+
+  const envelopeId = randomId("msg");
+  const expiresAt = sqliteTimestamp(
+    Date.now() + Number(context.message_retention_days) * 24 * 60 * 60 * 1000,
+  );
   const insertStartedAt = performance.now();
   const inserted = await env.CONTROL_DB.prepare(
     `INSERT INTO message_envelopes (
@@ -213,39 +232,16 @@ export async function sendMessageEnvelope(
         "message_idempotency_conflict",
         "Message idempotency key could not be resolved",
       );
-    let realtimeMs = 0;
-    if (String(existing.room_id) === roomId) {
-      const realtimeStartedAt = performance.now();
-      await notifyRoomRealtime(
-        env,
-        roomId,
-        threadRealtimeEvent(
-          threadReply,
-          String(existing.envelope_id),
-          Number(existing.server_sequence),
-          auth.device.device_id,
-        ),
-      ).catch((error) => console.warn("realtime notification failed", error));
-      realtimeMs = durationSince(realtimeStartedAt);
-    }
-    const metrics = finalizeSendMetrics({
-      duplicate: true,
+    return duplicateSendMessageResult(
+      env,
+      auth,
+      roomId,
+      requestId,
+      existing,
       startedAt,
       contextMs,
       insertMs,
-      postWriteMs: 0,
-      realtimeMs,
-    });
-    logSendMessagePerformance(requestId, roomId, existing, metrics);
-    return {
-      message: await getPublicMessage(
-        env,
-        String(existing.envelope_id),
-        auth.principal.principal_id,
-        auth.account.account_id,
-      ),
-      metrics,
-    };
+    );
   }
 
   const postWriteStartedAt = performance.now();
@@ -273,12 +269,7 @@ export async function sendMessageEnvelope(
   await notifyRoomRealtime(
     env,
     roomId,
-    threadRealtimeEvent(
-      threadReply,
-      envelopeId,
-      Number(inserted.server_sequence),
-      auth.device.device_id,
-    ),
+    sendRealtimeEventFromMessage(inserted, auth.device.device_id),
   ).catch((error) => console.warn("realtime notification failed", error));
   const realtimeMs = durationSince(realtimeStartedAt);
   const metrics = finalizeSendMetrics({
@@ -741,13 +732,51 @@ async function assertThreadRootEligible(
   }
 }
 
+async function duplicateSendMessageResult(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  requestId: string,
+  existing: Record<string, unknown>,
+  startedAt: number,
+  contextMs: number,
+  insertMs: number,
+): Promise<SendMessageResult> {
+  let realtimeMs = 0;
+  if (String(existing.room_id) === roomId) {
+    const realtimeStartedAt = performance.now();
+    await notifyRoomRealtime(
+      env,
+      roomId,
+      sendRealtimeEventFromMessage(existing, auth.device.device_id),
+    ).catch((error) => console.warn("realtime notification failed", error));
+    realtimeMs = durationSince(realtimeStartedAt);
+  }
+  const metrics = finalizeSendMetrics({
+    duplicate: true,
+    startedAt,
+    contextMs,
+    insertMs,
+    postWriteMs: 0,
+    realtimeMs,
+  });
+  logSendMessagePerformance(requestId, roomId, existing, metrics);
+  return {
+    message: await getPublicMessage(
+      env,
+      String(existing.envelope_id),
+      auth.principal.principal_id,
+      auth.account.account_id,
+    ),
+    metrics,
+  };
+}
+
 // Thread replies reuse the send pipeline but surface a distinct realtime hint so
 // clients can refresh the root summary in place (its sequence does not change)
 // and pull the reply into the main timeline only when it was also sent there.
-function threadRealtimeEvent(
-  threadReply: ThreadReply | null,
-  envelopeId: string,
-  serverSequence: number,
+function sendRealtimeEventFromMessage(
+  message: Record<string, unknown>,
   senderDeviceId: string,
 ): {
   type: "room.message" | "room.thread";
@@ -757,7 +786,10 @@ function threadRealtimeEvent(
   rootEnvelopeId?: string;
   alsoSentToRoom?: boolean;
 } {
-  if (!threadReply) {
+  const envelopeId = String(message.envelope_id);
+  const serverSequence = Number(message.server_sequence);
+  const rootEnvelopeId = message.thread_root_envelope_id;
+  if (typeof rootEnvelopeId !== "string" || rootEnvelopeId.length === 0) {
     return { type: "room.message", envelopeId, serverSequence, senderDeviceId };
   }
   return {
@@ -765,8 +797,9 @@ function threadRealtimeEvent(
     envelopeId,
     serverSequence,
     senderDeviceId,
-    rootEnvelopeId: threadReply.rootEnvelopeId,
-    alsoSentToRoom: threadReply.alsoSendToRoom,
+    rootEnvelopeId,
+    alsoSentToRoom:
+      message.also_sent_to_room === 1 || message.also_sent_to_room === true,
   };
 }
 

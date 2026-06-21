@@ -1411,6 +1411,22 @@ if (threadAfterRootDelete.thread.root.deletedForEveryone.deleted !== true) {
 if (!threadAfterRootDelete.thread.replies.some((message) => message.envelopeId === threadReply.message.envelopeId)) {
   throw new Error("existing replies should remain after the root is deleted");
 }
+const duplicateThreadReplyAfterRootDelete = await api(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `thread-reply-1-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "thread-reply-1-smoke-payload"
+  }
+});
+assertMessageResponse(duplicateThreadReplyAfterRootDelete, "POST duplicate thread reply after root delete");
+if (
+  duplicateThreadReplyAfterRootDelete.message.envelopeId !== threadReply.message.envelopeId ||
+  duplicateThreadReplyAfterRootDelete.message.serverSequence !== threadReply.message.serverSequence
+) {
+  throw new Error("duplicate thread reply retry after root delete did not recover the original message");
+}
 await expectFailure(`/v1/rooms/${group.room.roomId}/messages/${threadRootId}/thread`, {
   method: "POST",
   headers: ownerHeaders,
