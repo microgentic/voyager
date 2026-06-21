@@ -1,6 +1,12 @@
 import { audit, requireAdmin } from "../db";
+import { randomId } from "../crypto";
 import { HttpError, json, readJsonObject, requireMethod, routeParams, stringField } from "../http";
 import type { AuthContext, Env } from "../types";
+import {
+  callMutationTimingHeaders,
+  requireCallCoordinatorResult,
+  runCallMutationThroughCallCoordinator,
+} from "./call-coordinator";
 import {
   requireCoordinatorResult,
   runMutationThroughConversationCoordinator,
@@ -24,6 +30,9 @@ import {
   deleteSidebarCollectionItem,
   downloadAttachmentBlob,
   getRoomForMember,
+  getPublicCall,
+  getRealtimeSessionConfig,
+  getRealtimeTrackConfig,
   getRoomIdForPendingRoomInvitation,
   getThread,
   listAdminAgentRequests,
@@ -33,6 +42,7 @@ import {
   listOwnAgentRequests,
   listOwnDeviceKeyPackages,
   listPrincipalDevices,
+  listRoomCalls,
   listPrincipals,
   listRoomInvitations,
   listRoomMessages,
@@ -609,6 +619,144 @@ export async function handleBackendFirstRoutes(
         ),
       },
     );
+  }
+
+  const roomCallsMatch = routeParams(
+    /^\/v1\/rooms\/([^/]+)\/calls$/,
+    url.pathname,
+  );
+  if (roomCallsMatch) {
+    if (request.method === "GET") {
+      const startedAt = performance.now();
+      return json(
+        { ok: true, ...(await listRoomCalls(env, auth, roomCallsMatch[1], url)) },
+        { headers: readTimingHeaders("calls", authTimingMs, startedAt) },
+      );
+    }
+    if (request.method === "POST") {
+      const callId = randomId("call");
+      const mutation = await runCallMutationThroughCallCoordinator(
+        env,
+        auth,
+        callId,
+        requestId,
+        {
+          operation: "call.create",
+          roomId: roomCallsMatch[1],
+          body: await readJsonObject(request),
+        },
+      );
+      const call = requireCallCoordinatorResult(mutation.result);
+      await audit(env, {
+        actorAccountId: auth.account.account_id,
+        action: "call.create",
+        targetType: "call",
+        targetId: callId,
+        requestId,
+        result: "success",
+        metadata: {
+          roomId: roomCallsMatch[1],
+          callType: call.callType,
+        },
+      });
+      return json(
+        { ok: true, call },
+        {
+          status: 201,
+          headers: callMutationTimingHeaders("callCreate", mutation.metrics),
+        },
+      );
+    }
+  }
+
+  const callMatch = routeParams(/^\/v1\/calls\/([^/]+)$/, url.pathname);
+  if (callMatch) {
+    requireMethod(request, "GET");
+    const startedAt = performance.now();
+    return json(
+      { ok: true, call: await getPublicCall(env, auth, callMatch[1]) },
+      { headers: readTimingHeaders("call", authTimingMs, startedAt) },
+    );
+  }
+
+  const callActionMatch = routeParams(
+    /^\/v1\/calls\/([^/]+)\/(join|leave|decline|mute|unmute)$/,
+    url.pathname,
+  );
+  if (callActionMatch) {
+    requireMethod(request, "POST");
+    const [, callId, action] = callActionMatch;
+    const mutation = await runCallMutationThroughCallCoordinator(
+      env,
+      auth,
+      callId,
+      requestId,
+      {
+        operation: `call.${action}`,
+      },
+    );
+    const call = requireCallCoordinatorResult(mutation.result);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: `call.${action}`,
+      targetType: "call",
+      targetId: callId,
+      requestId,
+      result: "success",
+    });
+    return json(
+      { ok: true, call },
+      {
+        headers: callMutationTimingHeaders(
+          `call${capitalize(action)}`,
+          mutation.metrics,
+        ),
+      },
+    );
+  }
+
+  const callParticipantMatch = routeParams(
+    /^\/v1\/calls\/([^/]+)\/participants\/me$/,
+    url.pathname,
+  );
+  if (callParticipantMatch) {
+    requireMethod(request, "PATCH");
+    const mutation = await runCallMutationThroughCallCoordinator(
+      env,
+      auth,
+      callParticipantMatch[1],
+      requestId,
+      {
+        operation: "call.participant.update",
+        body: await readJsonObject(request),
+      },
+    );
+    const call = requireCallCoordinatorResult(mutation.result);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "call.participant.update",
+      targetType: "call",
+      targetId: callParticipantMatch[1],
+      requestId,
+      result: "success",
+    });
+    return json(
+      { ok: true, call },
+      { headers: callMutationTimingHeaders("callParticipantUpdate", mutation.metrics) },
+    );
+  }
+
+  const callRealtimeMatch = routeParams(
+    /^\/v1\/calls\/([^/]+)\/realtime\/(session|tracks)$/,
+    url.pathname,
+  );
+  if (callRealtimeMatch) {
+    requireMethod(request, "POST");
+    const realtime =
+      callRealtimeMatch[2] === "session"
+        ? await getRealtimeSessionConfig(env, auth, callRealtimeMatch[1])
+        : await getRealtimeTrackConfig(env, auth, callRealtimeMatch[1]);
+    return json({ ok: true, realtime });
   }
 
   const messagesMatch = routeParams(

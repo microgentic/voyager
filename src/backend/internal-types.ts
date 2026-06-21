@@ -171,6 +171,57 @@ export interface AttachmentRow {
   deleted_at: string | null;
 }
 
+export interface CallRow {
+  call_id: string;
+  room_id: string;
+  call_type: "audio" | "video";
+  status: "ringing" | "active" | "ended" | "missed" | "declined" | "failed";
+  created_by_account_id: string;
+  created_by_principal_id: string;
+  created_by_device_id: string;
+  started_at: string | null;
+  ended_at: string | null;
+  ended_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CallParticipantRow {
+  call_participant_id: string;
+  call_id: string;
+  account_id: string;
+  principal_id: string;
+  device_id: string | null;
+  role: "participant" | "moderator";
+  status:
+    | "invited"
+    | "ringing"
+    | "joining"
+    | "connected"
+    | "left"
+    | "declined"
+    | "missed"
+    | "failed";
+  joined_at: string | null;
+  left_at: string | null;
+  muted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  principal_type?: PrincipalRow["principal_type"];
+  display_name?: string;
+}
+
+export interface CallEventRow {
+  call_event_id: string;
+  call_id: string;
+  actor_account_id: string | null;
+  actor_principal_id: string | null;
+  actor_device_id: string | null;
+  event_type: string;
+  payload_json: string | null;
+  created_at: string;
+}
+
 export interface RoomInvitationRow {
   room_invitation_id: string;
   room_id: string;

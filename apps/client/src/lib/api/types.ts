@@ -113,6 +113,52 @@ export interface Room {
 	members: Membership[];
 }
 
+export type CallType = 'audio' | 'video';
+export type CallStatus = 'ringing' | 'active' | 'ended' | 'missed' | 'declined' | 'failed';
+export type CallParticipantRole = 'participant' | 'moderator';
+export type CallParticipantStatus =
+	| 'invited'
+	| 'ringing'
+	| 'joining'
+	| 'connected'
+	| 'left'
+	| 'declined'
+	| 'missed'
+	| 'failed';
+
+export interface CallParticipant {
+	callParticipantId: string;
+	callId: string;
+	accountId: string;
+	principalId: string;
+	principalType: PrincipalType;
+	displayName: string;
+	deviceId: string | null;
+	role: CallParticipantRole;
+	status: CallParticipantStatus;
+	joinedAt: string | null;
+	leftAt: string | null;
+	mutedAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface Call {
+	callId: string;
+	roomId: string;
+	callType: CallType;
+	status: CallStatus;
+	createdByAccountId: string;
+	createdByPrincipalId: string;
+	createdByDeviceId: string;
+	startedAt: string | null;
+	endedAt: string | null;
+	endedReason: string | null;
+	createdAt: string;
+	updatedAt: string;
+	participants: CallParticipant[];
+}
+
 export type MessageState =
 	| 'accepted'
 	| 'available'
@@ -412,6 +458,21 @@ export interface SyncResult {
 	pendingMessages: MessageEnvelope[];
 }
 
+export interface CreateCallInput {
+	callType: CallType;
+}
+
+export interface CallRealtimeConfig {
+	provider: 'cloudflare_realtime';
+	configured: boolean;
+	callId: string;
+	callType: CallType;
+	status: CallStatus;
+	session?: unknown | null;
+	tracks?: unknown[];
+	message: string;
+}
+
 export interface SendMessageInput {
 	idempotencyKey: string;
 	ciphertext: string;
@@ -527,9 +588,25 @@ export interface RealtimeRoomThreadEvent {
 	alsoSentToRoom: boolean;
 }
 
+export interface RealtimeCallEvent {
+	type: 'call.invite' | 'call.ringing' | 'call.joined' | 'call.left' | 'call.ended' | 'call.updated';
+	eventId: string;
+	createdAt: string;
+	roomId: string;
+	callId: string;
+	callType: CallType;
+	status?: CallStatus;
+	createdByPrincipalId?: string;
+	principalId?: string;
+	deviceId?: string;
+	reason?: string;
+	endedReason?: string;
+}
+
 export type RealtimeEvent =
 	| RealtimeReadyEvent
 	| RealtimePongEvent
 	| RealtimeRoomMessageEvent
 	| RealtimeRoomSyncEvent
-	| RealtimeRoomThreadEvent;
+	| RealtimeRoomThreadEvent
+	| RealtimeCallEvent;

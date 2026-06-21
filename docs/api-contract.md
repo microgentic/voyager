@@ -171,6 +171,17 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `POST` | `/v1/rooms/{roomId}/leave` | `{ ok: true }` |
 | `POST` | `/v1/rooms/{roomId}/ownership-transfers` | `{ transfer }` |
 | `POST` | `/v1/rooms/{roomId}/ownership-transfers/{transferId}/accept` | `{ transfer }` |
+| `GET` | `/v1/rooms/{roomId}/calls` | `{ calls, nextCursor }` |
+| `POST` | `/v1/rooms/{roomId}/calls` | `{ call }` |
+| `GET` | `/v1/calls/{callId}` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/join` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/leave` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/decline` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/mute` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/unmute` | `{ call }` |
+| `PATCH` | `/v1/calls/{callId}/participants/me` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/realtime/session` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
 | `GET` | `/v1/rooms/{roomId}/messages` | `{ messages }` |
 | `POST` | `/v1/rooms/{roomId}/messages` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/delete` | `{ deleted: { scope, envelopeIds } }` |
@@ -278,6 +289,59 @@ Delete-for-everyone is a room-coordinated tombstone mutation. The original sende
 | `POST` | `/v1/room-invitations/{roomInvitationId}/decline` | `{ invitation }` |
 
 Room invitations are the human membership path. Reused, expired, declined, or revoked invitations must fail instead of creating duplicate active membership.
+
+### Calls
+
+Call endpoints are a future-sensitive foundation for audio and video. PR 3 adds durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and realtime hints. It does not publish media tracks, store media, or claim end-to-end encrypted calls.
+
+| Method | Path | Response |
+| --- | --- | --- |
+| `GET` | `/v1/rooms/{roomId}/calls` | `{ calls, nextCursor }` |
+| `POST` | `/v1/rooms/{roomId}/calls` | `{ call }` |
+| `GET` | `/v1/calls/{callId}` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/join` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/leave` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/decline` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/mute` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/unmute` | `{ call }` |
+| `PATCH` | `/v1/calls/{callId}/participants/me` | `{ call }` |
+| `POST` | `/v1/calls/{callId}/realtime/session` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
+
+`POST /v1/rooms/{roomId}/calls` accepts:
+
+```json
+{
+  "callType": "audio"
+}
+```
+
+Call responses expose durable metadata only:
+
+```json
+{
+  "callId": "call_...",
+  "roomId": "room_...",
+  "callType": "audio",
+  "status": "ringing",
+  "createdByPrincipalId": "prn_...",
+  "createdByDeviceId": "dev_...",
+  "startedAt": null,
+  "endedAt": null,
+  "endedReason": null,
+  "participants": [
+    {
+      "callParticipantId": "cpart_...",
+      "principalId": "prn_...",
+      "deviceId": "dev_...",
+      "status": "connected",
+      "mutedAt": null
+    }
+  ]
+}
+```
+
+Only active room members may create, read, or join calls. Archived rooms reject new calls. A room may have one live call (`ringing` or `active`) at a time. Realtime media endpoints currently return a Cloudflare Realtime capability shape with `configured: false`; PR 4 will replace that with actual audio session/track integration.
 
 ### Attachments
 
@@ -445,6 +509,34 @@ Room sync event:
   "serverSequence": 42
 }
 ```
+
+Call invite/update events:
+
+```json
+{
+  "type": "call.invite",
+  "eventId": "uuid",
+  "createdAt": "2026-06-20T00:00:00.000Z",
+  "roomId": "room_...",
+  "callId": "call_...",
+  "callType": "audio",
+  "createdByPrincipalId": "prn_..."
+}
+```
+
+```json
+{
+  "type": "call.updated",
+  "eventId": "uuid",
+  "createdAt": "2026-06-20T00:00:00.000Z",
+  "roomId": "room_...",
+  "callId": "call_...",
+  "callType": "audio",
+  "status": "active"
+}
+```
+
+Call realtime events are hints only. Clients recover authoritative state through `GET /v1/calls/{callId}` or `GET /v1/rooms/{roomId}/calls`.
 
 ## Admin And Dev-Only Endpoints
 
