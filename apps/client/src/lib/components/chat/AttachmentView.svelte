@@ -43,6 +43,7 @@
 	let thumbnailVisible = $state(false);
 	let thumbnailEl = $state<HTMLElement>();
 	let viewerPointerStart = $state<{ x: number; y: number } | null>(null);
+	let destroyed = false;
 
 	const isImage = $derived(isImageAttachment(attachment));
 	const isVideo = $derived(isVideoAttachment(attachment));
@@ -119,21 +120,29 @@
 
 	async function ensureBlob(item: AttachmentRef, variant: AttachmentVariantName): Promise<string | null> {
 		const key = cacheKey(item, variant);
+		if (destroyed) return null;
 		if (urls[key]) return urls[key];
 		if (loading[key]) return null;
 		loading = { ...loading, [key]: true };
 		try {
-			const buffer = await scheduleAttachmentDownload(() =>
-				api.downloadAttachmentBlob(item.attachmentId, { variant })
-			);
+			const buffer = await scheduleAttachmentDownload(() => {
+				if (destroyed) return Promise.reject(new Error('Attachment view destroyed'));
+				return api.downloadAttachmentBlob(item.attachmentId, { variant });
+			});
+			if (destroyed) return null;
 			const blob = new Blob([buffer], {
 				type: item.variants?.[variant]?.mimeType ?? item.mediaType ?? 'application/octet-stream'
 			});
 			const url = URL.createObjectURL(blob);
+			if (destroyed) {
+				URL.revokeObjectURL(url);
+				return null;
+			}
 			urls = { ...urls, [key]: url };
 			failed = { ...failed, [key]: false };
 			return url;
 		} catch {
+			if (destroyed) return null;
 			if (variant !== 'original') {
 				const fallback = await ensureBlob(item, 'original');
 				if (fallback) urls = { ...urls, [key]: fallback };
@@ -142,7 +151,7 @@
 			failed = { ...failed, [key]: true };
 			return null;
 		} finally {
-			loading = { ...loading, [key]: false };
+			if (!destroyed) loading = { ...loading, [key]: false };
 		}
 	}
 
@@ -196,13 +205,17 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		revokeUrls();
 	});
 
 	async function openViewer(): Promise<void> {
-		activeIndex = gallery.length ? Math.max(0, galleryIndex) : 0;
+		const nextIndex = gallery.length ? Math.min(Math.max(galleryIndex, 0), gallery.length - 1) : 0;
+		const nextAttachment = gallery.length ? (gallery[nextIndex] ?? attachment) : attachment;
+		const nextVariant = selectVariant(nextAttachment, ['preview', 'original', 'thumbnail']);
+		activeIndex = nextIndex;
 		viewerOpen = true;
-		if (viewerVariant) await ensureBlob(activeAttachment, viewerVariant);
+		if (nextVariant) await ensureBlob(nextAttachment, nextVariant);
 	}
 
 	async function handleCardAction(): Promise<void> {
