@@ -954,6 +954,21 @@ assertCallUsageReportResponse(duplicateCallUsageReport, "POST /v1/calls/{callId}
 if (duplicateCallUsageReport.usageReport.usageReportId !== callUsageReport.usageReport.usageReportId) {
   throw new Error("duplicate call usage report did not return the original report");
 }
+const clientProviderEgressReport = await expectFailure(`/v1/calls/${createdCall.call.callId}/usage-report`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    ...(mockAudioSessionId ? { sessionId: mockAudioSessionId } : {}),
+    durationMs: 1_000,
+    providerEgressBytes: 10_000,
+    providerBillingSource: "client",
+    tracks: [{ kind: "audio", direction: "send", durationMs: 1_000 }]
+  }
+}, 400);
+assertApiErrorShape(clientProviderEgressReport, "POST /v1/calls/{callId}/usage-report client provider egress");
+if (clientProviderEgressReport.error !== "provider_usage_not_authoritative") {
+  throw new Error(`client provider egress report used unexpected error ${clientProviderEgressReport.error}`);
+}
 await expectFailure(`/v1/calls/${createdCall.call.callId}/usage-report`, {
   method: "POST",
   headers: userHeaders,
@@ -2845,8 +2860,8 @@ await api(`/v1/sidebar-collections/${collection.collection.collectionId}/items`,
 
 const usage = await api("/v1/admin/usage", { headers: ownerHeaders });
 assertAdminUsageResponse(usage, "GET /v1/admin/usage");
-if (usage.usage.callMedia.usageReports < 1 || usage.usage.callMedia.bytesSentEstimate < 12_345) {
-  throw new Error("admin usage did not include submitted call usage reports");
+if (usage.usage.callMedia.usageReports !== 1 || usage.usage.callMedia.bytesSentEstimate !== 12_345) {
+  throw new Error("admin usage did not preserve idempotent client-estimate call usage totals");
 }
 if (!realtimeMockEnabled && usage.usage.callMedia.failedMediaEvents < 4) {
   throw new Error("admin usage did not record unconfigured call media failures");

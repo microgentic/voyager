@@ -30,7 +30,7 @@ The active implementation focuses on curlable, provider-light backend contracts:
 - Direct and group rooms.
 - Room membership, roles, removal, leaving, archiving, and ownership transfer.
 - Opaque message envelopes with idempotency, per-room sequencing, sync, and acknowledgements. MLS/E2EE payload semantics remain future work.
-- Encrypted attachment allocation, Worker-mediated R2 upload/download, completion, deletion, and metadata.
+- Private opaque attachment allocation, Worker-mediated R2 upload/download, completion, deletion, and metadata.
 - Sidebar collections as user-owned room organization metadata.
 - Agent request submission, admin review, and manual agent principal creation.
 

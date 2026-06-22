@@ -899,8 +899,8 @@ export async function recordCallUsageReport(
   const usageReportId = randomId("cur");
   const createdAt = new Date().toISOString();
 
-  await env.CONTROL_DB.prepare(
-    `INSERT INTO call_usage_reports (
+  const insertResult = await env.CONTROL_DB.prepare(
+    `INSERT OR IGNORE INTO call_usage_reports (
       call_usage_report_id, call_id, account_id, principal_id, device_id,
       provider, provider_session_id, duration_ms, audio_duration_ms,
       video_duration_ms, screen_duration_ms, bytes_sent_estimate,
@@ -933,6 +933,22 @@ export async function recordCallUsageReport(
       createdAt,
     )
     .run();
+  if (d1Changes(insertResult) === 0) {
+    const currentReport = await existingCallUsageReport(
+      env,
+      call.call_id,
+      auth.device.device_id,
+      report.providerSessionId,
+    );
+    if (currentReport) {
+      return { usageReport: publicCallUsageReport(currentReport) };
+    }
+    throw new HttpError(
+      409,
+      "usage_report_conflict",
+      "Usage report already exists",
+    );
+  }
 
   await insertCallEvent(env, auth, call.call_id, "call.usage.reported", {
     roomId: call.room_id,
