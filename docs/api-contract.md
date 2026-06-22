@@ -391,7 +391,7 @@ Realtime session responses may include:
 }
 ```
 
-`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates the caller's Cloudflare Realtime session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription`. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session.
+`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates the caller's Cloudflare Realtime session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. Stored track metadata includes the requested quality layer when present; media content is never stored. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription`. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session.
 
 ### Attachments
 
@@ -445,11 +445,11 @@ Attachment metadata is additive and client-supplied:
 }
 ```
 
-The backend does not generate thumbnails or inspect image plaintext in `/v1`; optimized variants are produced by the client and uploaded as separate authenticated R2 objects. Buckets remain private, downloads remain bearer-authenticated, and `Cache-Control` is `no-store`.
+The backend does not generate thumbnails or inspect image plaintext in `/v1`; optimized variants are produced by the client and uploaded as separate authenticated R2 objects. Buckets remain private, downloads remain bearer-authenticated, and `Cache-Control` is `no-store`. Worker-mediated upload streams request bodies to R2 when `Content-Length` is available; direct-to-R2 multipart upload and signed media URLs remain deferred until the leakage, revocation, and CORS contract is explicitly designed.
 
 An attachment is not complete or referenceable from a message until its `original` variant has been uploaded. The `original` variant is the primary blob for that attachment; it may be an optimized client-generated primary image rather than the source camera file. Preview and thumbnail uploads alone do not make an attachment sendable.
 
-Attachment allocation is limited by account policy bytes per attachment, total uploaded variant bytes, and by a per-device pending allocation cap. Maintenance cleanup expires old attachment rows and removes known R2 variant objects once their retention window has passed.
+Attachment allocation is limited by account policy bytes per attachment, max attachments per message, max image dimensions, daily expected bytes per account and room, total uploaded variant bytes, and by a per-device pending allocation cap. Maintenance cleanup expires old attachment rows, abandoned allocated rows, and uploaded-but-unreferenced rows while deleting known private R2 variant objects.
 
 ### Sidebar Collections
 
@@ -615,6 +615,37 @@ These routes are intentionally not ordinary product UI surface:
 | `POST` | `/v1/admin/maintenance/cleanup` | explicit cleanup run |
 
 Admin hierarchy is part of the security contract: only platform owners may administer accounts with active administrative roles.
+
+`GET /v1/admin/usage` includes legacy top-level counts plus additive operational summaries:
+
+```json
+{
+  "usage": {
+    "attachments": 12,
+    "attachmentBytes": {
+      "activeExpectedBytes": 1048576,
+      "allocatedExpectedBytesLast24h": 2097152,
+      "uploadedStoredBytes": 524288
+    },
+    "callMedia": {
+      "totalCalls": 4,
+      "activeCalls": 1,
+      "totalDurationMs": 32000,
+      "participantRows": 8,
+      "maxParticipants": 2,
+      "realtimeTracks": 3,
+      "failedMediaEvents": 1,
+      "tracksByKind": { "audio": 2, "video": 1 },
+      "tracksByQualityLayer": { "h": 1 },
+      "turnConfigured": false,
+      "estimatedSfuTurnEgressBytes": null,
+      "estimatedSfuTurnEgressStatus": "unavailable_provider_metric"
+    }
+  }
+}
+```
+
+`callMedia` is an operations surface derived from durable call/session/track metadata and failure events. Provider egress/TURN bytes are reported as unavailable until Cloudflare exposes or the app records a trustworthy byte counter.
 
 ## Examples
 

@@ -1,4 +1,5 @@
 import {
+  assertAdminUsageResponse,
   assertAgentRequestResponse,
   assertAgentResponse,
   assertApiErrorShape,
@@ -2381,6 +2382,62 @@ await expectFailure(`/v1/attachments/${attachment.attachment.attachmentId}/blob?
   headers: userHeaders
 }, 400);
 
+const tooManyAttachmentIds = Array.from({ length: 11 }, (_, index) => `att_smoke_${suffix}_${index}`);
+const tooManyAttachments = await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `too-many-attachments-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "too-many-attachments-should-not-send",
+    attachmentIds: tooManyAttachmentIds
+  }
+}, 400);
+assertApiErrorShape(tooManyAttachments, "POST /v1/rooms/{roomId}/messages too many attachments");
+if (tooManyAttachments.error !== "too_many_attachments") {
+  throw new Error(`too many attachments used unexpected error ${tooManyAttachments.error}`);
+}
+
+const oversizedDimensions = await expectFailure(`/v1/rooms/${group.room.roomId}/attachments`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    expectedBytes: 128,
+    mediaKind: "image",
+    width: 8193,
+    height: 480
+  }
+}, 400);
+assertApiErrorShape(oversizedDimensions, "POST /v1/rooms/{roomId}/attachments oversized dimensions");
+
+let quotaFailure = null;
+for (let index = 0; index < 12; index += 1) {
+  const { response, payload } = await apiRaw(`/v1/rooms/${group.room.roomId}/attachments`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      expectedBytes: 10 * 1024 * 1024,
+      mediaKind: "file",
+      originalFilename: `quota-${index}.bin`
+    }
+  });
+  if (response.status === 429) {
+    quotaFailure = payload;
+    break;
+  }
+  if (!response.ok) {
+    throw new Error(`quota allocation failed unexpectedly ${response.status}: ${JSON.stringify(payload)}`);
+  }
+  assertAttachmentResponse(payload, `POST /v1/rooms/{roomId}/attachments quota ${index}`);
+}
+if (!quotaFailure) {
+  throw new Error("attachment daily quota did not reject after repeated max-size allocations");
+}
+assertApiErrorShape(quotaFailure, "POST /v1/rooms/{roomId}/attachments daily quota");
+if (quotaFailure.error !== "attachment_account_daily_quota_exceeded") {
+  throw new Error(`daily quota used unexpected error ${quotaFailure.error}`);
+}
+
 const collection = await api("/v1/sidebar-collections", {
   method: "POST",
   headers: userHeaders,
@@ -2395,6 +2452,13 @@ await api(`/v1/sidebar-collections/${collection.collection.collectionId}/items`,
 });
 
 const usage = await api("/v1/admin/usage", { headers: ownerHeaders });
+assertAdminUsageResponse(usage, "GET /v1/admin/usage");
+if (usage.usage.callMedia.failedMediaEvents < 4) {
+  throw new Error("admin usage did not record unconfigured call media failures");
+}
+if (usage.usage.attachmentBytes.allocatedExpectedBytesLast24h <= 0) {
+  throw new Error("admin usage did not include attachment allocation bytes");
+}
 
 const adminRooms = await api("/v1/admin/rooms?limit=1&type=group", { headers: ownerHeaders });
 assertPaginatedRoomsResponse(adminRooms, "GET /v1/admin/rooms");
@@ -2412,6 +2476,14 @@ const cleanup = await api("/v1/admin/maintenance/cleanup", {
   method: "POST",
   headers: ownerHeaders
 });
+if (
+  typeof cleanup.cleanup.abandonedAllocatedAttachments !== "number" ||
+  typeof cleanup.cleanup.unreferencedUploadedAttachments !== "number" ||
+  typeof cleanup.cleanup.attachmentCleanupWindows?.allocatedOlderThanMinutes !== "number" ||
+  typeof cleanup.cleanup.attachmentCleanupWindows?.uploadedUnreferencedOlderThanHours !== "number"
+) {
+  throw new Error("maintenance cleanup did not expose attachment orphan cleanup counters");
+}
 
 const maintenanceRuns = await api("/v1/admin/maintenance/runs", { headers: ownerHeaders });
 if (!maintenanceRuns.runs.some((run) => run.maintenanceRunId === cleanup.cleanup.maintenanceRunId)) {

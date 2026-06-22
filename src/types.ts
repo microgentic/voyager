@@ -57,6 +57,10 @@ export interface PolicyRow {
   maximum_owned_groups: number;
   maximum_group_memberships: number;
   maximum_attachment_bytes: number;
+  maximum_attachments_per_message: number;
+  maximum_image_dimension: number;
+  daily_attachment_bytes_per_account: number;
+  daily_attachment_bytes_per_room: number;
   message_retention_days: number;
   attachment_retention_class: string;
   agent_allowed: number;

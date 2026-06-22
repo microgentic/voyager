@@ -12,8 +12,8 @@ PR 1 of the media/calling roadmap added the backend foundation for optimized att
 - `expectedBytes` is a total attachment budget across all variants. Replacing a variant subtracts the previous byte count before applying the new one.
 - Preview or thumbnail uploads do not make an attachment sendable. The primary `original` variant must be uploaded before completion or message reference.
 - Deleting an attachment deletes all known variant objects.
-- Allocation enforces a small pending-attachment cap per device to prevent unbounded abandoned allocations.
-- Maintenance cleanup deletes known variant objects for expired attachments before marking those rows expired.
+- Allocation enforces a small pending-attachment cap per device, a policy max attachments per message, policy image dimensions, and policy daily expected-byte quotas per account and room.
+- Maintenance cleanup deletes known variant objects for expired attachments, abandoned allocated attachments, and uploaded-but-never-referenced attachments before marking those rows expired.
 
 ## Client Scope
 
@@ -57,7 +57,9 @@ Clients should prefer `thumbnail` in dense timelines, `preview` in viewers, and 
 - This PR does not claim end-to-end encrypted attachments; it preserves the backend abstraction needed for that later work.
 - Fine-grained upload byte progress remains deferred because the current authenticated Worker upload path uses `fetch`; the composer reports deterministic processing/upload stages instead.
 - Full camera capture polish and platform-specific save-to-gallery affordances remain part of later mobile hardening.
-- Large-file direct-to-R2 or multipart upload, quota accounting, signed media URLs, and cleanup of uploaded-but-never-referenced rows remain part of later operational hardening.
+- Worker-mediated uploads stream request bodies into private R2 when `Content-Length` is available; uploads without a streamable body use the bounded buffered compatibility path.
+- Direct-to-R2 multipart upload remains deferred until its auth, CORS, object-abort, and private-delivery contract is designed. Signed media URLs also remain deferred because bearer URL leakage and revocation scope need an explicit design first.
+- Daily quota accounting and orphan cleanup are part of the current operational hardening layer. The backend accounts allocation `expectedBytes` over a rolling day so abandoned allocations cannot bypass quota enforcement.
 
 ## Manual QA
 

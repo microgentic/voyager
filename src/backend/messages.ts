@@ -11,6 +11,7 @@ import {
 } from "./internal-types";
 import {
   getRoom,
+  getPolicy,
   getSendRoomContext,
   requireRoomManager,
   requireRoomMembership,
@@ -28,6 +29,8 @@ import {
 import { publicMessage } from "./serializers";
 
 const DELETE_FOR_EVERYONE_WINDOW_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE = 10;
+const MAX_ATTACHMENTS_PER_MESSAGE_HARD_LIMIT = 20;
 
 export function messageSelectColumns(alias = "me"): string {
   return `${alias}.*,
@@ -151,8 +154,9 @@ export async function sendMessageEnvelope(
   const clientCreatedAt =
     stringField(body, "clientCreatedAt", { max: 80 }) ?? null;
   const attachmentIds = stringArrayField(body, "attachmentIds", {
-    maxItems: 20,
+    maxItems: MAX_ATTACHMENTS_PER_MESSAGE_HARD_LIMIT,
   });
+  await assertAttachmentCountWithinPolicy(env, auth, attachmentIds);
   await assertAttachmentsReferenceable(env, auth, roomId, attachmentIds);
   const forwardSource = options.forwardSource ?? null;
 
@@ -489,8 +493,9 @@ export async function editMessageEnvelope(
   const clientEditedAt =
     stringField(body, "clientEditedAt", { max: 80 }) ?? null;
   const attachmentIds = stringArrayField(body, "attachmentIds", {
-    maxItems: 20,
+    maxItems: MAX_ATTACHMENTS_PER_MESSAGE_HARD_LIMIT,
   });
+  await assertAttachmentCountWithinPolicy(env, auth, attachmentIds);
   await assertAttachmentsReferenceable(env, auth, roomId, attachmentIds);
   const editedAt = sqliteTimestamp(Date.now());
 
@@ -1275,6 +1280,27 @@ async function assertAttachmentsReferenceable(
       409,
       "attachment_not_referenceable",
       "All attachments must be uploaded by the sender before they can be referenced",
+    );
+  }
+}
+
+async function assertAttachmentCountWithinPolicy(
+  env: Env,
+  auth: AuthContext,
+  attachmentIds: string[],
+): Promise<void> {
+  if (attachmentIds.length === 0) return;
+  const policy = await getPolicy(env, auth.account.policy_id);
+  const maxAttachments =
+    Number.isFinite(policy.maximum_attachments_per_message) &&
+    policy.maximum_attachments_per_message > 0
+      ? policy.maximum_attachments_per_message
+      : DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE;
+  if (attachmentIds.length > maxAttachments) {
+    throw new HttpError(
+      400,
+      "too_many_attachments",
+      "Too many attachments for this message",
     );
   }
 }
