@@ -2463,6 +2463,14 @@ const deletedUnreferencedBlob = await expectFailure(`/v1/attachments/${unreferen
   headers: ownerHeaders
 }, 404);
 assertApiErrorShape(deletedUnreferencedBlob, "GET /v1/attachments/{attachmentId}/blob deleted unreferenced");
+const repeatedUnreferencedDelete = await expectFailure(`/v1/attachments/${unreferencedAttachment.attachment.attachmentId}`, {
+  method: "DELETE",
+  headers: ownerHeaders
+}, 409);
+assertApiErrorShape(repeatedUnreferencedDelete, "DELETE /v1/attachments/{attachmentId} deleted unreferenced");
+if (repeatedUnreferencedDelete.error !== "attachment_not_deletable") {
+  throw new Error(`deleted attachment delete used unexpected error ${repeatedUnreferencedDelete.error}`);
+}
 
 const tooManyAttachmentIds = Array.from({ length: 11 }, (_, index) => `att_smoke_${suffix}_${index}`);
 const tooManyAttachments = await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
