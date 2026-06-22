@@ -386,8 +386,8 @@ class CallsStore {
 				sessionDescription: offer,
 				tracks: publishTracks
 			});
-			await this.applyProviderDescription(trackConfig);
 			this.publishedMids = publishedTrackMids(trackConfig, publishMids);
+			await this.applyProviderDescription(trackConfig);
 			this.mediaState = 'active';
 			await this.subscribeAvailableTracks([
 				...(sessionConfig.availableTracks ?? sessionConfig.tracks ?? []),
@@ -395,7 +395,7 @@ class CallsStore {
 			]);
 			return true;
 		} catch (error) {
-			await this.closeMedia({ notifyProvider: false });
+			await this.closeMedia();
 			this.mediaState = 'error';
 			this.lastError = displayError(error, 'Could not connect call media.');
 			toasts.error(this.lastError);
@@ -517,13 +517,18 @@ class CallsStore {
 		const notifyOnError = options.notifyOnError ?? true;
 		if (!enabled) {
 			const currentTrack = this.localStream.getVideoTracks()[0];
-			await this.videoSender.replaceTrack(null);
-			if (currentTrack) {
-				currentTrack.stop();
-				this.localStream.removeTrack(currentTrack);
+			try {
+				await this.videoSender.replaceTrack(null);
+			} catch (error) {
+				if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera off.'));
+			} finally {
+				if (currentTrack) {
+					currentTrack.stop();
+					this.localStream.removeTrack(currentTrack);
+				}
+				this.cameraEnabled = false;
+				this.updateLocalVideoStream();
 			}
-			this.cameraEnabled = false;
-			this.updateLocalVideoStream();
 			return;
 		}
 		try {
