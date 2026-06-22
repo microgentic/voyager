@@ -3,7 +3,7 @@ import { HttpError, stringField } from "../../http";
 import { notifyRoomRealtime } from "../../realtime";
 import type { AuthContext, Env } from "../../types";
 import type { JsonObject } from "../shared/types";
-import { numberField, sqliteTimestamp, stringArrayField, uniqueStrings } from "../utils";
+import { sqliteTimestamp, stringArrayField, uniqueStrings } from "../utils";
 import { requireRoomManager, requireRoomOwner } from "./authorization";
 import { insertMembership } from "./membership";
 import {
