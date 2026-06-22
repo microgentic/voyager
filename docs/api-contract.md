@@ -294,7 +294,7 @@ Room invitations are the human membership path. Reused, expired, declined, or re
 
 ### Calls
 
-Call endpoints are a future-sensitive foundation for audio and video. The current audio surface combines durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and Cloudflare Realtime session/track negotiation. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
+Call endpoints are a shared foundation for audio and video. The current call surface combines durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and Cloudflare Realtime session/track negotiation for microphone and camera tracks. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -319,6 +319,8 @@ Call endpoints are a future-sensitive foundation for audio and video. The curren
   "callType": "audio"
 }
 ```
+
+`callType` may be `audio` or `video`. Audio calls may only publish `audio` tracks; video calls may publish and subscribe to `audio`, `video`, `screen`, or future `data` track metadata through the same Realtime endpoints.
 
 Call responses expose durable metadata only:
 
@@ -371,7 +373,7 @@ Realtime session responses may include:
 }
 ```
 
-`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates the caller's Cloudflare Realtime session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, and remote `sessionId` when subscribing to another participant's track. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription`. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session.
+`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates the caller's Cloudflare Realtime session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription`. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session.
 
 ### Attachments
 

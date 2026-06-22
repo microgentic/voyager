@@ -801,6 +801,68 @@ if (endedCall.call.status !== "ended" || !endedCall.call.endedAt || endedCall.ca
   throw new Error("call did not end after all connected participants left");
 }
 
+const videoCall = await api(`/v1/rooms/${direct.room.roomId}/calls`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { callType: "video" }
+});
+assertCallResponse(videoCall, "POST /v1/rooms/{roomId}/calls video coverage");
+if (videoCall.call.status !== "ringing" || videoCall.call.callType !== "video") {
+  throw new Error("created video call did not enter ringing state");
+}
+await expectFailure(`/v1/calls/${videoCall.call.callId}`, {
+  headers: inviteeHeaders
+}, 403);
+
+const videoRealtimeSessionConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/session`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertCallRealtimeConfigResponse(videoRealtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session video");
+if (
+  videoRealtimeSessionConfig.realtime.configured !== false ||
+  videoRealtimeSessionConfig.realtime.callType !== "video"
+) {
+  throw new Error("unconfigured video realtime session config returned the wrong shape");
+}
+const videoRealtimeTrackConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/tracks`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertCallRealtimeConfigResponse(videoRealtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks video");
+if (
+  videoRealtimeTrackConfig.realtime.configured !== false ||
+  !Array.isArray(videoRealtimeTrackConfig.realtime.tracks) ||
+  videoRealtimeTrackConfig.realtime.tracks.length !== 0
+) {
+  throw new Error("unconfigured video realtime track config must not expose media tracks");
+}
+
+const joinedVideoCall = await api(`/v1/calls/${videoCall.call.callId}/join`, {
+  method: "POST",
+  headers: userHeaders
+});
+assertCallResponse(joinedVideoCall, "POST /v1/calls/{callId}/join video");
+if (joinedVideoCall.call.status !== "active" || joinedVideoCall.call.callType !== "video") {
+  throw new Error("joining a video call did not activate it");
+}
+const videoCalleeLeftCall = await api(`/v1/calls/${videoCall.call.callId}/leave`, {
+  method: "POST",
+  headers: userHeaders
+});
+assertCallResponse(videoCalleeLeftCall, "POST /v1/calls/{callId}/leave video callee");
+if (videoCalleeLeftCall.call.status !== "active") {
+  throw new Error("video call should remain active while the creator is still connected");
+}
+const endedVideoCall = await api(`/v1/calls/${videoCall.call.callId}/leave`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertCallResponse(endedVideoCall, "POST /v1/calls/{callId}/leave video caller");
+if (endedVideoCall.call.status !== "ended" || endedVideoCall.call.endedReason !== "all_left") {
+  throw new Error("video call did not end after all connected participants left");
+}
+
 const declineOnlyCall = await api(`/v1/rooms/${direct.room.roomId}/calls`, {
   method: "POST",
   headers: ownerHeaders,

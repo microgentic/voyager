@@ -847,6 +847,7 @@ interface RealtimeTrackInput {
   kind: CallRealtimeTrackKind;
   mid?: string;
   bidirectionalMediaStream?: boolean;
+  simulcast?: JsonObject;
 }
 
 interface CloseRealtimeTrackInput {
@@ -1051,8 +1052,50 @@ function parseRealtimeTracks(
       kind,
       mid: stringField(track, "mid", { max: 80 }),
       bidirectionalMediaStream: bidirectionalMediaStream === true ? true : undefined,
+      simulcast: parseRealtimeSimulcast(track, index),
     };
   });
+}
+
+function parseRealtimeSimulcast(
+  track: Record<string, unknown>,
+  index: number,
+): JsonObject | undefined {
+  const simulcast = optionalObject(track, "simulcast");
+  if (!simulcast) return undefined;
+  const preferredRid = stringField(simulcast, "preferredRid", {
+    max: 16,
+    pattern: /^[A-Za-z0-9_-]+$/,
+  });
+  const priorityOrdering = stringField(simulcast, "priorityOrdering", { max: 40 });
+  const ridNotAvailable = stringField(simulcast, "ridNotAvailable", { max: 40 });
+  if (
+    priorityOrdering !== undefined &&
+    priorityOrdering !== "none" &&
+    priorityOrdering !== "asciibetical"
+  ) {
+    throw new HttpError(
+      400,
+      "invalid_field",
+      `Field is invalid: tracks[${index}].simulcast.priorityOrdering`,
+    );
+  }
+  if (
+    ridNotAvailable !== undefined &&
+    ridNotAvailable !== "none" &&
+    ridNotAvailable !== "asciibetical"
+  ) {
+    throw new HttpError(
+      400,
+      "invalid_field",
+      `Field is invalid: tracks[${index}].simulcast.ridNotAvailable`,
+    );
+  }
+  return {
+    preferredRid,
+    priorityOrdering,
+    ridNotAvailable,
+  };
 }
 
 function parseTrackLocation(
@@ -1105,6 +1148,7 @@ function providerTrackInput(track: RealtimeTrackInput): JsonObject {
     kind: track.kind,
     mid: track.mid,
     bidirectionalMediaStream: track.bidirectionalMediaStream,
+    simulcast: track.simulcast,
   };
 }
 
@@ -1132,12 +1176,18 @@ function tracksFromPayload(
         typeof track.bidirectionalMediaStream === "boolean"
           ? track.bidirectionalMediaStream
           : fallbackTrack.bidirectionalMediaStream,
+      simulcast: providerObject(track.simulcast) ?? fallbackTrack.simulcast,
     };
   });
 }
 
 function providerString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function providerObject(value: unknown): JsonObject | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as JsonObject;
 }
 
 function providerKind(value: unknown): CallRealtimeTrackKind | undefined {
