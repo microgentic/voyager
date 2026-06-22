@@ -27,11 +27,24 @@ export interface AttachmentUploadPlan {
 			bytes: number;
 			mimeType: string;
 		};
-		variants: Record<string, { bytes: number; mimeType: string; width: number | null; height: number | null }>;
+		sourceOriginal?: boolean;
+		variants: Record<
+			string,
+			{
+				bytes: number;
+				mimeType: string;
+				width: number | null;
+				height: number | null;
+			}
+		>;
 	};
 }
 
 const STATIC_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/avif']);
+
+export interface AttachmentUploadOptions {
+	includeSourceOriginal?: boolean;
+}
 
 export function mediaKindForFile(file: File): AttachmentMediaKind {
 	if (file.type.startsWith('image/')) return 'image';
@@ -41,21 +54,21 @@ export function mediaKindForFile(file: File): AttachmentMediaKind {
 	return 'unknown';
 }
 
-export async function buildAttachmentUploadPlan(file: File): Promise<AttachmentUploadPlan> {
+export async function buildAttachmentUploadPlan(
+	file: File,
+	options: AttachmentUploadOptions = {},
+): Promise<AttachmentUploadPlan> {
 	if (isOptimizableImage(file)) {
-		const image = await imagePlan(file).catch(() => null);
+		const image = await imagePlan(file, options).catch(() => null);
 		if (image) return image;
 	}
 	return filePlan(file);
 }
 
-export function attachmentRefFromUpload(
-	attachment: Attachment,
-	plan: AttachmentUploadPlan,
-): AttachmentRef {
+export function attachmentRefFromUpload(attachment: Attachment, plan: AttachmentUploadPlan): AttachmentRef {
 	const original = attachment.variants.original;
 	const variants: AttachmentRef['variants'] = {
-		original: variantRef(original, plan)
+		original: variantRef(original, plan),
 	};
 	if (attachment.variants.preview) variants.preview = variantRef(attachment.variants.preview, plan);
 	if (attachment.variants.thumbnail) variants.thumbnail = variantRef(attachment.variants.thumbnail, plan);
@@ -68,7 +81,7 @@ export function attachmentRefFromUpload(
 		width: attachment.width ?? plan.width ?? undefined,
 		height: attachment.height ?? plan.height ?? undefined,
 		durationMs: attachment.durationMs ?? plan.durationMs ?? undefined,
-		variants
+		variants,
 	};
 }
 
@@ -84,30 +97,34 @@ function isOptimizableImage(file: File): boolean {
 	return STATIC_IMAGE_TYPES.has(file.type);
 }
 
-async function imagePlan(file: File): Promise<AttachmentUploadPlan> {
+async function imagePlan(file: File, options: AttachmentUploadOptions): Promise<AttachmentUploadPlan> {
 	const bitmap = await createImageBitmap(file);
 	try {
 		const outputType = await preferredImageOutputType(file.type);
-		const original = await renderImageVariant(file, bitmap, {
-			variant: 'original',
-			maxDimension: 1600,
-			mimeType: outputType,
-			quality: 0.84
-		});
+		const original = options.includeSourceOriginal
+			? sourceImageVariant(file, bitmap.width, bitmap.height)
+			: await renderImageVariant(file, bitmap, {
+					variant: 'original',
+					maxDimension: 1600,
+					mimeType: outputType,
+					quality: 0.84,
+				});
 		const preview = await renderImageVariant(file, bitmap, {
 			variant: 'preview',
-			maxDimension: 1024,
+			maxDimension: 1600,
 			mimeType: outputType,
-			quality: 0.8
+			quality: 0.8,
 		});
 		const thumbnail = await renderImageVariant(file, bitmap, {
 			variant: 'thumbnail',
 			maxDimension: 320,
 			mimeType: outputType,
-			quality: 0.72
+			quality: 0.72,
 		});
 		const variants = dedupeVariants([original, preview, thumbnail]);
-		const manifest = manifestFor(file, variants);
+		const manifest = manifestFor(file, variants, {
+			sourceOriginal: options.includeSourceOriginal,
+		});
 		return {
 			file,
 			mediaKind: 'image',
@@ -119,35 +136,48 @@ async function imagePlan(file: File): Promise<AttachmentUploadPlan> {
 			durationMs: null,
 			expectedBytes: variants.reduce((sum, item) => sum + item.bytes, 0),
 			variants,
-			variantManifest: manifest
+			variantManifest: manifest,
 		};
 	} finally {
 		bitmap.close();
 	}
 }
 
-function filePlan(file: File): AttachmentUploadPlan {
+async function filePlan(file: File): Promise<AttachmentUploadPlan> {
 	const mimeType = file.type || 'application/octet-stream';
+	const mediaKind = mediaKindForFile(file);
+	const metadata = await mediaMetadataForFile(file, mediaKind);
 	const original: AttachmentVariantUpload = {
 		variant: 'original',
 		blob: file,
 		mimeType,
 		bytes: file.size,
-		width: null,
-		height: null
+		width: metadata.width,
+		height: metadata.height,
 	};
 	return {
 		file,
-		mediaKind: mediaKindForFile(file),
+		mediaKind,
 		contentCategory: mimeType,
 		originalFilename: file.name || 'attachment',
 		declaredMimeType: mimeType,
-		width: null,
-		height: null,
-		durationMs: null,
+		width: metadata.width,
+		height: metadata.height,
+		durationMs: metadata.durationMs,
 		expectedBytes: Math.max(1, file.size),
 		variants: [original],
-		variantManifest: manifestFor(file, [original])
+		variantManifest: manifestFor(file, [original]),
+	};
+}
+
+function sourceImageVariant(file: File, width: number, height: number): AttachmentVariantUpload {
+	return {
+		variant: 'original',
+		blob: file,
+		mimeType: file.type || 'application/octet-stream',
+		bytes: file.size,
+		width,
+		height,
 	};
 }
 
@@ -171,19 +201,14 @@ async function renderImageVariant(
 	context.imageSmoothingQuality = 'high';
 	context.drawImage(bitmap, 0, 0, width, height);
 	const blob = await canvasBlob(canvas, options.mimeType, options.quality);
-	if (
-		options.variant === 'original' &&
-		width === bitmap.width &&
-		height === bitmap.height &&
-		blob.size > file.size
-	) {
+	if (options.variant === 'original' && width === bitmap.width && height === bitmap.height && blob.size > file.size) {
 		return {
 			variant: 'original',
 			blob: file,
 			mimeType: file.type || blob.type || options.mimeType,
 			bytes: file.size,
 			width: bitmap.width,
-			height: bitmap.height
+			height: bitmap.height,
 		};
 	}
 	return {
@@ -192,7 +217,7 @@ async function renderImageVariant(
 		mimeType: blob.type || options.mimeType,
 		bytes: blob.size,
 		width,
-		height
+		height,
 	};
 }
 
@@ -223,13 +248,54 @@ function dedupeVariants(variants: AttachmentVariantUpload[]): AttachmentVariantU
 	return next;
 }
 
+function mediaMetadataForFile(
+	file: File,
+	mediaKind: AttachmentMediaKind,
+): Promise<{
+	width: number | null;
+	height: number | null;
+	durationMs: number | null;
+}> {
+	if (mediaKind !== 'video' && mediaKind !== 'audio') {
+		return Promise.resolve({ width: null, height: null, durationMs: null });
+	}
+	if (typeof document === 'undefined' || typeof URL === 'undefined') {
+		return Promise.resolve({ width: null, height: null, durationMs: null });
+	}
+	return new Promise((resolve) => {
+		const url = URL.createObjectURL(file);
+		const media = mediaKind === 'video' ? document.createElement('video') : document.createElement('audio');
+		let settled = false;
+		let timeout = 0;
+		const finish = (metadata: { width: number | null; height: number | null; durationMs: number | null }) => {
+			if (settled) return;
+			settled = true;
+			window.clearTimeout(timeout);
+			media.removeAttribute('src');
+			media.load();
+			URL.revokeObjectURL(url);
+			resolve(metadata);
+		};
+		timeout = window.setTimeout(() => finish({ width: null, height: null, durationMs: null }), 3500);
+		media.preload = 'metadata';
+		media.onloadedmetadata = () => {
+			const durationMs = Number.isFinite(media.duration) ? Math.max(1, Math.round(media.duration * 1000)) : null;
+			const width = media instanceof HTMLVideoElement && media.videoWidth > 0 ? media.videoWidth : null;
+			const height = media instanceof HTMLVideoElement && media.videoHeight > 0 ? media.videoHeight : null;
+			finish({ width, height, durationMs });
+		};
+		media.onerror = () => finish({ width: null, height: null, durationMs: null });
+		media.src = url;
+	});
+}
+
 function fit(width: number, height: number, maxDimension: number): { width: number; height: number } {
 	const max = Math.max(width, height);
 	if (max <= maxDimension) return { width, height };
 	const scale = maxDimension / max;
 	return {
 		width: Math.max(1, Math.round(width * scale)),
-		height: Math.max(1, Math.round(height * scale))
+		height: Math.max(1, Math.round(height * scale)),
 	};
 }
 
@@ -267,13 +333,15 @@ function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number): P
 function manifestFor(
 	file: File,
 	variants: AttachmentVariantUpload[],
+	options: { sourceOriginal?: boolean } = {},
 ): AttachmentUploadPlan['variantManifest'] {
 	return {
 		source: {
 			name: file.name || 'attachment',
 			bytes: file.size,
-			mimeType: file.type || 'application/octet-stream'
+			mimeType: file.type || 'application/octet-stream',
 		},
+		sourceOriginal: options.sourceOriginal,
 		variants: Object.fromEntries(
 			variants.map((item) => [
 				item.variant,
@@ -281,17 +349,14 @@ function manifestFor(
 					bytes: item.bytes,
 					mimeType: item.mimeType,
 					width: item.width,
-					height: item.height
-				}
-			])
-		)
+					height: item.height,
+				},
+			]),
+		),
 	};
 }
 
-function variantRef(
-	variant: Attachment['variants']['original'],
-	plan: AttachmentUploadPlan,
-): AttachmentRefVariant {
+function variantRef(variant: Attachment['variants']['original'], plan: AttachmentUploadPlan): AttachmentRefVariant {
 	const local = plan.variants.find((item) => item.variant === variant.variant);
 	return {
 		variant: variant.variant,
@@ -299,6 +364,6 @@ function variantRef(
 		width: variant.width ?? local?.width ?? null,
 		height: variant.height ?? local?.height ?? null,
 		downloadPath: variant.downloadPath,
-		mimeType: local?.mimeType
+		mimeType: local?.mimeType,
 	};
 }

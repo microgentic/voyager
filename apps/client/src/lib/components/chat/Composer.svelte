@@ -19,6 +19,7 @@
 	import { messages, rooms, sync, ui, toasts, type ChatMessage } from '$lib/stores';
 	import Textarea from '$lib/components/ui/Textarea.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import Switch from '$lib/components/ui/Switch.svelte';
 	import { cn } from '$lib/utils/cn';
 	import { formatBytes } from '$lib/utils/format';
 	import { localId } from '$lib/utils/id';
@@ -51,6 +52,7 @@
 		name: string;
 		mediaType: string;
 		bytes: number;
+		sourceOriginal: boolean;
 		plan?: AttachmentUploadPlan;
 		ref?: AttachmentRef;
 		attachmentId?: string;
@@ -67,6 +69,7 @@
 	let sending = $state(false);
 	let pending = $state<Pending[]>([]);
 	let alsoSendToRoom = $state(false);
+	let sendOriginalImages = $state(false);
 	let textareaEl = $state<HTMLTextAreaElement>();
 	let fileInput = $state<HTMLInputElement>();
 	let hydratedEditKey = '';
@@ -92,6 +95,7 @@
 		for (const file of Array.from(files).slice(0, 10 - pending.length)) {
 			const id = localId('att');
 			const controller = new AbortController();
+			const sourceOriginal = sendOriginalImages && file.type.startsWith('image/');
 			pending = [
 				...pending,
 				{
@@ -100,21 +104,27 @@
 					name: file.name || 'attachment',
 					mediaType: file.type || 'application/octet-stream',
 					bytes: file.size,
+					sourceOriginal,
 					status: 'processing',
 					progress: 0.08,
 					statusText: 'Preparing',
 					abort: controller
 				}
 			];
-			void uploadPending(id, file, controller);
+			void uploadPending(id, file, controller, sourceOriginal);
 		}
 		if (fileInput) fileInput.value = '';
 	}
 
-	async function uploadPending(id: string, file: File, controller: AbortController): Promise<void> {
+	async function uploadPending(
+		id: string,
+		file: File,
+		controller: AbortController,
+		sourceOriginal = false
+	): Promise<void> {
 		let attachmentId: string | undefined;
 		try {
-			const plan = await buildAttachmentUploadPlan(file);
+			const plan = await buildAttachmentUploadPlan(file, { includeSourceOriginal: sourceOriginal });
 			if (controller.signal.aborted) return;
 			const localPreviewUrl =
 				plan.mediaKind === 'image' ? URL.createObjectURL(pickLocalPreviewVariant(plan).blob) : undefined;
@@ -123,7 +133,12 @@
 				localPreviewUrl,
 				status: 'uploading',
 				progress: 0.18,
-				statusText: plan.mediaKind === 'image' ? 'Optimized' : 'Ready to upload'
+				statusText:
+					plan.mediaKind === 'image' && sourceOriginal
+						? 'Source included'
+						: plan.mediaKind === 'image'
+							? 'Optimized'
+							: 'Ready to upload'
 			});
 			const allocated = await api.allocateAttachment(room.roomId, {
 				expectedBytes: Math.max(1, plan.expectedBytes),
@@ -173,7 +188,13 @@
 				variantManifest: plan.variantManifest
 			});
 			const ref = attachmentRefFromUpload(latest, plan);
-			patchPending(id, { ref, status: 'ready', progress: 1, statusText: 'Ready', abort: undefined });
+			patchPending(id, {
+				ref,
+				status: 'ready',
+				progress: 1,
+				statusText: sourceOriginal ? 'Ready with source' : 'Ready',
+				abort: undefined
+			});
 		} catch (err) {
 			if (attachmentId) void api.deleteAttachment(attachmentId).catch(() => undefined);
 			if ((err as Error)?.name === 'AbortError') return;
@@ -220,7 +241,7 @@
 			abort: controller,
 			error: undefined
 		});
-		void uploadPending(id, target.file, controller);
+		void uploadPending(id, target.file, controller, target.sourceOriginal);
 	}
 
 	function clearPending(list = pending, options: { deleteRemote?: boolean } = {}): void {
@@ -448,6 +469,14 @@
 			<label class="mb-2 flex w-fit cursor-pointer items-center gap-2 px-1 text-xs text-muted">
 				<input type="checkbox" bind:checked={alsoSendToRoom} class="h-4 w-4 rounded border-border accent-primary" />
 				<span>Also send to {alsoSendLabel}</span>
+			</label>
+		{/if}
+
+		{#if !editing}
+			<label class="mb-2 flex w-fit cursor-pointer items-center gap-2 px-1 text-xs font-medium text-muted">
+				<Switch bind:checked={sendOriginalImages} aria-label="Send original image files" />
+				<ImageIcon class="h-4 w-4" />
+				<span>Send original images</span>
 			</label>
 		{/if}
 

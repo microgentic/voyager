@@ -4,6 +4,7 @@
 	import { messages, type ChatMessage } from '$lib/stores';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import AttachmentView from './AttachmentView.svelte';
+	import type { AttachmentRef } from '$lib/protocol/codec';
 	import { cn } from '$lib/utils/cn';
 	import { nameColor } from '$lib/utils/avatar';
 	import { formatClock } from '$lib/utils/time';
@@ -66,6 +67,9 @@
 	);
 	const isDeletedForEveryone = $derived(message.deletedForEveryone.deleted);
 
+	const attachments = $derived(message.content.attachments ?? []);
+	const imageAttachments = $derived(attachments.filter(isImageAttachment));
+	const allAttachmentsAreImages = $derived(attachments.length > 1 && imageAttachments.length === attachments.length);
 	const hasBody = $derived(!isDeletedForEveryone && message.content.body.trim().length > 0);
 	const html = $derived(
 		isDeletedForEveryone || message.content.undecodable
@@ -137,6 +141,14 @@
 		event.stopPropagation();
 		if (selectionMode) return;
 		await messages.toggleReaction(message, reaction).catch(() => undefined);
+	}
+
+	function isImageAttachment(attachment: AttachmentRef): boolean {
+		return attachment.mediaKind === 'image' || attachment.mediaType.startsWith('image/');
+	}
+
+	function galleryIndexFor(attachment: AttachmentRef): number {
+		return imageAttachments.findIndex((item) => item.attachmentId === attachment.attachmentId);
 	}
 </script>
 
@@ -251,10 +263,21 @@
 					<Lock class="h-4 w-4" /> Message can’t be displayed
 				</p>
 			{:else}
-				{#if message.content.attachments?.length}
-					<div class="mb-1.5 flex flex-col gap-1.5">
-						{#each message.content.attachments as att (att.attachmentId)}
-							<AttachmentView attachment={att} {mine} />
+				{#if attachments.length}
+					<div
+						class={cn(
+							'mb-1.5 gap-1.5',
+							allAttachmentsAreImages ? 'grid grid-cols-2' : 'flex flex-col'
+						)}
+					>
+						{#each attachments as att (att.attachmentId)}
+							<AttachmentView
+								attachment={att}
+								{mine}
+								gallery={isImageAttachment(att) ? imageAttachments : []}
+								galleryIndex={galleryIndexFor(att)}
+								grid={allAttachmentsAreImages}
+							/>
 						{/each}
 					</div>
 				{/if}
