@@ -18,6 +18,8 @@ import { toasts } from './toast.svelte';
 type CallMediaState = 'idle' | 'connecting' | 'active' | 'ending' | 'unavailable' | 'error';
 type CallPrejoinMode = 'start' | 'accept';
 type CallDeviceKind = 'audioinput' | 'audiooutput' | 'videoinput';
+type CallVideoQualityPreference = 'auto' | 'low' | 'medium' | 'high';
+type CallConnectionQuality = 'idle' | 'connecting' | 'good' | 'unstable' | 'failed';
 
 export interface RemoteAudioStream {
 	id: string;
@@ -29,6 +31,18 @@ export interface RemoteVideoStream {
 	stream: MediaStream;
 	kind: 'video' | 'screen';
 	displayName?: string | null;
+}
+
+export interface CallConnectionStatus {
+	quality: CallConnectionQuality;
+	label: string;
+	detail: string;
+}
+
+export interface CallVideoQualityOption {
+	value: CallVideoQualityPreference;
+	label: string;
+	preferredRid: 'q' | 'h' | 'f' | null;
 }
 
 export interface CallDeviceOption {
@@ -73,15 +87,27 @@ const VIDEO_SEND_ENCODINGS: RTCRtpEncodingParameters[] = [
 	{ rid: 'h', scaleResolutionDownBy: 2, maxBitrate: 700_000 },
 	{ rid: 'q', scaleResolutionDownBy: 4, maxBitrate: 250_000 }
 ];
+const SCREEN_SEND_ENCODINGS: RTCRtpEncodingParameters[] = [
+	{ rid: 'f', scaleResolutionDownBy: 1, maxBitrate: 2_500_000 },
+	{ rid: 'h', scaleResolutionDownBy: 2, maxBitrate: 1_200_000 },
+	{ rid: 'q', scaleResolutionDownBy: 4, maxBitrate: 450_000 }
+];
 const VIDEO_SIMULCAST_POLICY = {
 	desktopPreferredRid: 'h',
 	mobilePreferredRid: 'q',
 	priorityOrdering: 'asciibetical',
 	ridNotAvailable: 'asciibetical'
 } as const;
+const VIDEO_QUALITY_OPTIONS: CallVideoQualityOption[] = [
+	{ value: 'auto', label: 'Auto', preferredRid: null },
+	{ value: 'high', label: 'High', preferredRid: 'f' },
+	{ value: 'medium', label: 'Medium', preferredRid: 'h' },
+	{ value: 'low', label: 'Low', preferredRid: 'q' }
+];
 const CALL_HISTORY_LIMIT = 50;
 const MEDIA_HEARTBEAT_MS = 25_000;
 const CALL_DEVICE_PREFERENCES_KEY = 'voyager.callDevicePreferences.v1';
+const CALL_VIDEO_QUALITY_KEY = 'voyager.callVideoQuality.v1';
 
 class CallsStore {
 	activeCall = $state<Call | null>(null);
@@ -98,10 +124,21 @@ class CallsStore {
 	remoteStreams = $state<RemoteAudioStream[]>([]);
 	remoteVideoStreams = $state<RemoteVideoStream[]>([]);
 	localVideoStream = $state<MediaStream | null>(null);
+	localScreenStream = $state<MediaStream | null>(null);
 	cameraEnabled = $state(false);
+	screenShareEnabled = $state(false);
+	screenShareSupported = $state(false);
+	startingScreenShare = $state(false);
 	switchingCamera = $state(false);
 	cameraFacingMode = $state<CameraFacingMode>('user');
 	videoQualityPolicy = VIDEO_SIMULCAST_POLICY;
+	videoQualityOptions = VIDEO_QUALITY_OPTIONS;
+	videoQualityPreference = $state<CallVideoQualityPreference>('auto');
+	videoSurfaceExpanded = $state(false);
+	featuredVideoId = $state<string | null>(null);
+	videoOrientation = $state<'portrait' | 'landscape'>('portrait');
+	peerConnectionState = $state<RTCPeerConnectionState>('new');
+	iceConnectionState = $state<RTCIceConnectionState>('new');
 	devicePreferences = $state<CallDevicePreferences>({});
 	deviceOptions = $state<CallDeviceOption[]>([]);
 	deviceLoading = $state(false);
@@ -128,6 +165,10 @@ class CallsStore {
 	readonly microphones = $derived(this.deviceOptions.filter((device) => device.kind === 'audioinput'));
 	readonly speakers = $derived(this.deviceOptions.filter((device) => device.kind === 'audiooutput'));
 	readonly cameras = $derived(this.deviceOptions.filter((device) => device.kind === 'videoinput'));
+	readonly connectionStatus = $derived(
+		connectionStatus(this.mediaState, this.peerConnectionState, this.iceConnectionState)
+	);
+	readonly cameraFacingLabel = $derived(this.cameraFacingMode === 'environment' ? 'Back camera' : 'Front camera');
 
 	private peer: RTCPeerConnection | null = null;
 	private localStream: MediaStream | null = null;
@@ -138,6 +179,8 @@ class CallsStore {
 	private pendingRemoteVideoTracks: CallRealtimeTrack[] = [];
 	private audioSender: RTCRtpSender | null = null;
 	private videoSender: RTCRtpSender | null = null;
+	private screenSender: RTCRtpSender | null = null;
+	private screenTrackMid: string | null = null;
 	private subscribing = false;
 	private mediaHeartbeat: ReturnType<typeof setInterval> | null = null;
 	private remoteAudioElements = new Set<HTMLMediaElement>();
@@ -145,6 +188,8 @@ class CallsStore {
 
 	constructor() {
 		this.loadDevicePreferences();
+		this.loadVideoQualityPreference();
+		this.screenShareSupported = hasDisplayMediaSupport();
 		if (typeof HTMLMediaElement !== 'undefined') {
 			this.audioOutputSupported = 'setSinkId' in HTMLMediaElement.prototype;
 		}
@@ -156,10 +201,16 @@ class CallsStore {
 		auth.onSignOut(() => this.reset());
 		if (typeof document !== 'undefined') {
 			document.addEventListener('visibilitychange', () => {
-				if (document.hidden && this.activeCall?.callType === 'video' && this.cameraEnabled) {
-					void this.setCameraEnabled(false, { notifyOnError: false });
+				if (document.hidden && this.activeCall?.callType === 'video') {
+					if (this.cameraEnabled) void this.setCameraEnabled(false, { notifyOnError: false });
+					if (this.screenShareEnabled) void this.stopScreenShare({ notifyOnError: false });
 				}
 			});
+		}
+		if (typeof window !== 'undefined') {
+			this.updateVideoOrientation();
+			window.addEventListener('resize', () => this.updateVideoOrientation());
+			window.addEventListener('orientationchange', () => this.updateVideoOrientation());
 		}
 	}
 
@@ -460,6 +511,21 @@ class CallsStore {
 		}
 	}
 
+	private loadVideoQualityPreference(): void {
+		if (typeof localStorage === 'undefined') return;
+		const value = localStorage.getItem(CALL_VIDEO_QUALITY_KEY);
+		if (isVideoQualityPreference(value)) this.videoQualityPreference = value;
+	}
+
+	private saveVideoQualityPreference(preference: CallVideoQualityPreference): void {
+		if (typeof localStorage === 'undefined') return;
+		try {
+			localStorage.setItem(CALL_VIDEO_QUALITY_KEY, preference);
+		} catch {
+			/* local preferences are best effort */
+		}
+	}
+
 	private async applyAudioOutputToAll(): Promise<void> {
 		await Promise.all([...this.remoteAudioElements].map((element) => this.applyAudioOutput(element)));
 	}
@@ -472,6 +538,27 @@ class CallsStore {
 			await setSinkId.call(node, this.devicePreferences.audioOutputId ?? '');
 		} catch (error) {
 			this.deviceError = displayError(error, 'Could not switch speaker output.');
+		}
+	}
+
+	private updateVideoOrientation(): void {
+		if (typeof window === 'undefined') return;
+		this.videoOrientation = window.matchMedia('(orientation: landscape)').matches ? 'landscape' : 'portrait';
+	}
+
+	private async closePublishedTrack(mid: string): Promise<void> {
+		const callId = this.mediaCallId;
+		const sessionId = this.sessionId;
+		if (!callId || !sessionId) return;
+		try {
+			await api.closeCallRealtimeTracks(callId, {
+				sessionId,
+				tracks: [{ mid }],
+				force: true
+			});
+			this.publishedMids.delete(mid);
+		} catch {
+			/* the full call teardown will retry closing any remaining published mids */
 		}
 	}
 
@@ -613,6 +700,55 @@ class CallsStore {
 		}
 	}
 
+	async toggleScreenShare(): Promise<void> {
+		if (this.activeCall?.callType !== 'video' || this.mediaState !== 'active' || this.startingScreenShare) return;
+		if (this.screenShareEnabled || this.localScreenStream) {
+			await this.stopScreenShare();
+			return;
+		}
+		await this.startScreenShare();
+	}
+
+	async stopScreenShare(options: { notifyOnError?: boolean } = {}): Promise<void> {
+		const notifyOnError = options.notifyOnError ?? true;
+		const mid = this.screenTrackMid;
+		const stream = this.localScreenStream;
+		this.screenShareEnabled = false;
+		this.localScreenStream = null;
+		this.screenTrackMid = null;
+		for (const track of stream?.getTracks() ?? []) {
+			track.onended = null;
+			track.stop();
+		}
+		try {
+			await this.screenSender?.replaceTrack(null);
+		} catch (error) {
+			if (notifyOnError) toasts.error(displayError(error, 'Could not stop screen sharing.'));
+		}
+		this.screenSender = null;
+		if (mid) await this.closePublishedTrack(mid);
+		void this.syncParticipantMediaState({ screenEnabled: false });
+	}
+
+	setVideoQualityPreference(preference: string): void {
+		if (!isVideoQualityPreference(preference)) return;
+		this.videoQualityPreference = preference;
+		this.saveVideoQualityPreference(preference);
+		if (this.mediaState === 'active') void this.refreshAvailableTracks();
+	}
+
+	setFeaturedVideo(videoId: string | null): void {
+		this.featuredVideoId = videoId;
+	}
+
+	setVideoSurfaceExpanded(expanded: boolean): void {
+		this.videoSurfaceExpanded = expanded;
+	}
+
+	toggleVideoSurfaceExpanded(): void {
+		this.videoSurfaceExpanded = !this.videoSurfaceExpanded;
+	}
+
 	async handleRealtimeEvent(event: RealtimeCallEvent): Promise<void> {
 		void this.loadRoomHistory(event.roomId, { quiet: true });
 		if (event.type === 'call.invite' || event.type === 'call.ringing') {
@@ -751,8 +887,14 @@ class CallsStore {
 			this.remoteStreams = [];
 			this.remoteVideoStreams = [];
 			this.localVideoStream = null;
+			this.localScreenStream = null;
 			this.audioSender = null;
 			this.cameraEnabled = false;
+			this.screenShareEnabled = false;
+			this.screenSender = null;
+			this.screenTrackMid = null;
+			this.peerConnectionState = peer.connectionState;
+			this.iceConnectionState = peer.iceConnectionState;
 			this.activeAudioInputId = options.audioInputId ?? this.devicePreferences.audioInputId ?? '';
 			this.activeVideoInputId = options.videoInputId ?? this.devicePreferences.videoInputId ?? '';
 			this.wirePeer(peer);
@@ -823,10 +965,15 @@ class CallsStore {
 		}
 	}
 
-	private wirePeer(peer: RTCPeerConnection): void {
-		peer.ontrack = (event) => {
-			const stream = event.streams[0] ?? new MediaStream([event.track]);
-			const id = event.track.id || event.transceiver.mid || cryptoId('remote');
+		private wirePeer(peer: RTCPeerConnection): void {
+			const updateConnectionState = () => {
+				this.peerConnectionState = peer.connectionState;
+				this.iceConnectionState = peer.iceConnectionState;
+			};
+			updateConnectionState();
+			peer.ontrack = (event) => {
+				const stream = event.streams[0] ?? new MediaStream([event.track]);
+				const id = event.track.id || event.transceiver.mid || cryptoId('remote');
 			if (event.track.kind === 'video') {
 				const metadata = this.pendingRemoteVideoTracks.shift();
 				if (!this.remoteVideoStreams.some((candidate) => candidate.id === id)) {
@@ -849,14 +996,16 @@ class CallsStore {
 				} else {
 					this.remoteStreams = this.remoteStreams.filter((candidate) => candidate.id !== id);
 				}
+				};
 			};
-		};
-		peer.onconnectionstatechange = () => {
-			if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
-				this.lastError = 'Call media connection was interrupted.';
-			}
-		};
-	}
+			peer.onconnectionstatechange = () => {
+				updateConnectionState();
+				if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+					this.lastError = 'Call media connection was interrupted.';
+				}
+			};
+			peer.oniceconnectionstatechange = updateConnectionState;
+		}
 
 	private async refreshAvailableTracks(): Promise<void> {
 		if (!this.activeCall || !this.sessionId || this.mediaState !== 'active') return;
@@ -894,14 +1043,14 @@ class CallsStore {
 			const config = await api.getCallRealtimeTrackConfig(this.activeCall.callId, {
 				sessionId: this.sessionId,
 				sessionDescription: offer,
-				tracks: remoteTracks.map((track) => ({
-					location: 'remote',
-					sessionId: track.sessionId,
-					trackName: track.trackName,
-					kind: track.kind,
-					simulcast: isVideoTrackKind(track.kind) ? remoteVideoSimulcastPolicy() : undefined
-				}))
-			});
+					tracks: remoteTracks.map((track) => ({
+						location: 'remote',
+						sessionId: track.sessionId,
+						trackName: track.trackName,
+						kind: track.kind,
+						simulcast: isVideoTrackKind(track.kind) ? remoteVideoSimulcastPolicy(this.videoQualityPreference) : undefined
+					}))
+				});
 			await this.applyProviderDescription(config);
 		} catch {
 			for (const track of remoteTracks) this.subscribedTracks.delete(remoteTrackKey(track));
@@ -932,9 +1081,9 @@ class CallsStore {
 		}
 	}
 
-	private async setCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
-		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
-		const notifyOnError = options.notifyOnError ?? true;
+		private async setCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
+			if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
+			const notifyOnError = options.notifyOnError ?? true;
 		if (!enabled) {
 			const currentTrack = this.localStream.getVideoTracks()[0];
 			try {
@@ -964,11 +1113,80 @@ class CallsStore {
 			this.cameraEnabled = false;
 			this.updateLocalVideoStream();
 			void this.syncParticipantMediaState({ videoEnabled: false });
-			if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
+				if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
+			}
 		}
-	}
 
-	private async publishCameraTrack(): Promise<void> {
+	private async startScreenShare(): Promise<void> {
+		const call = this.activeCall;
+		const sessionId = this.sessionId;
+		const peer = this.peer;
+		if (!peer || !call || !sessionId || !this.mediaCallId || this.startingScreenShare) return;
+			if (!this.screenShareSupported) {
+				toasts.error('Screen sharing is not available on this device.');
+				return;
+			}
+			this.startingScreenShare = true;
+			let screenStream: MediaStream | null = null;
+			let screenTrack: MediaStreamTrack | null = null;
+			let transceiver: RTCRtpTransceiver | null = null;
+			try {
+				screenStream = await navigator.mediaDevices.getDisplayMedia({
+					audio: false,
+					video: screenShareConstraints()
+				});
+				screenTrack = screenStream.getVideoTracks()[0] ?? null;
+				if (!screenTrack) {
+					for (const track of screenStream.getTracks()) track.stop();
+					throw new Error('Screen sharing did not provide a video track.');
+				}
+				if (this.peer !== peer || this.activeCall?.callId !== call.callId || this.sessionId !== sessionId || this.mediaState !== 'active') {
+					throw new Error('The call ended before screen sharing started.');
+				}
+				const publishStream = new MediaStream([screenTrack]);
+				transceiver = addScreenTransceiver(peer, screenTrack, publishStream);
+				this.screenSender = transceiver.sender;
+				this.localScreenStream = publishStream;
+				this.screenShareEnabled = true;
+				screenTrack.onended = () => {
+					if (this.localScreenStream || this.screenShareEnabled) void this.stopScreenShare({ notifyOnError: false });
+				};
+				const offer = await createOffer(peer);
+				const trackConfig = await api.getCallRealtimeTrackConfig(call.callId, {
+					sessionId,
+					sessionDescription: offer,
+					tracks: [
+						{
+							location: 'local',
+							trackName: localTrackName(call, 'screen'),
+							kind: 'screen',
+							mid: transceiver.mid
+						}
+					]
+				});
+				const mids = publishedTrackMids(trackConfig, [transceiver.mid]);
+				this.publishedMids = new Set([...this.publishedMids, ...mids]);
+				this.screenTrackMid = transceiver.mid ?? [...mids][0] ?? null;
+				await this.applyProviderDescription(trackConfig);
+				await this.syncParticipantMediaState({ screenEnabled: true });
+			} catch (error) {
+				if (transceiver) await transceiver.sender.replaceTrack(null).catch(() => undefined);
+				for (const track of screenStream?.getTracks() ?? []) {
+					track.onended = null;
+					track.stop();
+				}
+				this.screenSender = null;
+				this.localScreenStream = null;
+				this.screenTrackMid = null;
+				this.screenShareEnabled = false;
+				toasts.error(displayError(error, 'Could not start screen sharing.'));
+				void this.syncParticipantMediaState({ screenEnabled: false });
+			} finally {
+				this.startingScreenShare = false;
+			}
+		}
+
+		private async publishCameraTrack(): Promise<void> {
 		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
 		let nextTrack: MediaStreamTrack | null = null;
 		let addedToStream = false;
@@ -1071,11 +1289,11 @@ class CallsStore {
 				...(options.heartbeatOnly
 					? {}
 					: {
-							audioEnabled: !this.muted,
-							videoEnabled: options.videoEnabled ?? this.cameraEnabled,
-							screenEnabled: options.screenEnabled ?? false
-						})
-			});
+								audioEnabled: !this.muted,
+								videoEnabled: options.videoEnabled ?? this.cameraEnabled,
+								screenEnabled: options.screenEnabled ?? this.screenShareEnabled
+							})
+				});
 			this.activeCall = updated;
 			this.upsertRoomHistory(updated);
 		} catch {
@@ -1089,32 +1307,42 @@ class CallsStore {
 		const callId = this.mediaCallId;
 		const sessionId = this.sessionId;
 		const mids = [...this.publishedMids];
-		if (notifyProvider && callId && sessionId && mids.length) {
-			await api
-				.closeCallRealtimeTracks(callId, {
-					sessionId,
+			if (notifyProvider && callId && sessionId && mids.length) {
+				await api
+					.closeCallRealtimeTracks(callId, {
+						sessionId,
 					tracks: mids.map((mid) => ({ mid })),
 					force: true
 				})
-				.catch(() => undefined);
-		}
-		for (const track of this.localStream?.getTracks() ?? []) track.stop();
-		this.localStream = null;
-		this.peer?.close();
+					.catch(() => undefined);
+			}
+			for (const track of this.localScreenStream?.getTracks() ?? []) {
+				track.onended = null;
+				track.stop();
+			}
+			for (const track of this.localStream?.getTracks() ?? []) track.stop();
+			this.localScreenStream = null;
+			this.localStream = null;
+			this.peer?.close();
 		this.peer = null;
 		this.sessionId = null;
 		this.mediaCallId = null;
 		this.publishedMids = new Set();
 		this.subscribedTracks = new Set();
 		this.pendingRemoteVideoTracks = [];
-		this.audioSender = null;
-		this.videoSender = null;
-		this.remoteStreams = [];
-		this.remoteVideoStreams = [];
-		this.localVideoStream = null;
-		this.cameraEnabled = false;
-		this.callDevicePanelOpen = false;
-	}
+			this.audioSender = null;
+			this.videoSender = null;
+			this.screenSender = null;
+			this.screenTrackMid = null;
+			this.remoteStreams = [];
+			this.remoteVideoStreams = [];
+			this.localVideoStream = null;
+			this.screenShareEnabled = false;
+			this.cameraEnabled = false;
+			this.callDevicePanelOpen = false;
+			this.peerConnectionState = 'closed';
+			this.iceConnectionState = 'closed';
+		}
 
 	private async leaveCallQuietly(callId: string): Promise<void> {
 		try {
@@ -1128,12 +1356,16 @@ class CallsStore {
 	private clearActiveCall(): void {
 		this.activeCall = null;
 		this.activeRoom = null;
-		this.mediaState = 'idle';
-		this.muted = false;
-		this.cameraEnabled = false;
-		this.switchingCamera = false;
-		this.callDevicePanelOpen = false;
-	}
+			this.mediaState = 'idle';
+			this.muted = false;
+			this.cameraEnabled = false;
+			this.screenShareEnabled = false;
+			this.startingScreenShare = false;
+			this.switchingCamera = false;
+			this.callDevicePanelOpen = false;
+			this.videoSurfaceExpanded = false;
+			this.featuredVideoId = null;
+		}
 
 	private removeIncoming(callId: string): void {
 		this.incoming = this.incoming.filter((call) => call.callId !== callId);
@@ -1164,13 +1396,16 @@ class CallsStore {
 		this.startingRoomId = null;
 		this.startingCallType = null;
 		this.busyCallId = null;
-		this.lastError = null;
-		this.remoteVideoStreams = [];
-		this.localVideoStream = null;
-		this.cameraEnabled = false;
-		this.switchingCamera = false;
-		this.callDevicePanelOpen = false;
-		this.cancelPrejoin();
+			this.lastError = null;
+			this.remoteVideoStreams = [];
+			this.localVideoStream = null;
+			this.localScreenStream = null;
+			this.cameraEnabled = false;
+			this.screenShareEnabled = false;
+			this.startingScreenShare = false;
+			this.switchingCamera = false;
+			this.callDevicePanelOpen = false;
+			this.cancelPrejoin();
 	}
 }
 
@@ -1180,6 +1415,10 @@ function hasMediaSupport(): boolean {
 		typeof navigator !== 'undefined' &&
 		!!navigator.mediaDevices?.getUserMedia
 	);
+}
+
+function hasDisplayMediaSupport(): boolean {
+	return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 }
 
 async function createOffer(peer: RTCPeerConnection): Promise<CallRealtimeSessionDescription> {
@@ -1236,6 +1475,25 @@ function addCameraTransceiver(
 	}
 }
 
+function addScreenTransceiver(
+	peer: RTCPeerConnection,
+	track: MediaStreamTrack,
+	stream: MediaStream
+): RTCRtpTransceiver {
+	try {
+		return peer.addTransceiver(track, {
+			direction: 'sendonly',
+			streams: [stream],
+			sendEncodings: SCREEN_SEND_ENCODINGS
+		});
+	} catch {
+		return peer.addTransceiver(track, {
+			direction: 'sendonly',
+			streams: [stream]
+		});
+	}
+}
+
 function audioConstraints(deviceId?: string): MediaTrackConstraints {
 	return {
 		...AUDIO_CONSTRAINTS,
@@ -1249,6 +1507,14 @@ function videoConstraints(facingMode: CameraFacingMode, deviceId?: string): Medi
 		height: { ideal: 720 },
 		frameRate: { ideal: 24, max: 30 },
 		...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: facingMode } })
+	};
+}
+
+function screenShareConstraints(): MediaTrackConstraints {
+	return {
+		width: { ideal: 1920 },
+		height: { ideal: 1080 },
+		frameRate: { ideal: 15, max: 30 }
 	};
 }
 
@@ -1297,7 +1563,7 @@ function cleanDevicePreferences(preferences: Partial<CallDevicePreferences>): Ca
 	};
 }
 
-function localTrackName(call: Call, kind: 'audio' | 'video'): string {
+function localTrackName(call: Call, kind: 'audio' | 'video' | 'screen'): string {
 	const suffix = kind === 'video' ? 'camera' : kind;
 	return `${auth.device?.deviceId ?? 'device'}-${call.callId}-${suffix}`;
 }
@@ -1330,16 +1596,42 @@ function receiverKind(kind: CallRealtimeTrackKind): 'audio' | 'video' {
 	return isVideoTrackKind(kind) ? 'video' : 'audio';
 }
 
-function remoteVideoSimulcastPolicy(): NonNullable<CallRealtimeTrackInput['simulcast']> {
+function remoteVideoSimulcastPolicy(preference: CallVideoQualityPreference): NonNullable<CallRealtimeTrackInput['simulcast']> {
+	const selected = VIDEO_QUALITY_OPTIONS.find((option) => option.value === preference);
 	const preferredRid =
-		typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+		selected?.preferredRid ??
+		(typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
 			? VIDEO_SIMULCAST_POLICY.mobilePreferredRid
-			: VIDEO_SIMULCAST_POLICY.desktopPreferredRid;
+			: VIDEO_SIMULCAST_POLICY.desktopPreferredRid);
 	return {
 		preferredRid,
 		priorityOrdering: VIDEO_SIMULCAST_POLICY.priorityOrdering,
 		ridNotAvailable: VIDEO_SIMULCAST_POLICY.ridNotAvailable
 	};
+}
+
+function isVideoQualityPreference(value: unknown): value is CallVideoQualityPreference {
+	return value === 'auto' || value === 'low' || value === 'medium' || value === 'high';
+}
+
+function connectionStatus(
+	mediaState: CallMediaState,
+	peerState: RTCPeerConnectionState,
+	iceState: RTCIceConnectionState
+): CallConnectionStatus {
+	if (mediaState === 'connecting' || peerState === 'new' || peerState === 'connecting' || iceState === 'checking') {
+		return { quality: 'connecting', label: 'Connecting', detail: 'Negotiating media' };
+	}
+	if (mediaState === 'error' || peerState === 'failed' || iceState === 'failed') {
+		return { quality: 'failed', label: 'Failed', detail: 'Media connection failed' };
+	}
+	if (peerState === 'disconnected' || iceState === 'disconnected') {
+		return { quality: 'unstable', label: 'Unstable', detail: 'Media connection interrupted' };
+	}
+	if (mediaState === 'active' && (peerState === 'connected' || iceState === 'connected' || iceState === 'completed')) {
+		return { quality: 'good', label: 'Good', detail: 'Media connection active' };
+	}
+	return { quality: 'idle', label: 'Idle', detail: 'Media inactive' };
 }
 
 function cryptoId(prefix: string): string {
