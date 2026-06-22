@@ -25,6 +25,7 @@ import {
   positivePolicyLimit,
 } from "./quotas";
 import { getAttachment } from "./ownership";
+import { tenantScopedAttachmentObjectKey } from "./object-keys";
 import { parseMediaKind } from "./variants";
 
 export async function allocateAttachment(
@@ -56,7 +57,11 @@ export async function allocateAttachment(
     ),
   });
   const attachmentId = randomId("att");
-  const objectKey = `attachments/${roomId}/${attachmentId}/original`;
+  const objectKey = tenantScopedAttachmentObjectKey({
+    roomId,
+    attachmentId,
+    variant: "original",
+  });
   const expiresAt = sqliteTimestamp(
     Date.now() + DEFAULT_ATTACHMENT_DAYS * 24 * 60 * 60 * 1000,
   );

@@ -5,6 +5,7 @@ import { publicAttachment } from "./serializers";
 import { runCounted } from "../utils";
 import { getAttachment, ensureAttachmentUploader } from "./ownership";
 import type { AttachmentRow, AttachmentVariant } from "./types";
+import { VOYAGER_DEFAULT_TENANT_ID } from "./object-keys";
 import {
   assertProjectedVariantBudget,
   objectKeyForVariant,
@@ -49,7 +50,12 @@ export async function uploadAttachmentBlob(
   if (body && contentLength !== null) {
     await env.ATTACHMENTS_BUCKET.put(objectKey, body, {
       httpMetadata: { contentType },
-      customMetadata: { attachmentId, roomId: attachment.room_id, variant },
+      customMetadata: {
+        tenantId: attachment.tenant_id ?? VOYAGER_DEFAULT_TENANT_ID,
+        attachmentId,
+        roomId: attachment.room_id,
+        variant,
+      },
     });
     uploadedBytes = contentLength;
   } else {
@@ -64,7 +70,12 @@ export async function uploadAttachmentBlob(
     assertProjectedVariantBudget(attachment, variant, buffered.byteLength);
     await env.ATTACHMENTS_BUCKET.put(objectKey, buffered, {
       httpMetadata: { contentType },
-      customMetadata: { attachmentId, roomId: attachment.room_id, variant },
+      customMetadata: {
+        tenantId: attachment.tenant_id ?? VOYAGER_DEFAULT_TENANT_ID,
+        attachmentId,
+        roomId: attachment.room_id,
+        variant,
+      },
     });
     uploadedBytes = buffered.byteLength;
   }

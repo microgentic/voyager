@@ -1,10 +1,36 @@
 import type { Env } from "../../types";
 
+export const VOYAGER_DEFAULT_TENANT_ID = "tenant_voyager_default";
+
 export interface AttachmentObjectKeysRow {
   object_key: string;
   original_object_key: string | null;
   preview_object_key: string | null;
   thumbnail_object_key: string | null;
+}
+
+export interface TenantScopedAttachmentObjectKeyInput {
+  tenantId?: string | null;
+  roomId: string;
+  attachmentId: string;
+  variant: string;
+}
+
+export function tenantScopedAttachmentObjectKey({
+  tenantId,
+  roomId,
+  attachmentId,
+  variant,
+}: TenantScopedAttachmentObjectKeyInput): string {
+  return [
+    "tenants",
+    tenantId ?? VOYAGER_DEFAULT_TENANT_ID,
+    "rooms",
+    roomId,
+    "attachments",
+    attachmentId,
+    variant,
+  ].map(encodeObjectKeySegment).join("/");
 }
 
 export async function attachmentObjectRows(
@@ -30,4 +56,8 @@ export function uniqueAttachmentObjectKeys(rows: AttachmentObjectKeysRow[]): str
       ]).filter((key): key is string => typeof key === "string" && key.length > 0),
     ),
   );
+}
+
+function encodeObjectKeySegment(segment: string): string {
+  return encodeURIComponent(segment);
 }
