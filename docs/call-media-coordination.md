@@ -39,6 +39,10 @@ When provider credentials are absent or a provider request fails, the endpoint c
 
 Local smoke tests can set `CLOUDFLARE_REALTIME_MOCK=1` to exercise configured-success session, track, renegotiation, and close paths without real Cloudflare Realtime credentials. The mock is deterministic and only enabled when the Worker receives that explicit local variable. Production remains configured by Cloudflare Realtime secrets.
 
+## Diagnostics Boundary
+
+This PR keeps the existing client-visible connection/error state and backend usage counters, but the operator-facing Realtime status endpoint, advanced call diagnostics panel, feature flags, and cost/egress reporting remain part of the follow-up production-readiness PR.
+
 ## Non-Goals
 
 - No call media is stored in D1 or R2.
