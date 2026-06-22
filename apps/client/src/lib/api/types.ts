@@ -139,6 +139,10 @@ export interface CallParticipant {
 	joinedAt: string | null;
 	leftAt: string | null;
 	mutedAt: string | null;
+	audioEnabled: boolean;
+	videoEnabled: boolean;
+	screenEnabled: boolean;
+	lastSeenAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }

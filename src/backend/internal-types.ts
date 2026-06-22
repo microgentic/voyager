@@ -205,6 +205,10 @@ export interface CallParticipantRow {
   joined_at: string | null;
   left_at: string | null;
   muted_at: string | null;
+  audio_enabled: number;
+  video_enabled: number;
+  screen_enabled: number;
+  last_seen_at: string | null;
   created_at: string;
   updated_at: string;
   principal_type?: PrincipalRow["principal_type"];

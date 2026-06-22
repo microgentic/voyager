@@ -177,6 +177,8 @@ try {
     String(port),
     "--var",
     `BOOTSTRAP_TOKEN:${bootstrapToken}`,
+    "--var",
+    "CALL_RING_TIMEOUT_MS:5000",
     "--show-interactive-dev-session=false"
   ], {
     detached: process.platform !== "win32",

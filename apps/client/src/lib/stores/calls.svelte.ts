@@ -49,11 +49,15 @@ const VIDEO_SIMULCAST_POLICY = {
 	priorityOrdering: 'asciibetical',
 	ridNotAvailable: 'asciibetical'
 } as const;
+const CALL_HISTORY_LIMIT = 50;
+const MEDIA_HEARTBEAT_MS = 25_000;
 
 class CallsStore {
 	activeCall = $state<Call | null>(null);
 	activeRoom = $state<Room | null>(null);
 	incoming = $state<Call[]>([]);
+	roomHistory = $state<Record<string, Call[]>>({});
+	loadingHistoryRoomId = $state<string | null>(null);
 	mediaState = $state<CallMediaState>('idle');
 	muted = $state(false);
 	startingRoomId = $state<string | null>(null);
@@ -84,6 +88,7 @@ class CallsStore {
 	private pendingRemoteVideoTracks: CallRealtimeTrack[] = [];
 	private videoSender: RTCRtpSender | null = null;
 	private subscribing = false;
+	private mediaHeartbeat: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
 		auth.onSignOut(() => this.reset());
@@ -124,6 +129,7 @@ class CallsStore {
 			const call = await api.createCall(room.roomId, { callType });
 			this.activeCall = call;
 			this.activeRoom = room;
+			this.upsertRoomHistory(call);
 			this.muted = false;
 			this.cameraEnabled = false;
 			const connected = await this.connectMedia(call);
@@ -154,6 +160,7 @@ class CallsStore {
 			this.removeIncoming(call.callId);
 			this.activeCall = joined;
 			this.activeRoom = rooms.get(joined.roomId) ?? this.activeRoom;
+			this.upsertRoomHistory(joined);
 			this.muted = false;
 			this.cameraEnabled = false;
 			const connected = await this.connectMedia(joined);
@@ -173,7 +180,8 @@ class CallsStore {
 	async declineCall(callId: string): Promise<void> {
 		this.busyCallId = callId;
 		try {
-			await api.declineCall(callId);
+			const call = await api.declineCall(callId);
+			this.upsertRoomHistory(call);
 			this.removeIncoming(callId);
 		} catch (error) {
 			toasts.error(displayError(error, 'Could not decline the call.'));
@@ -189,7 +197,8 @@ class CallsStore {
 		this.mediaState = 'ending';
 		try {
 			await this.closeMedia();
-			await api.leaveCall(call.callId);
+			const left = await api.leaveCall(call.callId);
+			this.upsertRoomHistory(left);
 		} catch (error) {
 			toasts.error(displayError(error, 'Could not leave the call.'));
 		} finally {
@@ -206,6 +215,7 @@ class CallsStore {
 		try {
 			const updated = nextMuted ? await api.muteCall(call.callId) : await api.unmuteCall(call.callId);
 			this.activeCall = updated;
+			this.upsertRoomHistory(updated);
 		} catch (error) {
 			this.setLocalMuted(!nextMuted);
 			toasts.error(displayError(error, 'Could not update mute.'));
@@ -235,6 +245,7 @@ class CallsStore {
 	}
 
 	async handleRealtimeEvent(event: RealtimeCallEvent): Promise<void> {
+		void this.loadRoomHistory(event.roomId, { quiet: true });
 		if (event.type === 'call.invite' || event.type === 'call.ringing') {
 			if (event.createdByPrincipalId !== auth.principal?.principalId) {
 				await this.refreshIncomingCall(event.callId);
@@ -282,9 +293,37 @@ class CallsStore {
 		}
 	}
 
+	roomCalls(roomId: string): Call[] {
+		return this.roomHistory[roomId] ?? [];
+	}
+
+	async loadRoomHistory(roomId: string, options: { quiet?: boolean } = {}): Promise<void> {
+		if (!roomId) return;
+		if (!options.quiet) this.loadingHistoryRoomId = roomId;
+		try {
+			const page = await api.listRoomCalls(roomId, { limit: CALL_HISTORY_LIMIT });
+			this.roomHistory = { ...this.roomHistory, [roomId]: page.items };
+		} catch {
+			/* call history is opportunistic in the chat timeline */
+		} finally {
+			if (!options.quiet && this.loadingHistoryRoomId === roomId) {
+				this.loadingHistoryRoomId = null;
+			}
+		}
+	}
+
+	private upsertRoomHistory(call: Call): void {
+		const current = this.roomHistory[call.roomId] ?? [];
+		const next = [call, ...current.filter((candidate) => candidate.callId !== call.callId)]
+			.sort((a, b) => callTimeMs(b) - callTimeMs(a))
+			.slice(0, CALL_HISTORY_LIMIT);
+		this.roomHistory = { ...this.roomHistory, [call.roomId]: next };
+	}
+
 	private async refreshIncomingCall(callId: string): Promise<void> {
 		try {
 			const call = await api.getCall(callId);
+			this.upsertRoomHistory(call);
 			if (!LIVE_CALL_STATUSES.has(call.status)) {
 				this.removeIncoming(callId);
 				return;
@@ -304,10 +343,12 @@ class CallsStore {
 			const call = await api.getCall(callId);
 			if (!LIVE_CALL_STATUSES.has(call.status)) {
 				await this.closeMedia();
+				this.upsertRoomHistory(call);
 				this.clearActiveCall();
 				return;
 			}
 			this.activeCall = call;
+			this.upsertRoomHistory(call);
 		} catch {
 			/* keep the current call until an explicit terminal event arrives */
 		}
@@ -389,6 +430,8 @@ class CallsStore {
 			this.publishedMids = publishedTrackMids(trackConfig, publishMids);
 			await this.applyProviderDescription(trackConfig);
 			this.mediaState = 'active';
+			await this.syncParticipantMediaState();
+			this.startMediaHeartbeat();
 			await this.subscribeAvailableTracks([
 				...(sessionConfig.availableTracks ?? sessionConfig.tracks ?? []),
 				...(trackConfig.availableTracks ?? [])
@@ -528,15 +571,18 @@ class CallsStore {
 				}
 				this.cameraEnabled = false;
 				this.updateLocalVideoStream();
+				void this.syncParticipantMediaState({ videoEnabled: false });
 			}
 			return;
 		}
 		try {
 			await this.replaceCameraTrack(this.cameraFacingMode);
 			this.cameraEnabled = true;
+			await this.syncParticipantMediaState({ videoEnabled: true });
 		} catch (error) {
 			this.cameraEnabled = false;
 			this.updateLocalVideoStream();
+			void this.syncParticipantMediaState({ videoEnabled: false });
 			if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
 		}
 	}
@@ -574,7 +620,43 @@ class CallsStore {
 		if (!videoTracks.length) this.cameraEnabled = false;
 	}
 
+	private startMediaHeartbeat(): void {
+		this.stopMediaHeartbeat();
+		this.mediaHeartbeat = setInterval(() => {
+			void this.syncParticipantMediaState({ heartbeatOnly: true });
+		}, MEDIA_HEARTBEAT_MS);
+	}
+
+	private stopMediaHeartbeat(): void {
+		if (this.mediaHeartbeat) clearInterval(this.mediaHeartbeat);
+		this.mediaHeartbeat = null;
+	}
+
+	private async syncParticipantMediaState(
+		options: { videoEnabled?: boolean; screenEnabled?: boolean; heartbeatOnly?: boolean } = {}
+	): Promise<void> {
+		const call = this.activeCall;
+		if (!call) return;
+		try {
+			const updated = await api.updateCallParticipant(call.callId, {
+				heartbeat: true,
+				...(options.heartbeatOnly
+					? {}
+					: {
+							audioEnabled: !this.muted,
+							videoEnabled: options.videoEnabled ?? this.cameraEnabled,
+							screenEnabled: options.screenEnabled ?? false
+						})
+			});
+			this.activeCall = updated;
+			this.upsertRoomHistory(updated);
+		} catch {
+			/* heartbeat/media-state sync recovers on the next successful patch */
+		}
+	}
+
 	private async closeMedia(options: { notifyProvider?: boolean } = {}): Promise<void> {
+		this.stopMediaHeartbeat();
 		const notifyProvider = options.notifyProvider ?? true;
 		const callId = this.mediaCallId;
 		const sessionId = this.sessionId;
@@ -642,6 +724,7 @@ class CallsStore {
 
 	private reset(): void {
 		void this.closeMedia({ notifyProvider: false });
+		this.stopMediaHeartbeat();
 		this.activeCall = null;
 		this.activeRoom = null;
 		this.incoming = [];
@@ -781,6 +864,12 @@ function cryptoId(prefix: string): string {
 
 function displayError(error: unknown, fallback: string): string {
 	return isApiError(error) ? error.display : (error as Error)?.message || fallback;
+}
+
+function callTimeMs(call: Call): number {
+	const value = call.endedAt ?? call.startedAt ?? call.createdAt;
+	const date = value ? new Date(value.includes(' ') ? `${value.replace(' ', 'T')}Z` : value) : null;
+	return date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
 }
 
 export const calls = new CallsStore();

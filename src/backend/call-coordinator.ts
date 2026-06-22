@@ -15,6 +15,7 @@ import {
   declineCall,
   joinCall,
   leaveCall,
+  reconcileCallLifecycleForCoordinator,
   setCallMuted,
   updateCurrentCallParticipant,
 } from "./calls";
@@ -49,7 +50,7 @@ export class CallCoordinator {
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
-    _state: DurableObjectState,
+    private readonly state: DurableObjectState,
     private readonly env: Env,
   ) {}
 
@@ -108,6 +109,7 @@ export class CallCoordinator {
     const startedAt = performance.now();
     try {
       const result = await runCallMutation(this.env, payload);
+      await this.reconcileLifecycle(payload.callId);
       const metrics = finalizeCallMetrics(queueMs, startedAt);
       logCallMutation("success", payload, metrics);
       return json(
@@ -120,6 +122,35 @@ export class CallCoordinator {
       logCallMutation("error", payload, metrics, error);
       return errorResponse(error, payload.requestId);
     }
+  }
+
+  async alarm(): Promise<void> {
+    const callId = await this.state.storage.get<string>("callId");
+    if (!callId) return;
+    await this.reconcileLifecycle(callId);
+  }
+
+  private async reconcileLifecycle(callId: string): Promise<void> {
+    await this.state.storage.put("callId", callId);
+    const result = await reconcileCallLifecycleForCoordinator(this.env, callId, {
+      ringTimeoutMs: configuredMs(
+        this.env.CALL_RING_TIMEOUT_MS,
+        5_000,
+        10 * 60_000,
+        60_000,
+      ),
+      participantLivenessTimeoutMs: configuredMs(
+        this.env.CALL_PARTICIPANT_LIVENESS_TIMEOUT_MS,
+        30_000,
+        30 * 60_000,
+        120_000,
+      ),
+    });
+    if (!result.live || result.nextAlarmAt === undefined) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
+    await this.state.storage.setAlarm(result.nextAlarmAt);
   }
 }
 
@@ -256,6 +287,18 @@ export function errorCode(error: unknown): string | undefined {
   if (error instanceof HttpError) return error.code;
   if (error instanceof Error) return error.name || "error";
   return "unknown_error";
+}
+
+function configuredMs(
+  raw: string | undefined,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
 }
 
 export async function runCallMutationThroughCallCoordinator(

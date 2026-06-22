@@ -836,13 +836,56 @@ export async function revokeDevice(env: Env, deviceId: string, reason: string, a
   const deviceBinds = accountId ? [reason, deviceId, accountId] : [reason, deviceId];
   const sessionWhere = accountId ? "device_id = ? AND account_id = ? AND revoked_at IS NULL" : "device_id = ? AND revoked_at IS NULL";
   const sessionBinds = accountId ? [deviceId, accountId] : [deviceId];
+  const participantWhere = accountId ? "device_id = ? AND account_id = ?" : "device_id = ?";
+  const participantBinds = accountId ? [deviceId, accountId] : [deviceId];
   await env.CONTROL_DB.batch([
     env.CONTROL_DB.prepare(
       `UPDATE devices SET revoked_at = CURRENT_TIMESTAMP, revocation_reason = ? WHERE ${deviceWhere}`
     ).bind(...deviceBinds),
     env.CONTROL_DB.prepare(
       `UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE ${sessionWhere}`
-    ).bind(...sessionBinds)
+    ).bind(...sessionBinds),
+    env.CONTROL_DB.prepare(
+      `UPDATE call_realtime_tracks
+       SET status = 'closed',
+           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE device_id = ? AND status = 'active'`
+    ).bind(deviceId),
+    env.CONTROL_DB.prepare(
+      `UPDATE call_realtime_sessions
+       SET status = 'closed',
+           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE ${participantWhere} AND status = 'active'`
+    ).bind(...participantBinds),
+    env.CONTROL_DB.prepare(
+      `UPDATE call_participants
+       SET status = 'failed',
+           left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
+           muted_at = NULL,
+           audio_enabled = 0,
+           video_enabled = 0,
+           screen_enabled = 0,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE ${participantWhere} AND status = 'connected'`
+    ).bind(...participantBinds),
+    env.CONTROL_DB.prepare(
+      `UPDATE calls
+       SET status = 'ended',
+           ended_reason = 'device_revoked',
+           ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE status IN ('ringing', 'active')
+         AND call_id IN (
+           SELECT call_id FROM call_participants WHERE ${participantWhere}
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM call_participants cp
+           WHERE cp.call_id = calls.call_id AND cp.status = 'connected'
+         )`
+    ).bind(...participantBinds)
   ]);
 }
 

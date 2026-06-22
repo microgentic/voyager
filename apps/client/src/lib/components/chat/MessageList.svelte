@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { ArrowDown, CheckSquare, Copy, Forward, Hand, Info, MessagesSquare, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Trash2, X } from '@lucide/svelte';
-	import type { Room } from '$lib/api/types';
-	import { messages, rooms, toasts, type ChatMessage } from '$lib/stores';
+	import { ArrowDown, CheckSquare, Copy, Forward, Hand, Info, MessagesSquare, Pencil, Phone, PhoneOff, Pin, PinOff, Reply, RotateCcw, Search, Trash2, Video, X } from '@lucide/svelte';
+	import type { Call, Room } from '$lib/api/types';
+	import { calls, messages, rooms, toasts, type ChatMessage } from '$lib/stores';
 	import MessageBubble from './MessageBubble.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
@@ -30,9 +30,11 @@
 
 	type Row =
 		| { type: 'divider'; key: string; label: string }
-		| { type: 'msg'; key: string; message: ChatMessage; first: boolean; last: boolean };
+		| { type: 'msg'; key: string; message: ChatMessage; first: boolean; last: boolean }
+		| { type: 'call'; key: string; call: Call };
 
 	const list = $derived(messages.list(room.roomId));
+	const callHistory = $derived(calls.roomCalls(room.roomId));
 	let searchQuery = $state('');
 	const normalizedSearchQuery = $derived(searchQuery.trim().toLowerCase());
 	const visibleList = $derived.by<ChatMessage[]>(() => {
@@ -43,27 +45,52 @@
 
 	const rows = $derived.by<Row[]>(() => {
 		const out: Row[] = [];
-		for (let i = 0; i < visibleList.length; i += 1) {
-			const m = visibleList[i];
-			const prev = visibleList[i - 1];
-			const next = visibleList[i + 1];
-			const date = parseServerDate(m.serverReceivedAt ?? m.clientCreatedAt);
-			const prevDate = prev ? parseServerDate(prev.serverReceivedAt ?? prev.clientCreatedAt) : null;
-			const nextDate = next ? parseServerDate(next.serverReceivedAt ?? next.clientCreatedAt) : null;
+		const timeline = [
+			...visibleList.map((message) => ({
+				type: 'msg' as const,
+				key: message.key,
+				message,
+				date: parseServerDate(message.serverReceivedAt ?? message.clientCreatedAt)
+			})),
+			...(normalizedSearchQuery
+				? []
+				: callHistory.map((call) => ({
+						type: 'call' as const,
+						key: `call-${call.callId}`,
+						call,
+						date: callDate(call)
+					})))
+		].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0));
+
+		for (let i = 0; i < timeline.length; i += 1) {
+			const item = timeline[i];
+			const prev = timeline[i - 1];
+			const next = timeline[i + 1];
+			const date = item.date;
+			const prevDate = prev?.date ?? null;
+			const nextDate = next?.date ?? null;
 
 			const newDay = !prev || !sameDay(date, prevDate);
 			if (newDay) {
-				out.push({ type: 'divider', key: `d-${m.key}`, label: formatDayDivider(date) });
+				out.push({ type: 'divider', key: `d-${item.key}`, label: formatDayDivider(date) });
 			}
 
+			if (item.type === 'call') {
+				out.push({ type: 'call', key: item.key, call: item.call });
+				continue;
+			}
+
+			const m = item.message;
+			const prevMessage = prev?.type === 'msg' ? prev.message : null;
+			const nextMessage = next?.type === 'msg' ? next.message : null;
 			const gapBefore =
 				newDay ||
-				prev?.senderPrincipalId !== m.senderPrincipalId ||
+				prevMessage?.senderPrincipalId !== m.senderPrincipalId ||
 				(date && prevDate ? date.getTime() - prevDate.getTime() > GROUP_GAP_MS : true);
 			const gapAfter =
 				!next ||
 				!sameDay(date, nextDate) ||
-				next.senderPrincipalId !== m.senderPrincipalId ||
+				nextMessage?.senderPrincipalId !== m.senderPrincipalId ||
 				(date && nextDate ? nextDate.getTime() - date.getTime() > GROUP_GAP_MS : true);
 
 			out.push({ type: 'msg', key: m.key, message: m, first: gapBefore, last: gapAfter });
@@ -259,6 +286,42 @@
 		return Boolean(sender?.displayName.toLowerCase().includes(query));
 	}
 
+	function callDate(call: Call): Date | null {
+		return parseServerDate(call.endedAt ?? call.startedAt ?? call.createdAt);
+	}
+
+	function callTitle(call: Call): string {
+		const kind = call.callType === 'video' ? 'Video' : 'Audio';
+		if (call.status === 'missed') return `Missed ${kind.toLowerCase()} call`;
+		if (call.status === 'declined') return `${kind} call declined`;
+		if (call.status === 'failed') return `${kind} call failed`;
+		if (call.status === 'active') return `${kind} call active`;
+		if (call.status === 'ringing') return `${kind} call ringing`;
+		return `${kind} call ended`;
+	}
+
+	function callMeta(call: Call): string {
+		const bits: string[] = [];
+		const duration = callDuration(call);
+		if (duration) bits.push(duration);
+		const participants = call.participants.filter((participant) => ['connected', 'left'].includes(participant.status)).length;
+		if (participants > 0) bits.push(`${participants} participant${participants === 1 ? '' : 's'}`);
+		const time = callDate(call)?.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+		if (time) bits.push(time);
+		return bits.join(' · ');
+	}
+
+	function callDuration(call: Call): string {
+		const start = parseServerDate(call.startedAt ?? call.createdAt);
+		const end = parseServerDate(call.endedAt);
+		if (!start || !end || end.getTime() <= start.getTime()) return '';
+		const totalSeconds = Math.max(1, Math.round((end.getTime() - start.getTime()) / 1000));
+		const minutes = Math.floor(totalSeconds / 60);
+		const seconds = totalSeconds % 60;
+		if (minutes <= 0) return `${seconds}s`;
+		return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+	}
+
 	async function copyMessages(items: ChatMessage[]): Promise<void> {
 		const text = items.map(messageText).filter(Boolean).join('\n\n');
 		if (!text) {
@@ -347,6 +410,7 @@
 	}
 
 	onMount(() => {
+		void calls.loadRoomHistory(room.roomId);
 		const viewport = window.visualViewport;
 		const viewportHeight = () => Math.min(viewport?.height ?? window.innerHeight, window.innerHeight);
 
@@ -407,6 +471,7 @@
 		untrack(() => {
 			if (id !== selectionRoom) {
 				selectionRoom = id;
+				void calls.loadRoomHistory(id);
 				selectedKeys = [];
 				actionMenu = null;
 				searchQuery = '';
@@ -487,7 +552,7 @@
 	>
 		{#if loading}
 			<div class="grid h-full place-items-center"><Spinner class="text-primary" /></div>
-		{:else if list.length === 0}
+		{:else if list.length === 0 && callHistory.length === 0}
 			<div class="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
 				<div class="grid h-14 w-14 place-items-center rounded-2xl bg-surface-2 text-primary">
 					<Hand class="h-6 w-6" />
@@ -498,7 +563,7 @@
 						: 'No messages yet — say hello.'}
 				</p>
 			</div>
-		{:else if visibleList.length === 0}
+		{:else if normalizedSearchQuery && visibleList.length === 0}
 			<div class="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
 				<div class="grid h-14 w-14 place-items-center rounded-2xl bg-surface-2 text-primary">
 					<Search class="h-6 w-6" />
@@ -512,6 +577,34 @@
 						<span class="rounded-full bg-surface-2 px-3 py-1 text-xs font-medium text-muted shadow-xs">
 							{row.label}
 						</span>
+					</div>
+				{:else if row.type === 'call'}
+					<div class="my-3 flex justify-center px-4">
+						<div
+							class="flex max-w-[min(28rem,100%)] items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2 text-left shadow-xs"
+						>
+							<div
+								class={`grid h-9 w-9 shrink-0 place-items-center rounded-full ${
+									row.call.status === 'missed' || row.call.status === 'declined' || row.call.status === 'failed'
+										? 'bg-danger-soft text-danger'
+										: 'bg-primary/10 text-primary'
+								}`}
+							>
+								{#if row.call.status === 'missed' || row.call.status === 'declined' || row.call.status === 'failed'}
+									<PhoneOff class="h-4 w-4" />
+								{:else if row.call.callType === 'video'}
+									<Video class="h-4 w-4" />
+								{:else}
+									<Phone class="h-4 w-4" />
+								{/if}
+							</div>
+							<div class="min-w-0">
+								<div class="truncate text-sm font-semibold text-foreground">{callTitle(row.call)}</div>
+								{#if callMeta(row.call)}
+									<div class="truncate text-xs text-muted">{callMeta(row.call)}</div>
+								{/if}
+							</div>
+						</div>
 					</div>
 				{:else}
 					<MessageBubble
@@ -671,7 +764,7 @@
 		</div>
 	{/if}
 
-	{#if !atBottom && list.length > 0}
+	{#if !atBottom && rows.length > 0}
 		<button
 			onclick={() => toBottom('smooth')}
 			class="absolute bottom-3 right-4 grid h-10 w-10 place-items-center rounded-full border border-border bg-elevated text-foreground shadow-pop transition hover:bg-surface-2"
