@@ -1,0 +1,3 @@
+export {
+  deleteAttachment,
+} from "./core";
