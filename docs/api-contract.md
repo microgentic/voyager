@@ -296,6 +296,8 @@ Room invitations are the human membership path. Reused, expired, declined, or re
 
 Call endpoints are a shared foundation for audio and video. The current call surface combines durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and Cloudflare Realtime session/track negotiation for microphone, camera, and screen tracks. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
 
+Provider HTTP negotiation can happen outside the Durable Object, but durable D1 media commits are coordinator-owned. Session upsert, track upsert, track close, provider-unavailable/failure records, and renegotiation records are serialized through `CallCoordinator` after provider calls return. This keeps slow provider requests out of the DO queue while preserving serialized authoritative state mutation.
+
 | Method | Path | Response |
 | --- | --- | --- |
 | `GET` | `/v1/rooms/{roomId}/calls` | `{ calls, nextCursor }` |
@@ -391,7 +393,7 @@ Realtime session responses may include:
 }
 ```
 
-`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates the caller's Cloudflare Realtime session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. Stored track metadata includes the requested quality layer when present; media content is never stored. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription`. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session.
+`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates or returns the caller's active Cloudflare Realtime session. Duplicate active session requests from the same connected participant return the existing active session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. Stored track metadata includes the requested quality layer when present; duplicate local track publication upserts the existing session/track row. Media content is never stored. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription` and records metadata-only renegotiation state. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session; duplicate close is safe from the D1 perspective.
 
 ### Attachments
 
@@ -647,7 +649,7 @@ Admin hierarchy is part of the security contract: only platform owners may admin
 }
 ```
 
-`callMedia` is an operations surface derived from durable call/session/track metadata and failure events. Provider egress/TURN bytes are reported as unavailable until Cloudflare exposes or the app records a trustworthy byte counter.
+`callMedia` is an operations surface derived from durable call/session/track metadata and failure events. Provider egress/TURN bytes are reported as unavailable until Cloudflare exposes or the app records a trustworthy byte counter. Local configured-success smoke may use `CLOUDFLARE_REALTIME_MOCK=1`; production configuration still depends on Cloudflare Realtime secrets.
 
 ## Examples
 

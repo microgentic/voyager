@@ -12,6 +12,12 @@ import {
 import type { AuthContext, Env } from "../types";
 import {
   createCall,
+  commitRealtimeProviderFailureForCoordinator,
+  commitRealtimeRenegotiateRecordForCoordinator,
+  commitRealtimeSessionUpsertForCoordinator,
+  commitRealtimeTracksCloseForCoordinator,
+  commitRealtimeTracksUpsertForCoordinator,
+  commitRealtimeUnavailableForCoordinator,
   declineCall,
   joinCall,
   leaveCall,
@@ -210,6 +216,48 @@ export async function runCallMutation(
       return setCallMuted(env, payload.auth, payload.callId, false);
     case "call.participant.update":
       return updateCurrentCallParticipant(
+        env,
+        payload.auth,
+        payload.callId,
+        payload.body ?? {},
+      );
+    case "call.media.session.upsert":
+      return commitRealtimeSessionUpsertForCoordinator(
+        env,
+        payload.auth,
+        payload.callId,
+        payload.body ?? {},
+      );
+    case "call.media.tracks.upsert":
+      return commitRealtimeTracksUpsertForCoordinator(
+        env,
+        payload.auth,
+        payload.callId,
+        payload.body ?? {},
+      );
+    case "call.media.tracks.close":
+      return commitRealtimeTracksCloseForCoordinator(
+        env,
+        payload.auth,
+        payload.callId,
+        payload.body ?? {},
+      );
+    case "call.media.unavailable.record":
+      return commitRealtimeUnavailableForCoordinator(
+        env,
+        payload.auth,
+        payload.callId,
+        payload.body ?? {},
+      );
+    case "call.media.provider_failure.record":
+      return commitRealtimeProviderFailureForCoordinator(
+        env,
+        payload.auth,
+        payload.callId,
+        payload.body ?? {},
+      );
+    case "call.media.renegotiate.record":
+      return commitRealtimeRenegotiateRecordForCoordinator(
         env,
         payload.auth,
         payload.callId,

@@ -159,6 +159,13 @@ async function terminate(child) {
 const persistDir = await mkdtemp(join(tmpdir(), "voyager-backend-smoke-"));
 const port = await freePort();
 let worker;
+const workerVars = [
+  `BOOTSTRAP_TOKEN:${bootstrapToken}`,
+  "CALL_RING_TIMEOUT_MS:5000"
+];
+if (process.env.CLOUDFLARE_REALTIME_MOCK === "1") {
+  workerVars.push("CLOUDFLARE_REALTIME_MOCK:1");
+}
 
 try {
   await runCommand(npx, ["wrangler", "d1", "migrations", "apply", "voyager-dev-control", "--local", "--persist-to", persistDir], {
@@ -175,10 +182,7 @@ try {
     persistDir,
     "--port",
     String(port),
-    "--var",
-    `BOOTSTRAP_TOKEN:${bootstrapToken}`,
-    "--var",
-    "CALL_RING_TIMEOUT_MS:5000",
+    ...workerVars.flatMap((value) => ["--var", value]),
     "--show-interactive-dev-session=false"
   ], {
     detached: process.platform !== "win32",
