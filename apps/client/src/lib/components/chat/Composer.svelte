@@ -326,6 +326,7 @@
 	}
 
 	async function startVoiceRecording(event?: PointerEvent): Promise<void> {
+		if (!canStartVoiceRecording) return;
 		if (event) {
 			if (event.pointerType === 'mouse' && event.button !== 0) return;
 			event.preventDefault();
@@ -340,7 +341,6 @@
 			toasts.error(voiceError);
 			return;
 		}
-		if (!canStartVoiceRecording) return;
 		voiceError = null;
 		voicePreparing = true;
 		voiceDiscardOnStop = false;
@@ -619,143 +619,143 @@
 		role="region"
 		aria-label="Message composer"
 	>
-			{#if dragActive}
-				<div class="pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-2xl border border-dashed border-primary bg-primary-soft/95 text-sm font-semibold text-primary shadow-sm">
-					Drop files to attach
-				</div>
-			{/if}
+		{#if dragActive}
+			<div class="pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-2xl border border-dashed border-primary bg-primary-soft/95 text-sm font-semibold text-primary shadow-sm">
+				Drop files to attach
+			</div>
+		{/if}
 
-			{#if activeContext}
-				<div class="mb-2 flex min-w-0 items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm">
-					<div class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary-soft text-primary">
-						{#if editingMessage}<Pencil class="h-4 w-4" />{:else}<CornerUpLeft class="h-4 w-4" />{/if}
-					</div>
-					<div class="min-w-0 flex-1">
-						<div class="font-semibold text-foreground">{contextTitle}</div>
-						<div class="truncate text-xs text-muted">{contextBody || 'Attachment message'}</div>
-					</div>
-					<button
-						type="button"
-						class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-surface-3 hover:text-foreground"
-						aria-label="Cancel message context"
-						onclick={() => {
-							text = '';
-							onCancelContext?.();
-						}}
-					>
-						<X class="h-4 w-4" />
-					</button>
+		{#if activeContext}
+			<div class="mb-2 flex min-w-0 items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm">
+				<div class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary-soft text-primary">
+					{#if editingMessage}<Pencil class="h-4 w-4" />{:else}<CornerUpLeft class="h-4 w-4" />{/if}
 				</div>
-			{/if}
+				<div class="min-w-0 flex-1">
+					<div class="font-semibold text-foreground">{contextTitle}</div>
+					<div class="truncate text-xs text-muted">{contextBody || 'Attachment message'}</div>
+				</div>
+				<button
+					type="button"
+					class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-surface-3 hover:text-foreground"
+					aria-label="Cancel message context"
+					onclick={() => {
+						text = '';
+						onCancelContext?.();
+					}}
+				>
+					<X class="h-4 w-4" />
+				</button>
+			</div>
+		{/if}
 
-			{#if voicePreparing || voiceRecording}
-				<div class="mb-2 flex min-w-0 items-center gap-3 rounded-xl border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-foreground">
-					<div class="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-danger text-white">
-						<span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger/45"></span>
-						<Mic class="relative h-4.5 w-4.5" />
-					</div>
-					<div class="min-w-0 flex-1">
-						<div class="font-semibold">{voiceStatus}</div>
-						<div class="mt-1 flex h-5 items-end gap-0.5" aria-hidden="true">
-							{#each Array.from({ length: 18 }) as _, index}
-								<span
-									class="w-1 rounded-full bg-danger/70"
-									style={`height: ${voiceRecording ? 7 + ((index * 5 + Math.floor(voiceElapsedMs / 180)) % 14) : 6}px`}
-								></span>
-							{/each}
-						</div>
-					</div>
-					<button
-						type="button"
-						onclick={() => void finishVoiceRecording({ discard: true })}
-						class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-danger transition hover:bg-danger/15"
-						aria-label="Cancel voice recording"
-						title="Cancel voice recording"
-					>
-						<Trash2 class="h-4.5 w-4.5" />
-					</button>
-					<button
-						type="button"
-						onclick={() => void finishVoiceRecording()}
-						class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-danger text-white transition hover:bg-danger/90"
-						aria-label="Finish voice recording"
-						title="Finish voice recording"
-					>
-						<Square class="h-3.5 w-3.5 fill-current" />
-					</button>
+		{#if voicePreparing || voiceRecording}
+			<div class="mb-2 flex min-w-0 items-center gap-3 rounded-xl border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-foreground">
+				<div class="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-danger text-white">
+					<span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger/45"></span>
+					<Mic class="relative h-4.5 w-4.5" />
 				</div>
-			{:else if voiceError}
-				<div class="mb-2 rounded-xl border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-danger">
-					{voiceError}
+				<div class="min-w-0 flex-1">
+					<div class="font-semibold">{voiceStatus}</div>
+					<div class="mt-1 flex h-5 items-end gap-0.5" aria-hidden="true">
+						{#each Array.from({ length: 18 }) as _, index}
+							<span
+								class="w-1 rounded-full bg-danger/70"
+								style={`height: ${voiceRecording ? 7 + ((index * 5 + Math.floor(voiceElapsedMs / 180)) % 14) : 6}px`}
+							></span>
+						{/each}
+					</div>
 				</div>
-			{/if}
+				<button
+					type="button"
+					onclick={() => void finishVoiceRecording({ discard: true })}
+					class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-danger transition hover:bg-danger/15"
+					aria-label="Cancel voice recording"
+					title="Cancel voice recording"
+				>
+					<Trash2 class="h-4.5 w-4.5" />
+				</button>
+				<button
+					type="button"
+					onclick={() => void finishVoiceRecording()}
+					class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-danger text-white transition hover:bg-danger/90"
+					aria-label="Finish voice recording"
+					title="Finish voice recording"
+				>
+					<Square class="h-3.5 w-3.5 fill-current" />
+				</button>
+			</div>
+		{:else if voiceError}
+			<div class="mb-2 rounded-xl border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-danger">
+				{voiceError}
+			</div>
+		{/if}
 
-			{#if pending.length > 0}
-				<div class="mb-2 grid gap-2 px-1 sm:grid-cols-2 lg:grid-cols-3">
-					{#each pending as item (item.id)}
-						<div
-							class={cn(
-								'min-w-0 overflow-hidden rounded-xl border bg-surface-2 text-xs shadow-sm',
-								item.status === 'error' ? 'border-danger/40' : 'border-border'
-							)}
-						>
-							<div class="flex min-w-0 gap-2 p-2">
-								<div class="relative grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-lg bg-surface-3 text-muted">
-									{#if item.localPreviewUrl}
-										<img src={item.localPreviewUrl} alt="" class="h-full w-full object-cover" draggable="false" />
-									{:else if item.mediaType.startsWith('image/')}
-										<ImageIcon class="h-5 w-5" />
-									{:else if item.voiceNote || item.mediaType.startsWith('audio/')}
-										<Music class="h-5 w-5" />
-									{:else}
-										<FileIcon class="h-5 w-5" />
-									{/if}
+		{#if pending.length > 0}
+			<div class="mb-2 grid gap-2 px-1 sm:grid-cols-2 lg:grid-cols-3">
+				{#each pending as item (item.id)}
+					<div
+						class={cn(
+							'min-w-0 overflow-hidden rounded-xl border bg-surface-2 text-xs shadow-sm',
+							item.status === 'error' ? 'border-danger/40' : 'border-border'
+						)}
+					>
+						<div class="flex min-w-0 gap-2 p-2">
+							<div class="relative grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-lg bg-surface-3 text-muted">
+								{#if item.localPreviewUrl}
+									<img src={item.localPreviewUrl} alt="" class="h-full w-full object-cover" draggable="false" />
+								{:else if item.mediaType.startsWith('image/')}
+									<ImageIcon class="h-5 w-5" />
+								{:else if item.voiceNote || item.mediaType.startsWith('audio/')}
+									<Music class="h-5 w-5" />
+								{:else}
+									<FileIcon class="h-5 w-5" />
+								{/if}
+							</div>
+							<div class="min-w-0 flex-1">
+								<div class="truncate font-semibold text-foreground">{item.name}</div>
+								<div class={cn('truncate', item.status === 'error' ? 'text-danger' : 'text-muted')}>
+									{item.statusText}{item.durationMs || item.plan?.durationMs ? ` · ${formatDuration(item.durationMs ?? item.plan?.durationMs)}` : ''} · {formatBytes(item.ref?.bytes ?? item.plan?.expectedBytes ?? item.bytes)}
 								</div>
-								<div class="min-w-0 flex-1">
-									<div class="truncate font-semibold text-foreground">{item.name}</div>
-									<div class={cn('truncate', item.status === 'error' ? 'text-danger' : 'text-muted')}>
-										{item.statusText}{item.durationMs || item.plan?.durationMs ? ` · ${formatDuration(item.durationMs ?? item.plan?.durationMs)}` : ''} · {formatBytes(item.ref?.bytes ?? item.plan?.expectedBytes ?? item.bytes)}
-									</div>
-									<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
-										<div
-											class={cn(
-												'h-full rounded-full transition-[width]',
-												item.status === 'error' ? 'bg-danger' : 'bg-primary'
-											)}
-											style={`width: ${Math.max(4, Math.round(item.progress * 100))}%`}
-										></div>
-									</div>
-								</div>
-								<div class="flex shrink-0 items-start gap-0.5">
-									{#if item.status === 'error'}
-										<Button
-											variant="ghost"
-											size="icon-sm"
-											title={item.error ?? 'Retry upload'}
-											aria-label="Retry attachment upload"
-											onclick={() => retryPending(item.id)}
-										>
-											<RotateCcw class="h-3.5 w-3.5" />
-										</Button>
-									{/if}
-									<button
-										onclick={() => removePending(item.id)}
-										aria-label="Remove attachment"
-										class="grid h-8 w-8 place-items-center rounded-lg text-faint transition hover:bg-surface-3 hover:text-foreground"
-									>
-										<X class="h-3.5 w-3.5" />
-									</button>
+								<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
+									<div
+										class={cn(
+											'h-full rounded-full transition-[width]',
+											item.status === 'error' ? 'bg-danger' : 'bg-primary'
+										)}
+										style={`width: ${Math.max(4, Math.round(item.progress * 100))}%`}
+									></div>
 								</div>
 							</div>
-							{#if item.status === 'ready' && item.plan && item.plan.file.size > (item.ref?.bytes ?? item.plan.expectedBytes)}
-								<div class="border-t border-border px-2 py-1 text-[11px] text-muted">
-									Optimized from {formatBytes(item.plan.file.size)}
-								</div>
-							{/if}
+							<div class="flex shrink-0 items-start gap-0.5">
+								{#if item.status === 'error'}
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										title={item.error ?? 'Retry upload'}
+										aria-label="Retry attachment upload"
+										onclick={() => retryPending(item.id)}
+									>
+										<RotateCcw class="h-3.5 w-3.5" />
+									</Button>
+								{/if}
+								<button
+									onclick={() => removePending(item.id)}
+									aria-label="Remove attachment"
+									class="grid h-8 w-8 place-items-center rounded-lg text-faint transition hover:bg-surface-3 hover:text-foreground"
+								>
+									<X class="h-3.5 w-3.5" />
+								</button>
+							</div>
 						</div>
-					{/each}
-				</div>
-			{/if}
+						{#if item.status === 'ready' && item.plan && item.plan.file.size > (item.ref?.bytes ?? item.plan.expectedBytes)}
+							<div class="border-t border-border px-2 py-1 text-[11px] text-muted">
+								Optimized from {formatBytes(item.plan.file.size)}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{/if}
 
 		{#if inThread}
 			<label class="mb-2 flex w-fit cursor-pointer items-center gap-2 px-1 text-xs text-muted">
@@ -772,56 +772,56 @@
 			</label>
 		{/if}
 
-			<div class="flex min-w-0 items-end gap-1 sm:gap-1.5">
-				<input
-					bind:this={fileInput}
-					type="file"
-					multiple
-					accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.csv,.json"
-					class="hidden"
-					onchange={(e) => addFiles((e.currentTarget as HTMLInputElement).files)}
-				/>
-				<button
-					type="button"
-					onpointerdown={(event) => void startVoiceRecording(event)}
-					onpointerup={handleVoicePointerEnd}
-					onpointercancel={handleVoicePointerCancel}
-					onkeydown={handleVoiceKeydown}
-					onkeyup={handleVoiceKeyup}
-					disabled={voiceButtonDisabled}
-					aria-label="Hold to record voice note"
-					title={voiceSupported ? 'Hold to record voice note' : 'Voice recording unavailable'}
-					class={cn(
-						'grid h-9 w-9 shrink-0 touch-none place-items-center rounded-xl transition sm:h-10 sm:w-10',
-						voiceRecording || voicePreparing
-							? 'bg-danger text-white'
-							: 'text-muted hover:bg-surface-2 hover:text-foreground',
-						voiceButtonDisabled && 'cursor-not-allowed opacity-40'
-					)}
-				>
-					<Mic class="h-5 w-5" />
-				</button>
-				<button
-					type="button"
-					onclick={() => fileInput?.click()}
-					disabled={editing}
-					class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground sm:h-10 sm:w-10"
-					aria-label="Attach files"
-				>
-					<Paperclip class="h-5 w-5" />
-				</button>
-				<button
-					onclick={() => (markdown = !markdown)}
-					aria-pressed={markdown}
-					title="Markdown formatting"
-					class={cn(
-						'hidden h-9 w-9 shrink-0 place-items-center rounded-xl transition sm:grid sm:h-10 sm:w-10',
-						markdown ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground'
-					)}
-					aria-label="Toggle Markdown"
-				>
-					<Sparkles class="h-5 w-5" />
-				</button>
+		<div class="flex min-w-0 items-end gap-1 sm:gap-1.5">
+			<input
+				bind:this={fileInput}
+				type="file"
+				multiple
+				accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.csv,.json"
+				class="hidden"
+				onchange={(e) => addFiles((e.currentTarget as HTMLInputElement).files)}
+			/>
+			<button
+				type="button"
+				onpointerdown={(event) => void startVoiceRecording(event)}
+				onpointerup={handleVoicePointerEnd}
+				onpointercancel={handleVoicePointerCancel}
+				onkeydown={handleVoiceKeydown}
+				onkeyup={handleVoiceKeyup}
+				disabled={voiceButtonDisabled}
+				aria-label="Hold to record voice note"
+				title={voiceSupported ? 'Hold to record voice note' : 'Voice recording unavailable'}
+				class={cn(
+					'grid h-9 w-9 shrink-0 touch-none place-items-center rounded-xl transition sm:h-10 sm:w-10',
+					voiceRecording || voicePreparing
+						? 'bg-danger text-white'
+						: 'text-muted hover:bg-surface-2 hover:text-foreground',
+					voiceButtonDisabled && 'cursor-not-allowed opacity-40'
+				)}
+			>
+				<Mic class="h-5 w-5" />
+			</button>
+			<button
+				type="button"
+				onclick={() => fileInput?.click()}
+				disabled={editing}
+				class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground sm:h-10 sm:w-10"
+				aria-label="Attach files"
+			>
+				<Paperclip class="h-5 w-5" />
+			</button>
+			<button
+				onclick={() => (markdown = !markdown)}
+				aria-pressed={markdown}
+				title="Markdown formatting"
+				class={cn(
+					'hidden h-9 w-9 shrink-0 place-items-center rounded-xl transition sm:grid sm:h-10 sm:w-10',
+					markdown ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground'
+				)}
+				aria-label="Toggle Markdown"
+			>
+				<Sparkles class="h-5 w-5" />
+			</button>
 
 			<div class="min-w-0 flex-1">
 				<Textarea
