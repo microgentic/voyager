@@ -965,15 +965,15 @@ class CallsStore {
 		}
 	}
 
-		private wirePeer(peer: RTCPeerConnection): void {
-			const updateConnectionState = () => {
-				this.peerConnectionState = peer.connectionState;
-				this.iceConnectionState = peer.iceConnectionState;
-			};
-			updateConnectionState();
-			peer.ontrack = (event) => {
-				const stream = event.streams[0] ?? new MediaStream([event.track]);
-				const id = event.track.id || event.transceiver.mid || cryptoId('remote');
+	private wirePeer(peer: RTCPeerConnection): void {
+		const updateConnectionState = () => {
+			this.peerConnectionState = peer.connectionState;
+			this.iceConnectionState = peer.iceConnectionState;
+		};
+		updateConnectionState();
+		peer.ontrack = (event) => {
+			const stream = event.streams[0] ?? new MediaStream([event.track]);
+			const id = event.track.id || event.transceiver.mid || cryptoId('remote');
 			if (event.track.kind === 'video') {
 				const metadata = this.pendingRemoteVideoTracks.shift();
 				if (!this.remoteVideoStreams.some((candidate) => candidate.id === id)) {
@@ -996,16 +996,16 @@ class CallsStore {
 				} else {
 					this.remoteStreams = this.remoteStreams.filter((candidate) => candidate.id !== id);
 				}
-				};
 			};
-			peer.onconnectionstatechange = () => {
-				updateConnectionState();
-				if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
-					this.lastError = 'Call media connection was interrupted.';
-				}
-			};
-			peer.oniceconnectionstatechange = updateConnectionState;
-		}
+		};
+		peer.onconnectionstatechange = () => {
+			updateConnectionState();
+			if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+				this.lastError = 'Call media connection was interrupted.';
+			}
+		};
+		peer.oniceconnectionstatechange = updateConnectionState;
+	}
 
 	private async refreshAvailableTracks(): Promise<void> {
 		if (!this.activeCall || !this.sessionId || this.mediaState !== 'active') return;
@@ -1043,14 +1043,14 @@ class CallsStore {
 			const config = await api.getCallRealtimeTrackConfig(this.activeCall.callId, {
 				sessionId: this.sessionId,
 				sessionDescription: offer,
-					tracks: remoteTracks.map((track) => ({
-						location: 'remote',
-						sessionId: track.sessionId,
-						trackName: track.trackName,
-						kind: track.kind,
-						simulcast: isVideoTrackKind(track.kind) ? remoteVideoSimulcastPolicy(this.videoQualityPreference) : undefined
-					}))
-				});
+				tracks: remoteTracks.map((track) => ({
+					location: 'remote',
+					sessionId: track.sessionId,
+					trackName: track.trackName,
+					kind: track.kind,
+					simulcast: isVideoTrackKind(track.kind) ? remoteVideoSimulcastPolicy(this.videoQualityPreference) : undefined
+				}))
+			});
 			await this.applyProviderDescription(config);
 		} catch {
 			for (const track of remoteTracks) this.subscribedTracks.delete(remoteTrackKey(track));
@@ -1081,9 +1081,9 @@ class CallsStore {
 		}
 	}
 
-		private async setCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
-			if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
-			const notifyOnError = options.notifyOnError ?? true;
+	private async setCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
+		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
+		const notifyOnError = options.notifyOnError ?? true;
 		if (!enabled) {
 			const currentTrack = this.localStream.getVideoTracks()[0];
 			try {
@@ -1113,80 +1113,80 @@ class CallsStore {
 			this.cameraEnabled = false;
 			this.updateLocalVideoStream();
 			void this.syncParticipantMediaState({ videoEnabled: false });
-				if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
-			}
+			if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
 		}
+	}
 
 	private async startScreenShare(): Promise<void> {
 		const call = this.activeCall;
 		const sessionId = this.sessionId;
 		const peer = this.peer;
 		if (!peer || !call || !sessionId || !this.mediaCallId || this.startingScreenShare) return;
-			if (!this.screenShareSupported) {
-				toasts.error('Screen sharing is not available on this device.');
-				return;
-			}
-			this.startingScreenShare = true;
-			let screenStream: MediaStream | null = null;
-			let screenTrack: MediaStreamTrack | null = null;
-			let transceiver: RTCRtpTransceiver | null = null;
-			try {
-				screenStream = await navigator.mediaDevices.getDisplayMedia({
-					audio: false,
-					video: screenShareConstraints()
-				});
-				screenTrack = screenStream.getVideoTracks()[0] ?? null;
-				if (!screenTrack) {
-					for (const track of screenStream.getTracks()) track.stop();
-					throw new Error('Screen sharing did not provide a video track.');
-				}
-				if (this.peer !== peer || this.activeCall?.callId !== call.callId || this.sessionId !== sessionId || this.mediaState !== 'active') {
-					throw new Error('The call ended before screen sharing started.');
-				}
-				const publishStream = new MediaStream([screenTrack]);
-				transceiver = addScreenTransceiver(peer, screenTrack, publishStream);
-				this.screenSender = transceiver.sender;
-				this.localScreenStream = publishStream;
-				this.screenShareEnabled = true;
-				screenTrack.onended = () => {
-					if (this.localScreenStream || this.screenShareEnabled) void this.stopScreenShare({ notifyOnError: false });
-				};
-				const offer = await createOffer(peer);
-				const trackConfig = await api.getCallRealtimeTrackConfig(call.callId, {
-					sessionId,
-					sessionDescription: offer,
-					tracks: [
-						{
-							location: 'local',
-							trackName: localTrackName(call, 'screen'),
-							kind: 'screen',
-							mid: transceiver.mid
-						}
-					]
-				});
-				const mids = publishedTrackMids(trackConfig, [transceiver.mid]);
-				this.publishedMids = new Set([...this.publishedMids, ...mids]);
-				this.screenTrackMid = transceiver.mid ?? [...mids][0] ?? null;
-				await this.applyProviderDescription(trackConfig);
-				await this.syncParticipantMediaState({ screenEnabled: true });
-			} catch (error) {
-				if (transceiver) await transceiver.sender.replaceTrack(null).catch(() => undefined);
-				for (const track of screenStream?.getTracks() ?? []) {
-					track.onended = null;
-					track.stop();
-				}
-				this.screenSender = null;
-				this.localScreenStream = null;
-				this.screenTrackMid = null;
-				this.screenShareEnabled = false;
-				toasts.error(displayError(error, 'Could not start screen sharing.'));
-				void this.syncParticipantMediaState({ screenEnabled: false });
-			} finally {
-				this.startingScreenShare = false;
-			}
+		if (!this.screenShareSupported) {
+			toasts.error('Screen sharing is not available on this device.');
+			return;
 		}
+		this.startingScreenShare = true;
+		let screenStream: MediaStream | null = null;
+		let screenTrack: MediaStreamTrack | null = null;
+		let transceiver: RTCRtpTransceiver | null = null;
+		try {
+			screenStream = await navigator.mediaDevices.getDisplayMedia({
+				audio: false,
+				video: screenShareConstraints()
+			});
+			screenTrack = screenStream.getVideoTracks()[0] ?? null;
+			if (!screenTrack) {
+				for (const track of screenStream.getTracks()) track.stop();
+				throw new Error('Screen sharing did not provide a video track.');
+			}
+			if (this.peer !== peer || this.activeCall?.callId !== call.callId || this.sessionId !== sessionId || this.mediaState !== 'active') {
+				throw new Error('The call ended before screen sharing started.');
+			}
+			const publishStream = new MediaStream([screenTrack]);
+			transceiver = addScreenTransceiver(peer, screenTrack, publishStream);
+			this.screenSender = transceiver.sender;
+			this.localScreenStream = publishStream;
+			this.screenShareEnabled = true;
+			screenTrack.onended = () => {
+				if (this.localScreenStream || this.screenShareEnabled) void this.stopScreenShare({ notifyOnError: false });
+			};
+			const offer = await createOffer(peer);
+			const trackConfig = await api.getCallRealtimeTrackConfig(call.callId, {
+				sessionId,
+				sessionDescription: offer,
+				tracks: [
+					{
+						location: 'local',
+						trackName: localTrackName(call, 'screen'),
+						kind: 'screen',
+						mid: transceiver.mid
+					}
+				]
+			});
+			const mids = publishedTrackMids(trackConfig, [transceiver.mid]);
+			this.publishedMids = new Set([...this.publishedMids, ...mids]);
+			this.screenTrackMid = transceiver.mid ?? [...mids][0] ?? null;
+			await this.applyProviderDescription(trackConfig);
+			await this.syncParticipantMediaState({ screenEnabled: true });
+		} catch (error) {
+			if (transceiver) await transceiver.sender.replaceTrack(null).catch(() => undefined);
+			for (const track of screenStream?.getTracks() ?? []) {
+				track.onended = null;
+				track.stop();
+			}
+			this.screenSender = null;
+			this.localScreenStream = null;
+			this.screenTrackMid = null;
+			this.screenShareEnabled = false;
+			toasts.error(displayError(error, 'Could not start screen sharing.'));
+			void this.syncParticipantMediaState({ screenEnabled: false });
+		} finally {
+			this.startingScreenShare = false;
+		}
+	}
 
-		private async publishCameraTrack(): Promise<void> {
+	private async publishCameraTrack(): Promise<void> {
 		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
 		let nextTrack: MediaStreamTrack | null = null;
 		let addedToStream = false;
@@ -1289,11 +1289,11 @@ class CallsStore {
 				...(options.heartbeatOnly
 					? {}
 					: {
-								audioEnabled: !this.muted,
-								videoEnabled: options.videoEnabled ?? this.cameraEnabled,
-								screenEnabled: options.screenEnabled ?? this.screenShareEnabled
-							})
-				});
+							audioEnabled: !this.muted,
+							videoEnabled: options.videoEnabled ?? this.cameraEnabled,
+							screenEnabled: options.screenEnabled ?? this.screenShareEnabled
+						})
+			});
 			this.activeCall = updated;
 			this.upsertRoomHistory(updated);
 		} catch {
@@ -1307,42 +1307,42 @@ class CallsStore {
 		const callId = this.mediaCallId;
 		const sessionId = this.sessionId;
 		const mids = [...this.publishedMids];
-			if (notifyProvider && callId && sessionId && mids.length) {
-				await api
-					.closeCallRealtimeTracks(callId, {
-						sessionId,
+		for (const track of this.localScreenStream?.getTracks() ?? []) {
+			track.onended = null;
+			track.stop();
+		}
+		for (const track of this.localStream?.getTracks() ?? []) track.stop();
+		this.localScreenStream = null;
+		this.localStream = null;
+		this.localVideoStream = null;
+		this.screenShareEnabled = false;
+		this.cameraEnabled = false;
+		if (notifyProvider && callId && sessionId && mids.length) {
+			await api
+				.closeCallRealtimeTracks(callId, {
+					sessionId,
 					tracks: mids.map((mid) => ({ mid })),
 					force: true
 				})
-					.catch(() => undefined);
-			}
-			for (const track of this.localScreenStream?.getTracks() ?? []) {
-				track.onended = null;
-				track.stop();
-			}
-			for (const track of this.localStream?.getTracks() ?? []) track.stop();
-			this.localScreenStream = null;
-			this.localStream = null;
-			this.peer?.close();
+				.catch(() => undefined);
+		}
+		this.peer?.close();
 		this.peer = null;
 		this.sessionId = null;
 		this.mediaCallId = null;
 		this.publishedMids = new Set();
 		this.subscribedTracks = new Set();
 		this.pendingRemoteVideoTracks = [];
-			this.audioSender = null;
-			this.videoSender = null;
-			this.screenSender = null;
-			this.screenTrackMid = null;
-			this.remoteStreams = [];
-			this.remoteVideoStreams = [];
-			this.localVideoStream = null;
-			this.screenShareEnabled = false;
-			this.cameraEnabled = false;
-			this.callDevicePanelOpen = false;
-			this.peerConnectionState = 'closed';
-			this.iceConnectionState = 'closed';
-		}
+		this.audioSender = null;
+		this.videoSender = null;
+		this.screenSender = null;
+		this.screenTrackMid = null;
+		this.remoteStreams = [];
+		this.remoteVideoStreams = [];
+		this.callDevicePanelOpen = false;
+		this.peerConnectionState = 'closed';
+		this.iceConnectionState = 'closed';
+	}
 
 	private async leaveCallQuietly(callId: string): Promise<void> {
 		try {
@@ -1356,16 +1356,16 @@ class CallsStore {
 	private clearActiveCall(): void {
 		this.activeCall = null;
 		this.activeRoom = null;
-			this.mediaState = 'idle';
-			this.muted = false;
-			this.cameraEnabled = false;
-			this.screenShareEnabled = false;
-			this.startingScreenShare = false;
-			this.switchingCamera = false;
-			this.callDevicePanelOpen = false;
-			this.videoSurfaceExpanded = false;
-			this.featuredVideoId = null;
-		}
+		this.mediaState = 'idle';
+		this.muted = false;
+		this.cameraEnabled = false;
+		this.screenShareEnabled = false;
+		this.startingScreenShare = false;
+		this.switchingCamera = false;
+		this.callDevicePanelOpen = false;
+		this.videoSurfaceExpanded = false;
+		this.featuredVideoId = null;
+	}
 
 	private removeIncoming(callId: string): void {
 		this.incoming = this.incoming.filter((call) => call.callId !== callId);
@@ -1396,16 +1396,16 @@ class CallsStore {
 		this.startingRoomId = null;
 		this.startingCallType = null;
 		this.busyCallId = null;
-			this.lastError = null;
-			this.remoteVideoStreams = [];
-			this.localVideoStream = null;
-			this.localScreenStream = null;
-			this.cameraEnabled = false;
-			this.screenShareEnabled = false;
-			this.startingScreenShare = false;
-			this.switchingCamera = false;
-			this.callDevicePanelOpen = false;
-			this.cancelPrejoin();
+		this.lastError = null;
+		this.remoteVideoStreams = [];
+		this.localVideoStream = null;
+		this.localScreenStream = null;
+		this.cameraEnabled = false;
+		this.screenShareEnabled = false;
+		this.startingScreenShare = false;
+		this.switchingCamera = false;
+		this.callDevicePanelOpen = false;
+		this.cancelPrejoin();
 	}
 }
 
