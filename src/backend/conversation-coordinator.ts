@@ -39,12 +39,14 @@ import type {
   ConversationMutationResult,
   ConversationSendRequest,
   ConversationSendResponse,
+} from "./conversation/types";
+import type {
   ForwardSource,
-  JsonObject,
   SendMessageMetrics,
   SendMessageResult,
   ThreadReply,
-} from "./internal-types";
+} from "./messaging/types";
+import type { JsonObject } from "./shared/types";
 
 export class ConversationCoordinator {
   private queue: Promise<void> = Promise.resolve();

@@ -14,7 +14,7 @@ import {
   reconcileCallLifecycleForCoordinator,
 } from "./core";
 import { runCallMutation } from "./coordinator-mutations";
-import type { JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
 import { durationSince } from "../utils";
 
 export interface CallMutationRequest {

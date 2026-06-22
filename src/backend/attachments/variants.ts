@@ -1,5 +1,5 @@
 import { HttpError } from "../../http";
-import type { AttachmentRow } from "../internal-types";
+import type { AttachmentRow } from "./types";
 import { MEDIA_KINDS, VARIANTS, type AttachmentVariant } from "./types";
 
 export function parseAttachmentVariant(value: string | null): AttachmentVariant {

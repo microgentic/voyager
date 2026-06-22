@@ -841,7 +841,7 @@ npm run smoke:backend:local
 
 Those assertions cover common error payloads, auth results, bootstrap, sync, rooms, room invitations, messages, realtime token minting, realtime `room.message` events, key packages, attachments, sidebar collections, and agent request surfaces. They are intentionally additive-friendly: new fields are allowed, but missing or renamed contract fields fail the smoke run.
 
-`scripts/route-inventory-check.mjs` statically compares implemented Worker route/method pairs in `src/index.ts`, `src/backend/routes.ts`, and the route-group modules under `src/backend/routing/` against `endpointStabilityCatalog`. It fails when a documented endpoint has no matching handler or an implemented `/v1` route is not categorized.
+`scripts/route-inventory-check.mjs` statically compares implemented Worker route/method pairs in `src/index.ts`, `src/backend/routes.ts`, and dynamically discovered `src/backend/routing/*-routes.ts` modules against `endpointStabilityCatalog`. It fails when a documented endpoint has no matching handler or an implemented `/v1` route is not categorized.
 
 Any PR that adds, removes, or changes a Worker route must update `endpointStabilityCatalog` in the same change. That catalog is the source used by the route inventory guard, so route changes and stability classification must move together.
 

@@ -1,7 +1,7 @@
 import { randomId } from "../../crypto";
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
 import { getRoom, getSendRoomContext, requireRoomManager } from "../rooms";
 import { touchRoomVersionStatement } from "./helpers";
 import { getActiveMessageInRoom } from "./reads";

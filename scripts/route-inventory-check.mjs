@@ -1,21 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { endpointStabilityCatalog } from "./api-contract-assertions.mjs";
 
 const SOURCE_FILES = [
   "src/index.ts",
   "src/backend/routes.ts",
-  "src/backend/routing/admin-routes.ts",
-  "src/backend/routing/agent-routes.ts",
-  "src/backend/routing/attachment-routes.ts",
-  "src/backend/routing/call-routes.ts",
-  "src/backend/routing/identity-routes.ts",
-  "src/backend/routing/maintenance-routes.ts",
-  "src/backend/routing/message-routes.ts",
-  "src/backend/routing/room-routes.ts",
-  "src/backend/routing/sidebar-routes.ts",
-  "src/backend/routing/sync-routes.ts",
-  "src/backend/routing/thread-routes.ts",
+  ...routeGroupSourceFiles(),
 ];
 const ROUTE_KEY = (route) => `${route.method} ${normalizePath(route.path)}`;
 
@@ -184,6 +174,13 @@ function expandAlternatives(path) {
 
 function normalizePath(path) {
   return path.replace(/\{[^}]+\}/g, "{param}");
+}
+
+function routeGroupSourceFiles() {
+  return readdirSync("src/backend/routing", { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith("-routes.ts"))
+    .map((entry) => `src/backend/routing/${entry.name}`)
+    .sort();
 }
 
 function uniqueRoutes(routes) {

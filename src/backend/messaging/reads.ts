@@ -1,7 +1,7 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
 import { getSendRoomContext, requireRoomMembership } from "../rooms";
-import { publicMessage } from "../serializers";
+import { publicMessage } from "./serializers";
 import { numberParam } from "../utils";
 import {
   messageSelectBindValues,

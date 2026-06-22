@@ -1,6 +1,7 @@
 import { HttpError } from "../../http";
 import type { Env } from "../../types";
-import type { CallRow, JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
+import type { CallRow } from "./types";
 import {
   DEFAULT_REALTIME_API_BASE,
   REALTIME_PROVIDER,

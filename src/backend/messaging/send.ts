@@ -7,7 +7,7 @@ import {
   type ForwardSource,
   type SendMessageResult,
   type ThreadReply,
-} from "../internal-types";
+} from "./types";
 import { getSendRoomContext } from "../rooms";
 import {
   byteLength,

@@ -1,5 +1,5 @@
 import type { AuthContext, Env } from "../../types";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 
 export interface BackendRouteContext {
   request: Request;

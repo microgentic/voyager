@@ -7,7 +7,7 @@ import {
   listOwnAgentRequests,
   reviewAgentRequest,
 } from "../agents";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleAgentRoutes(context: BackendRouteContext): Promise<RouteResult> {

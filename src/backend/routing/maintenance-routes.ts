@@ -1,7 +1,7 @@
 import { audit, requireAdmin } from "../../db";
 import { json, requireMethod } from "../../http";
 import { listMaintenanceRuns, runCleanup } from "../maintenance";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleMaintenanceRoutes(context: BackendRouteContext): Promise<RouteResult> {

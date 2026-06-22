@@ -8,7 +8,7 @@ import {
   parseAttachmentVariant,
   uploadAttachmentBlob,
 } from "../attachments";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleAttachmentRoutes(context: BackendRouteContext): Promise<RouteResult> {

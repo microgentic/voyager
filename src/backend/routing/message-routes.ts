@@ -12,7 +12,7 @@ import {
   resolveForwardSource,
 } from "../messages";
 import { mutationTimingHeaders, sendMessageTimingHeaders } from "../utils";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleMessageRoutes(context: BackendRouteContext): Promise<RouteResult> {

@@ -1,10 +1,10 @@
 import { randomId } from "../crypto";
 import { HttpError, stringField } from "../http";
 import type { AuthContext, Env } from "../types";
-import type { JsonObject } from "./internal-types";
+import type { JsonObject } from "./shared/types";
 import { getActivePrincipal } from "./rooms";
 import { nextCursor, optionalJsonText, pageParams } from "./utils";
-import { publicAgentRequest, publicPrincipal } from "./serializers";
+import { publicAgentRequest, publicPrincipal } from "./shared/serializers";
 
 export async function createAgentRequest(
   env: Env,

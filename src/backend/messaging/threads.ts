@@ -1,8 +1,8 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
 import { requireRoomMembership } from "../rooms";
-import { publicMessage } from "../serializers";
+import { publicMessage } from "./serializers";
 import { numberParam } from "../utils";
 import {
   getPublicMessage,

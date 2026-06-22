@@ -6,7 +6,7 @@ import {
 import { getThread } from "../messages";
 import { listThreads, markThreadRead, updateThreadSubscription } from "../threads";
 import { readTimingHeaders, sendMessageTimingHeaders } from "../utils";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleThreadRoutes(context: BackendRouteContext): Promise<RouteResult> {

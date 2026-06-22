@@ -1,6 +1,6 @@
 import { HttpError, stringField } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
 import { getRoom, getSendRoomContext, requireRoomMembership } from "../rooms";
 import { byteLength, stringArrayField, uniqueStrings } from "../utils";
 import { DELETE_FOR_EVERYONE_WINDOW_MS } from "./constants";

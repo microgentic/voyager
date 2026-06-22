@@ -1,8 +1,8 @@
 import { HttpError, stringField } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
 import { getPolicy } from "../rooms";
-import { publicAttachment } from "../serializers";
+import { publicAttachment } from "./serializers";
 import { optionalJsonText, optionalNumberField, runCounted } from "../utils";
 import {
   DEFAULT_MAX_IMAGE_DIMENSION,

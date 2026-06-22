@@ -1,17 +1,15 @@
 import { randomId } from "../crypto";
 import { HttpError } from "../http";
 import type { AuthContext, Env } from "../types";
-import type { JsonObject, RoomRow } from "./internal-types";
+import type { RoomRow } from "./rooms/types";
+import type { JsonObject } from "./shared/types";
+import {
+  attachmentObjectRows,
+  uniqueAttachmentObjectKeys,
+} from "./attachments";
 import { publicRoomWithMembers } from "./rooms";
 import { nextCursor, pageParams, runCounted } from "./utils";
-import { publicMaintenanceRun } from "./serializers";
-
-interface AttachmentObjectKeysRow {
-  object_key: string;
-  original_object_key: string | null;
-  preview_object_key: string | null;
-  thumbnail_object_key: string | null;
-}
+import { publicMaintenanceRun } from "./shared/serializers";
 
 const ABANDONED_ALLOCATED_ATTACHMENT_MINUTES = 60;
 const UNREFERENCED_UPLOADED_ATTACHMENT_HOURS = 24;
@@ -192,29 +190,4 @@ export async function runCleanup(
     )
     .run();
   return cleanup;
-}
-
-async function attachmentObjectRows(
-  env: Env,
-  whereClause: string,
-): Promise<AttachmentObjectKeysRow[]> {
-  const rows = await env.CONTROL_DB.prepare(
-    `SELECT object_key, original_object_key, preview_object_key, thumbnail_object_key
-     FROM attachments
-     WHERE ${whereClause}`,
-  ).all<AttachmentObjectKeysRow>();
-  return rows.results ?? [];
-}
-
-function uniqueAttachmentObjectKeys(rows: AttachmentObjectKeysRow[]): string[] {
-  return Array.from(
-    new Set(
-      rows.flatMap((row) => [
-        row.object_key,
-        row.original_object_key,
-        row.preview_object_key,
-        row.thumbnail_object_key,
-      ]).filter((key): key is string => typeof key === "string" && key.length > 0),
-    ),
-  );
 }

@@ -1,9 +1,7 @@
 import { HttpError, serverTimingHeader } from "../http";
-import type {
-  ConversationMutationMetrics,
-  PageParams,
-  SendMessageMetrics,
-} from "./internal-types";
+import type { ConversationMutationMetrics } from "./conversation/types";
+import type { SendMessageMetrics } from "./messaging/types";
+import type { PageParams } from "./shared/types";
 
 export function stringArrayField(
   body: Record<string, unknown>,

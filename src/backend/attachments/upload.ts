@@ -1,10 +1,10 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { AttachmentRow, JsonObject } from "../internal-types";
-import { publicAttachment } from "../serializers";
+import type { JsonObject } from "../shared/types";
+import { publicAttachment } from "./serializers";
 import { runCounted } from "../utils";
 import { getAttachment, ensureAttachmentUploader } from "./ownership";
-import type { AttachmentVariant } from "./types";
+import type { AttachmentRow, AttachmentVariant } from "./types";
 import {
   assertProjectedVariantBudget,
   objectKeyForVariant,

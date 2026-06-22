@@ -1,7 +1,7 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { JsonObject } from "../internal-types";
-import { publicMessage } from "../serializers";
+import type { JsonObject } from "../shared/types";
+import { publicMessage } from "./serializers";
 
 // IMPORTANT: messageSelectColumns() introduces placeholders in this order:
 // 1. viewer principal id for reactedByMe.

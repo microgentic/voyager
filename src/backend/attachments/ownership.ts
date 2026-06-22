@@ -1,6 +1,6 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { AttachmentRow } from "../internal-types";
+import type { AttachmentRow } from "./types";
 
 export async function getAttachment(
   env: Env,

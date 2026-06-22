@@ -1,10 +1,8 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
+import type { MembershipRow } from "../rooms/types";
 import type {
   CallParticipantRow,
-  MembershipRow,
-} from "../internal-types";
-import type {
   CallParticipantStatus,
   CallRealtimeTrackKind,
 } from "./types";

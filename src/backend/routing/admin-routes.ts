@@ -1,7 +1,7 @@
 import { requireAdmin } from "../../db";
 import { json, requireMethod } from "../../http";
 import { listAdminRooms } from "../maintenance";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleAdminRoutes(context: BackendRouteContext): Promise<RouteResult> {
