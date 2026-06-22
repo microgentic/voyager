@@ -395,7 +395,7 @@ Realtime session responses may include:
 }
 ```
 
-`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates or returns the caller's active Cloudflare Realtime session. Duplicate active session requests from the same connected participant return the existing active session. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. Stored track metadata includes the requested quality layer when present; duplicate local track publication upserts the existing session/track row. Media content is never stored. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription` and records metadata-only renegotiation state. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session; duplicate close is safe from the D1 perspective.
+`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates or returns the caller's active Cloudflare Realtime session. Duplicate active session requests from the same connected participant return the existing active session when no new offer is supplied; when a new `sessionDescription` is supplied for an existing active session, the backend renegotiates with the provider and returns a fresh answer. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. Stored track metadata includes the requested quality layer when present; duplicate local track publication upserts the existing session/track row. Media content is never stored. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription` and records metadata-only renegotiation state. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session; duplicate close is safe from the D1 perspective.
 
 ### Attachments
 
@@ -406,7 +406,7 @@ Realtime session responses may include:
 | `PUT` | `/v1/attachments/{attachmentId}/blob?variant=preview\|thumbnail\|original` | `{ attachment }` |
 | `GET` | `/v1/attachments/{attachmentId}/blob` | binary payload |
 | `GET` | `/v1/attachments/{attachmentId}/blob?variant=preview\|thumbnail\|original` | binary payload |
-| `POST` | `/v1/attachments/{attachmentId}/complete` | `{ attachment }` |
+| `POST` | `/v1/attachments/{attachmentId}/complete` | `{ attachment }` for uploaded, unreferenced attachments; `409 attachment_already_referenced` once referenced |
 | `DELETE` | `/v1/attachments/{attachmentId}` | `{ ok: true }` for pre-reference cleanup, `409 attachment_already_referenced` once referenced, `409 attachment_not_deletable` for deleted/expired/quarantined rows |
 
 Attachment bytes are opaque private blobs from the backend perspective. R2 stores the objects; D1 stores lifecycle state, media metadata, and variant references. `GET /blob` and `PUT /blob` without a query parameter default to the `original` variant for backward compatibility. `expectedBytes` is the total byte budget for all uploaded variants combined, not a per-variant limit.
@@ -451,9 +451,9 @@ Attachment metadata is additive and client-supplied:
 
 The backend does not generate thumbnails or inspect image plaintext in `/v1`; optimized variants are produced by the client and uploaded as separate authenticated R2 objects. Buckets remain private, downloads remain bearer-authenticated, and `Cache-Control` is `no-store`. Worker-mediated upload streams request bodies to R2 when `Content-Length` is available; direct-to-R2 multipart upload and signed media URLs remain deferred until the leakage, revocation, and CORS contract is explicitly designed.
 
-An attachment is not complete or referenceable from a message until its `original` variant has been uploaded. The `original` variant is the primary blob for that attachment; it may be an optimized client-generated primary image rather than the source camera file. Preview and thumbnail uploads alone do not make an attachment sendable.
+An attachment is not complete or referenceable from a message until its `original` variant has been uploaded. The `original` variant is the primary blob for that attachment; it may be an optimized client-generated primary image rather than the source camera file. Preview and thumbnail uploads alone do not make an attachment sendable. Once an attachment has been referenced by a message, `/complete` cannot be used to mutate its filename, MIME, media dimensions, duration, hash, byte count, or variant manifest.
 
-Generic attachment delete is a pre-reference cleanup path only. It may delete allocated attachments or uploaded attachments that have not been referenced by a message. Once an attachment has been referenced, its private R2 objects are immutable from the generic attachment API perspective and `DELETE /v1/attachments/{attachmentId}` returns `409 attachment_already_referenced`. Deleted, expired, quarantined, or otherwise invalid lifecycle states return `409 attachment_not_deletable`. Delete-for-everyone remains a message tombstone operation: it hides/tombstones the message presentation, but it does not physically delete shared referenced blobs.
+Generic attachment delete is a pre-reference cleanup path only. It may delete allocated attachments or uploaded attachments that have not been referenced by a message. Once an attachment has been referenced, its private R2 objects and presentation metadata are immutable from the generic attachment API perspective: `DELETE /v1/attachments/{attachmentId}` and post-reference `/complete` both return `409 attachment_already_referenced`. Message send/edit strictly verifies that all requested attachments are referenced before returning success. Deleted, expired, quarantined, or otherwise invalid lifecycle states return `409 attachment_not_deletable` or `409 attachment_not_referenceable` depending on the attempted operation. Delete-for-everyone remains a message tombstone operation: it hides/tombstones the message presentation, but it does not physically delete shared referenced blobs.
 
 Attachment allocation is limited by account policy bytes per attachment, max attachments per message, max image dimensions, daily expected bytes per account and room, total uploaded variant bytes, and by a per-device pending allocation cap. Maintenance cleanup expires old attachment rows, abandoned allocated rows, and uploaded-but-unreferenced rows while deleting known private R2 variant objects.
 
@@ -664,7 +664,7 @@ Admin hierarchy is part of the security contract: only platform owners may admin
 
 `callMedia` is an operations surface derived from durable call/session/track metadata, failure events, and metadata-only client usage reports. Client reports provide aggregate byte and duration estimates; provider egress/TURN bytes remain marked unavailable unless a trustworthy provider-specific byte source is supplied. Local configured-success smoke may use `CLOUDFLARE_REALTIME_MOCK=1`; production configuration still depends on Cloudflare Realtime secrets.
 
-`GET /v1/admin/calls/realtime-status` requires `quota_operator`, `security_admin`, or `auditor` and never returns secrets:
+`GET /v1/admin/calls/realtime-status` requires `quota_operator`, `security_admin`, or `auditor` and never returns secrets. It reports local configuration and feature-flag state. It does not perform a live Cloudflare Realtime health check, so provider health fields remain `not_checked`/`null` unless a future explicit provider check is added.
 
 ```json
 {
@@ -672,6 +672,10 @@ Admin hierarchy is part of the security contract: only platform owners may admin
     "provider": "cloudflare_realtime",
     "configured": true,
     "status": "configured",
+    "configurationStatus": "configured",
+    "configurationCheckedAt": "2026-06-22T13:00:00.000Z",
+    "providerHealthStatus": "not_checked",
+    "providerHealthCheckedAt": null,
     "mock": false,
     "apiBase": "https://rtc.live.cloudflare.com/v1",
     "turnConfigured": false,
@@ -687,13 +691,14 @@ Admin hierarchy is part of the security contract: only platform owners may admin
       "appSecretConfigured": true,
       "turnCredentialsConfigured": false
     },
-    "lastProviderCheckStatus": "configured",
+    "lastProviderCheckAt": null,
+    "lastProviderCheckStatus": "not_checked",
     "estimatedSfuTurnEgressStatus": "unavailable_provider_metric"
   }
 }
 ```
 
-`POST /v1/calls/{callId}/usage-report` records only aggregate WebRTC metadata for the authenticated participant's current device. The request may include `sessionId`, `durationMs`, aggregate byte estimates, track kind/direction durations, candidate type, relay hint, RTT, packet loss, and optional provider byte metadata. It does not accept or store media payloads or SDP.
+`POST /v1/calls/{callId}/usage-report` records only aggregate WebRTC metadata for the authenticated participant's current device. The request may include `sessionId`, `durationMs`, aggregate byte estimates, track kind/direction durations, candidate type, relay hint, RTT, and packet loss. If `sessionId` is supplied, it must belong to the authenticated account/principal/device for that call. Duplicate reports for the same call, device, and provider session return the original report. Client-submitted reports are stored with `source: "client_estimate"` and cannot submit provider egress/billing fields; provider-authoritative byte fields remain reserved for a trusted provider integration. It does not accept or store media payloads or SDP.
 
 ## Examples
 

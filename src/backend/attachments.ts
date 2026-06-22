@@ -11,6 +11,7 @@ import {
   numberField,
   optionalJsonText,
   optionalNumberField,
+  runCounted,
   sqliteTimestamp,
 } from "./utils";
 import { publicAttachment } from "./serializers";
@@ -199,24 +200,32 @@ async function updateUploadedVariant(
   uploadedBytes: number,
 ): Promise<void> {
   if (variant === "original") {
-    await env.CONTROL_DB.prepare(
-      `UPDATE attachments
-       SET state = 'uploaded',
-           uploaded_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP),
-           object_key = ?,
-           original_object_key = ?,
-           original_bytes = ?,
-           ciphertext_bytes = ?
-       WHERE attachment_id = ?`,
-    )
-      .bind(
+    const changed = await runCounted(
+      env.CONTROL_DB.prepare(
+        `UPDATE attachments
+         SET state = 'uploaded',
+             uploaded_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP),
+             object_key = ?,
+             original_object_key = ?,
+             original_bytes = ?,
+             ciphertext_bytes = ?
+         WHERE attachment_id = ?
+           AND state IN ('allocated', 'uploaded')`,
+      ).bind(
         objectKey,
         objectKey,
         uploadedBytes,
         uploadedBytes,
         attachment.attachment_id,
-      )
-      .run();
+      ),
+    );
+    if (changed !== 1) {
+      throw new HttpError(
+        409,
+        "attachment_not_uploadable",
+        "Attachment is not uploadable",
+      );
+    }
     return;
   }
 
@@ -224,15 +233,23 @@ async function updateUploadedVariant(
     variant === "preview"
       ? ["preview_object_key", "preview_bytes"]
       : ["thumbnail_object_key", "thumbnail_bytes"];
-  await env.CONTROL_DB.prepare(
-    `UPDATE attachments
-     SET uploaded_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP),
-         ${column[0]} = ?,
-         ${column[1]} = ?
-     WHERE attachment_id = ?`,
-  )
-    .bind(objectKey, uploadedBytes, attachment.attachment_id)
-    .run();
+  const changed = await runCounted(
+    env.CONTROL_DB.prepare(
+      `UPDATE attachments
+       SET uploaded_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP),
+           ${column[0]} = ?,
+           ${column[1]} = ?
+       WHERE attachment_id = ?
+         AND state IN ('allocated', 'uploaded')`,
+    ).bind(objectKey, uploadedBytes, attachment.attachment_id),
+  );
+  if (changed !== 1) {
+    throw new HttpError(
+      409,
+      "attachment_not_uploadable",
+      "Attachment is not uploadable",
+    );
+  }
 }
 
 export function parseAttachmentVariant(value: string | null): AttachmentVariant {
@@ -371,7 +388,14 @@ export async function completeAttachment(
 ): Promise<JsonObject> {
   const attachment = await getAttachment(env, attachmentId);
   ensureAttachmentUploader(auth, attachment);
-  if (attachment.state !== "uploaded" && attachment.state !== "referenced") {
+  if (attachment.state === "referenced") {
+    throw new HttpError(
+      409,
+      "attachment_already_referenced",
+      "Referenced attachments cannot be completed again",
+    );
+  }
+  if (attachment.state !== "uploaded") {
     throw new HttpError(
       409,
       "attachment_not_uploaded",
@@ -484,16 +508,28 @@ export async function deleteAttachment(
     );
   }
   assertAttachmentDeletable(attachment);
+  const deleted = await runCounted(
+    env.CONTROL_DB.prepare(
+      `UPDATE attachments
+       SET state = 'deleted',
+           deleted_at = CURRENT_TIMESTAMP
+       WHERE attachment_id = ?
+         AND state IN ('allocated', 'uploaded')`,
+    ).bind(attachmentId),
+  );
+  if (deleted !== 1) {
+    assertAttachmentDeletable(await getAttachment(env, attachmentId));
+    throw new HttpError(
+      409,
+      "attachment_not_deletable",
+      "Attachment is not deletable in its current state",
+    );
+  }
   await Promise.all(
     uniqueObjectKeys(attachment).map((objectKey) =>
       env.ATTACHMENTS_BUCKET.delete(objectKey),
     ),
   );
-  await env.CONTROL_DB.prepare(
-    "UPDATE attachments SET state = 'deleted', deleted_at = CURRENT_TIMESTAMP WHERE attachment_id = ?",
-  )
-    .bind(attachmentId)
-    .run();
 }
 
 function assertAttachmentDeletable(attachment: AttachmentRow): void {

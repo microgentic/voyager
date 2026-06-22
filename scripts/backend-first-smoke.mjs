@@ -742,6 +742,9 @@ if (realtimeMockEnabled) {
   if (duplicateRealtimeSessionConfig.realtime.session?.sessionId !== mockAudioSessionId) {
     throw new Error("duplicate mock realtime session did not return the existing active session");
   }
+  if (!duplicateRealtimeSessionConfig.realtime.sessionDescription) {
+    throw new Error("duplicate mock realtime session with a new offer did not return a fresh answer");
+  }
   const realtimeTrackConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
     method: "POST",
     headers: ownerHeaders,
@@ -911,7 +914,7 @@ const callUsageReport = await api(`/v1/calls/${createdCall.call.callId}/usage-re
   method: "POST",
   headers: ownerHeaders,
   json: {
-    sessionId: mockAudioSessionId ?? `unconfigured-smoke-${suffix}`,
+    ...(mockAudioSessionId ? { sessionId: mockAudioSessionId } : {}),
     durationMs: 42_000,
     bytesSentEstimate: 12_345,
     bytesReceivedEstimate: 67_890,
@@ -930,11 +933,49 @@ const callUsageReport = await api(`/v1/calls/${createdCall.call.callId}/usage-re
 assertCallUsageReportResponse(callUsageReport, "POST /v1/calls/{callId}/usage-report");
 if (
   callUsageReport.usageReport.callId !== createdCall.call.callId ||
+  callUsageReport.usageReport.source !== "client_estimate" ||
   callUsageReport.usageReport.durationMs !== 42_000 ||
   callUsageReport.usageReport.bytesSentEstimate !== 12_345 ||
   callUsageReport.usageReport.bytesReceivedEstimate !== 67_890
 ) {
   throw new Error("call usage report did not echo expected aggregate fields");
+}
+const duplicateCallUsageReport = await api(`/v1/calls/${createdCall.call.callId}/usage-report`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    ...(mockAudioSessionId ? { sessionId: mockAudioSessionId } : {}),
+    durationMs: 99_000,
+    bytesSentEstimate: 99,
+    tracks: [{ kind: "audio", direction: "send", durationMs: 99_000 }]
+  }
+});
+assertCallUsageReportResponse(duplicateCallUsageReport, "POST /v1/calls/{callId}/usage-report duplicate");
+if (duplicateCallUsageReport.usageReport.usageReportId !== callUsageReport.usageReport.usageReportId) {
+  throw new Error("duplicate call usage report did not return the original report");
+}
+await expectFailure(`/v1/calls/${createdCall.call.callId}/usage-report`, {
+  method: "POST",
+  headers: userHeaders,
+  json: {
+    durationMs: 24 * 60 * 60 * 1000 + 1,
+    tracks: [{ kind: "audio", direction: "send", durationMs: 1 }]
+  }
+}, 400);
+if (mockAudioSessionId) {
+  const foreignUsageSession = await expectFailure(`/v1/calls/${createdCall.call.callId}/usage-report`, {
+    method: "POST",
+    headers: userHeaders,
+    json: {
+      sessionId: mockAudioSessionId,
+      durationMs: 1_000,
+      tracks: [{ kind: "audio", direction: "send", durationMs: 1_000 }]
+    }
+  }, 404);
+  assertApiErrorShape(foreignUsageSession, "POST /v1/calls/{callId}/usage-report foreign session");
+  if (foreignUsageSession.error !== "realtime_session_not_found") {
+    throw new Error(`foreign usage report used unexpected error ${foreignUsageSession.error}`);
+  }
 }
 
 const calleeLeftCall = await api(`/v1/calls/${createdCall.call.callId}/leave`, {
@@ -2584,6 +2625,33 @@ assertApiErrorShape(referencedAttachmentDelete, "DELETE /v1/attachments/{attachm
 if (referencedAttachmentDelete.error !== "attachment_already_referenced") {
   throw new Error(`referenced attachment delete used unexpected error ${referencedAttachmentDelete.error}`);
 }
+const referencedAttachmentComplete = await expectFailure(`/v1/attachments/${attachment.attachment.attachmentId}/complete`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    originalFilename: "mutated-after-send.bin",
+    declaredMimeType: "text/plain",
+    variantManifest: { original: { label: "mutated" } }
+  }
+}, 409);
+assertApiErrorShape(referencedAttachmentComplete, "POST /v1/attachments/{attachmentId}/complete referenced");
+if (referencedAttachmentComplete.error !== "attachment_already_referenced") {
+  throw new Error(`referenced attachment complete used unexpected error ${referencedAttachmentComplete.error}`);
+}
+const editedReferencedAttachmentMessage = await api(`/v1/rooms/${group.room.roomId}/messages/${groupMessage.message.envelopeId}`, {
+  method: "PATCH",
+  headers: ownerHeaders,
+  json: {
+    protocolType: "opaque-test",
+    ciphertext: "encrypted-group-smoke-payload-edited-with-same-attachment",
+    attachmentIds: [attachment.attachment.attachmentId],
+    clientEditedAt: new Date().toISOString()
+  }
+});
+assertMessageResponse(editedReferencedAttachmentMessage, "PATCH /v1/rooms/{roomId}/messages/{envelopeId} referenced attachment");
+if (editedReferencedAttachmentMessage.message.envelopeId !== groupMessage.message.envelopeId) {
+  throw new Error("editing with an already referenced attachment changed the envelope id");
+}
 
 await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",
@@ -2690,6 +2758,20 @@ const repeatedUnreferencedDelete = await expectFailure(`/v1/attachments/${unrefe
 assertApiErrorShape(repeatedUnreferencedDelete, "DELETE /v1/attachments/{attachmentId} deleted unreferenced");
 if (repeatedUnreferencedDelete.error !== "attachment_not_deletable") {
   throw new Error(`deleted attachment delete used unexpected error ${repeatedUnreferencedDelete.error}`);
+}
+const staleDeletedAttachmentSend = await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `deleted-attachment-send-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "deleted-attachment-should-not-send",
+    attachmentIds: [unreferencedAttachment.attachment.attachmentId]
+  }
+}, 409);
+assertApiErrorShape(staleDeletedAttachmentSend, "POST /v1/rooms/{roomId}/messages deleted attachment");
+if (staleDeletedAttachmentSend.error !== "attachment_not_referenceable") {
+  throw new Error(`deleted attachment send used unexpected error ${staleDeletedAttachmentSend.error}`);
 }
 
 const tooManyAttachmentIds = Array.from({ length: 11 }, (_, index) => `att_smoke_${suffix}_${index}`);

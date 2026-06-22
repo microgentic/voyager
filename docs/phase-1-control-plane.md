@@ -26,8 +26,8 @@ This PR implements the Phase 1 backend control plane:
 - Device key-package metadata APIs.
 - Direct rooms and owner-only group room creation.
 - Room membership, human room invitations, agent direct-add, roles, archiving, leaving, and ownership transfer.
-- Opaque encrypted message envelopes with idempotency, sequencing, sync, and acknowledgements.
-- Worker-mediated encrypted attachment allocation, upload, completion, download, and deletion.
+- Opaque message envelopes with idempotency, sequencing, sync, and acknowledgements. MLS/E2EE payload semantics are future work.
+- Worker-mediated private attachment allocation, upload, completion, download, and deletion. Client-side attachment encryption is not active yet.
 - Sidebar collections.
 - Agent request submission and admin review.
 - CI type check, D1 migration, and Worker deployment workflow.
@@ -154,7 +154,7 @@ The API can be exercised with curl or a plain fetch-based script:
 5. Publish, list, claim, and revoke device key-package metadata.
 6. Create direct rooms or owner-only group rooms.
 7. Send human room invitations or add manually created agent principals through the explicit member endpoint.
-8. Send opaque encrypted envelopes with idempotency keys.
+8. Send opaque envelopes with idempotency keys.
 9. Sync pending messages and acknowledge them.
 10. Allocate, upload, complete, download, and delete opaque attachment blobs.
 11. Submit and review agent requests without contacting a live agent runtime.

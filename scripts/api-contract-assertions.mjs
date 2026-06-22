@@ -190,6 +190,7 @@ export function assertCallUsageReportResponse(payload, context) {
   string(report.callId, `${context}.usageReport.callId`);
   literal(report.provider, "cloudflare_realtime", `${context}.usageReport.provider`);
   nullableString(report.providerSessionId, `${context}.usageReport.providerSessionId`);
+  enumValue(report.source, ["client_estimate", "provider_authoritative"], `${context}.usageReport.source`);
   [
     "durationMs",
     "audioDurationMs",
@@ -209,6 +210,10 @@ export function assertCallRealtimeStatusResponse(payload, context) {
   literal(realtime.provider, "cloudflare_realtime", `${context}.realtime.provider`);
   boolean(realtime.configured, `${context}.realtime.configured`);
   enumValue(realtime.status, ["configured", "not_configured", "disabled"], `${context}.realtime.status`);
+  enumValue(realtime.configurationStatus, ["configured", "not_configured", "disabled"], `${context}.realtime.configurationStatus`);
+  string(realtime.configurationCheckedAt, `${context}.realtime.configurationCheckedAt`);
+  enumValue(realtime.providerHealthStatus, ["not_checked", "ok", "error"], `${context}.realtime.providerHealthStatus`);
+  nullableString(realtime.providerHealthCheckedAt, `${context}.realtime.providerHealthCheckedAt`);
   boolean(realtime.mock, `${context}.realtime.mock`);
   string(realtime.apiBase, `${context}.realtime.apiBase`);
   boolean(realtime.turnConfigured, `${context}.realtime.turnConfigured`);
@@ -217,8 +222,8 @@ export function assertCallRealtimeStatusResponse(payload, context) {
   boolean(credentialState.appIdConfigured, `${context}.realtime.credentialState.appIdConfigured`);
   boolean(credentialState.appSecretConfigured, `${context}.realtime.credentialState.appSecretConfigured`);
   boolean(credentialState.turnCredentialsConfigured, `${context}.realtime.credentialState.turnCredentialsConfigured`);
-  string(realtime.lastProviderCheckAt, `${context}.realtime.lastProviderCheckAt`);
-  enumValue(realtime.lastProviderCheckStatus, ["configured", "not_configured", "disabled"], `${context}.realtime.lastProviderCheckStatus`);
+  nullableString(realtime.lastProviderCheckAt, `${context}.realtime.lastProviderCheckAt`);
+  enumValue(realtime.lastProviderCheckStatus, ["not_checked", "ok", "error"], `${context}.realtime.lastProviderCheckStatus`);
   string(realtime.estimatedSfuTurnEgressStatus, `${context}.realtime.estimatedSfuTurnEgressStatus`);
 }
 

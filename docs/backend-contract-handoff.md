@@ -13,9 +13,9 @@ Related docs:
 
 ## 1. Project Backend Report
 
-Voyager is currently implemented as a Cloudflare-hosted, backend-first secure communications API. The Worker is the primary contract surface for future desktop, web, mobile, admin, and agent clients. D1 stores authoritative metadata, R2 stores opaque encrypted attachment blobs, and the Worker routes all HTTP requests through explicit versioned endpoints.
+Voyager is currently implemented as a Cloudflare-hosted, backend-first secure communications API. The Worker is the primary contract surface for future desktop, web, mobile, admin, and agent clients. D1 stores authoritative metadata, R2 stores opaque private attachment blobs, and the Worker routes all HTTP requests through explicit versioned endpoints.
 
-The active backend does not try to decrypt user content. Messages are stored as opaque encrypted envelopes with routing metadata, retention timestamps, room sequence numbers, and delivery receipts. Attachments are uploaded as opaque blobs, tracked by metadata, and only become message-referenced after the sender explicitly references them in an encrypted envelope.
+The active backend does not interpret message bodies. Messages are stored as opaque envelopes over HTTPS with routing metadata, retention timestamps, room sequence numbers, and delivery receipts. Attachments are uploaded as opaque private blobs, tracked by metadata, and only become message-referenced after the sender explicitly references them in an envelope. MLS end-to-end encryption and client-side attachment encryption remain future client-security work, not active backend guarantees.
 
 The backend is designed to let development proceed without app stores, push providers, paid services, live agent runtimes, billing systems, custom domains, or signing infrastructure. That means clients can be developed against HTTP contracts, curl, and smoke scripts first. Realtime, push, mobile packaging, and production assurance work can be layered in later without replacing the core account, room, message, attachment, and admin models.
 
@@ -51,7 +51,7 @@ Source organization is documented in `docs/backend-source-layout.md`. The active
 - Group creation starts with the creator as owner only. Supplying `memberPrincipalIds` is rejected so human membership flows through invitations and agents are added through the explicit member endpoint.
 - Realtime delivery uses Durable Object WebSockets for lightweight event hints. Conversation Durable Objects coordinate message writes, but HTTP sync and pending delivery receipts remain authoritative read/recovery paths. Push can consume the same message/receipt tables later as wake-up infrastructure.
 - Attachments flow through the Worker for now. Direct-to-R2 signed upload URLs can be added later when browser/mobile CORS, upload progress, and client constraints are clearer.
-- The server stores encrypted envelopes and opaque blobs only. Credential reset cannot recover local or end-to-end encrypted content.
+- The server stores opaque envelopes and opaque private blobs only. Credential reset cannot recover future local or end-to-end encrypted content once client-side MLS/attachment encryption is active.
 
 ## 4. Backend Contracts For UI Handoff
 

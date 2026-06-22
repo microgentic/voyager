@@ -1565,7 +1565,7 @@ async function getCallMediaUsage(env: Env): Promise<Record<string, unknown>> {
     relayLikelyReports: usageReportTotals.relayLikelyReports,
     turnConfigured: Boolean(env.CLOUDFLARE_REALTIME_TURN_USERNAME && env.CLOUDFLARE_REALTIME_TURN_CREDENTIAL),
     estimatedSfuTurnEgressBytes: usageReportTotals.providerEgressBytes || null,
-    estimatedSfuTurnEgressStatus: usageReportTotals.providerEgressBytes > 0 ? "reported_by_client_metadata" : "unavailable_provider_metric",
+    estimatedSfuTurnEgressStatus: usageReportTotals.providerEgressBytes > 0 ? "provider_authoritative" : "unavailable_provider_metric",
   };
 }
 
@@ -1590,7 +1590,10 @@ async function getCallUsageReportTotals(env: Env): Promise<{
        COALESCE(SUM(bytes_sent_estimate), 0) AS bytesSentEstimate,
        COALESCE(SUM(bytes_received_estimate), 0) AS bytesReceivedEstimate,
        COALESCE(SUM(CASE WHEN relay_likely = 1 THEN 1 ELSE 0 END), 0) AS relayLikelyReports,
-       COALESCE(SUM(provider_egress_bytes), 0) AS providerEgressBytes
+       COALESCE(SUM(CASE
+         WHEN source = 'provider_authoritative' THEN COALESCE(provider_egress_bytes, 0)
+         ELSE 0
+       END), 0) AS providerEgressBytes
      FROM call_usage_reports`,
   ).first<{
     reports: number;
