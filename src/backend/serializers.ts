@@ -285,6 +285,10 @@ export function publicCallParticipant(
     joinedAt: participant.joined_at,
     leftAt: participant.left_at,
     mutedAt: participant.muted_at,
+    audioEnabled: participant.audio_enabled !== 0,
+    videoEnabled: participant.video_enabled === 1,
+    screenEnabled: participant.screen_enabled === 1,
+    lastSeenAt: participant.last_seen_at ?? null,
     createdAt: participant.created_at,
     updatedAt: participant.updated_at,
   };

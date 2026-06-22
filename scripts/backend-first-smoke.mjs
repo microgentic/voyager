@@ -172,6 +172,10 @@ async function openRealtimeCallWatcher(token, expectedRoomId, expectedType, time
   return openRealtimeEventWatcher(token, expectedRoomId, expectedType, timeoutMs);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function expectRealtimeConnectFailure(token, timeoutMs = 5_000) {
   if (typeof WebSocket === "undefined") {
     throw new Error("Node WebSocket global is required for realtime smoke coverage");
@@ -668,8 +672,14 @@ const calleeParticipant = createdCall.call.participants.find((participant) => pa
 if (!callerParticipant || callerParticipant.status !== "connected" || callerParticipant.deviceId !== owner.device.deviceId) {
   throw new Error("call creator was not connected on the creating device");
 }
+if (!callerParticipant.audioEnabled || callerParticipant.videoEnabled || callerParticipant.screenEnabled || !callerParticipant.lastSeenAt) {
+  throw new Error("call creator media/liveness state was not initialized");
+}
 if (!calleeParticipant || calleeParticipant.status !== "ringing" || calleeParticipant.deviceId !== null) {
   throw new Error("callee was not left in ringing invite state");
+}
+if (calleeParticipant.audioEnabled || calleeParticipant.videoEnabled || calleeParticipant.screenEnabled || calleeParticipant.lastSeenAt !== null) {
+  throw new Error("ringing callee should not expose active media/liveness state");
 }
 
 const callInviteEvent = await callInviteWatcher.wait;
@@ -755,16 +765,22 @@ const mutedParticipant = mutedCall.call.participants.find((participant) => parti
 if (!mutedParticipant?.mutedAt) {
   throw new Error("mute did not set participant mutedAt");
 }
+if (mutedParticipant.audioEnabled) {
+  throw new Error("mute did not clear participant audioEnabled");
+}
 
 const unmutedCall = await api(`/v1/calls/${createdCall.call.callId}/participants/me`, {
   method: "PATCH",
   headers: userHeaders,
-  json: { muted: false }
+  json: { muted: false, audioEnabled: true, videoEnabled: false, screenEnabled: false, heartbeat: true }
 });
 assertCallResponse(unmutedCall, "PATCH /v1/calls/{callId}/participants/me");
 const unmutedParticipant = unmutedCall.call.participants.find((participant) => participant.principalId === accepted.principal.principalId);
 if (!unmutedParticipant || unmutedParticipant.mutedAt !== null) {
   throw new Error("participant mute patch did not clear mutedAt");
+}
+if (!unmutedParticipant.audioEnabled || unmutedParticipant.videoEnabled || unmutedParticipant.screenEnabled || !unmutedParticipant.lastSeenAt) {
+  throw new Error("participant media patch did not persist media/liveness state");
 }
 
 const mutedAgainCall = await api(`/v1/calls/${createdCall.call.callId}/participants/me`, {
@@ -773,6 +789,10 @@ const mutedAgainCall = await api(`/v1/calls/${createdCall.call.callId}/participa
   json: { muted: true }
 });
 assertCallResponse(mutedAgainCall, "PATCH /v1/calls/{callId}/participants/me muted");
+const mutedAgainParticipant = mutedAgainCall.call.participants.find((participant) => participant.principalId === accepted.principal.principalId);
+if (!mutedAgainParticipant?.mutedAt || mutedAgainParticipant.audioEnabled) {
+  throw new Error("participant mute patch did not update audioEnabled");
+}
 const explicitlyUnmutedCall = await api(`/v1/calls/${createdCall.call.callId}/unmute`, {
   method: "POST",
   headers: userHeaders
@@ -799,6 +819,12 @@ const endedCall = await api(`/v1/calls/${createdCall.call.callId}/leave`, {
 assertCallResponse(endedCall, "POST /v1/calls/{callId}/leave caller");
 if (endedCall.call.status !== "ended" || !endedCall.call.endedAt || endedCall.call.endedReason !== "all_left") {
   throw new Error("call did not end after all connected participants left");
+}
+const endedHistory = await api(`/v1/rooms/${direct.room.roomId}/calls`, { headers: userHeaders });
+assertCallsResponse(endedHistory, "GET /v1/rooms/{roomId}/calls ended history");
+const endedHistoryCall = endedHistory.calls.find((call) => call.callId === createdCall.call.callId);
+if (!endedHistoryCall || endedHistoryCall.status !== "ended" || endedHistoryCall.endedReason !== "all_left") {
+  throw new Error("room call history did not include the ended call state");
 }
 
 const videoCall = await api(`/v1/rooms/${direct.room.roomId}/calls`, {
@@ -846,6 +872,16 @@ assertCallResponse(joinedVideoCall, "POST /v1/calls/{callId}/join video");
 if (joinedVideoCall.call.status !== "active" || joinedVideoCall.call.callType !== "video") {
   throw new Error("joining a video call did not activate it");
 }
+const videoMediaStateCall = await api(`/v1/calls/${videoCall.call.callId}/participants/me`, {
+  method: "PATCH",
+  headers: userHeaders,
+  json: { audioEnabled: true, videoEnabled: true, screenEnabled: false, heartbeat: true }
+});
+assertCallResponse(videoMediaStateCall, "PATCH /v1/calls/{callId}/participants/me video media");
+const videoMediaParticipant = videoMediaStateCall.call.participants.find((participant) => participant.principalId === accepted.principal.principalId);
+if (!videoMediaParticipant?.audioEnabled || !videoMediaParticipant.videoEnabled || videoMediaParticipant.screenEnabled) {
+  throw new Error("video media state patch did not persist participant camera state");
+}
 const videoCalleeLeftCall = await api(`/v1/calls/${videoCall.call.callId}/leave`, {
   method: "POST",
   headers: userHeaders
@@ -885,6 +921,35 @@ if (!declinedCaller || declinedCaller.status !== "left" || !declinedCaller.leftA
 if (!declinedCallee || declinedCallee.status !== "declined" || !declinedCallee.leftAt) {
   throw new Error("declined call did not preserve the callee decline state");
 }
+const declinedHistory = await api(`/v1/rooms/${direct.room.roomId}/calls`, { headers: userHeaders });
+assertCallsResponse(declinedHistory, "GET /v1/rooms/{roomId}/calls declined history");
+const declinedHistoryCall = declinedHistory.calls.find((call) => call.callId === declineOnlyCall.call.callId);
+if (!declinedHistoryCall || declinedHistoryCall.status !== "declined") {
+  throw new Error("room call history did not include declined call state");
+}
+
+const missedTimeoutCall = await api(`/v1/rooms/${direct.room.roomId}/calls`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { callType: "audio" }
+});
+assertCallResponse(missedTimeoutCall, "POST /v1/rooms/{roomId}/calls missed timeout");
+await sleep(6_500);
+const missedAfterTimeout = await api(`/v1/calls/${missedTimeoutCall.call.callId}`, { headers: ownerHeaders });
+assertCallResponse(missedAfterTimeout, "GET /v1/calls/{callId} missed timeout");
+if (
+  missedAfterTimeout.call.status !== "missed" ||
+  missedAfterTimeout.call.endedReason !== "ring_timeout" ||
+  !missedAfterTimeout.call.endedAt
+) {
+  throw new Error("ring timeout did not mark unanswered call as missed");
+}
+const missedHistory = await api(`/v1/rooms/${direct.room.roomId}/calls`, { headers: userHeaders });
+assertCallsResponse(missedHistory, "GET /v1/rooms/{roomId}/calls missed history");
+const missedHistoryCall = missedHistory.calls.find((call) => call.callId === missedTimeoutCall.call.callId);
+if (!missedHistoryCall || missedHistoryCall.status !== "missed") {
+  throw new Error("room call history did not include missed timeout call state");
+}
 
 const revokedCallLogin = await api("/v1/auth/password/login", {
   method: "POST",
@@ -902,15 +967,58 @@ const revocationGuardCall = await api(`/v1/rooms/${direct.room.roomId}/calls`, {
   json: { callType: "audio" }
 });
 assertCallResponse(revocationGuardCall, "POST /v1/rooms/{roomId}/calls revocation guard");
+const joinedRevocationGuardCall = await api(`/v1/calls/${revocationGuardCall.call.callId}/join`, {
+  method: "POST",
+  headers: revokedCallHeaders
+});
+assertCallResponse(joinedRevocationGuardCall, "POST /v1/calls/{callId}/join revocation guard");
+if (joinedRevocationGuardCall.call.status !== "active") {
+  throw new Error("revocation guard call did not activate before revoking the joined device");
+}
+const revocationRealtimeToken = await api("/v1/realtime/token", {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertRealtimeTokenResponse(revocationRealtimeToken, "POST /v1/realtime/token revocation watcher");
+const revocationLeftWatcher = await openRealtimeCallWatcher(
+  revocationRealtimeToken.realtimeToken,
+  direct.room.roomId,
+  "call.left"
+);
 await api(`/v1/devices/${revokedCallLogin.device.deviceId}/revoke`, {
   method: "POST",
   headers: revokedCallHeaders,
   json: { reason: "call_join_revocation_smoke" }
 });
-await expectFailure(`/v1/calls/${revocationGuardCall.call.callId}/join`, {
-  method: "POST",
+const revocationLeftEvent = await revocationLeftWatcher.wait;
+assertRealtimeCallEvent(revocationLeftEvent, "GET /v1/realtime call.left after device revocation", "call.left");
+if (
+  revocationLeftEvent.callId !== revocationGuardCall.call.callId ||
+  revocationLeftEvent.principalId !== accepted.principal.principalId ||
+  revocationLeftEvent.deviceId !== revokedCallLogin.device.deviceId ||
+  revocationLeftEvent.reason !== "device_revoked"
+) {
+  throw new Error("joined-device revocation did not emit a call.left event for the revoked participant");
+}
+await expectFailure(`/v1/calls/${revocationGuardCall.call.callId}`, {
   headers: revokedCallHeaders
 }, 401);
+const afterRevocationGuardCall = await api(`/v1/calls/${revocationGuardCall.call.callId}`, {
+  headers: ownerHeaders
+});
+assertCallResponse(afterRevocationGuardCall, "GET /v1/calls/{callId} after joined-device revocation");
+const revokedGuardParticipant = afterRevocationGuardCall.call.participants.find(
+  (participant) => participant.deviceId === revokedCallLogin.device.deviceId
+);
+if (
+  !revokedGuardParticipant ||
+  revokedGuardParticipant.status !== "failed" ||
+  revokedGuardParticipant.audioEnabled ||
+  revokedGuardParticipant.videoEnabled ||
+  revokedGuardParticipant.screenEnabled
+) {
+  throw new Error("revoked connected device remained joined or media-enabled");
+}
 const endedRevocationGuardCall = await api(`/v1/calls/${revocationGuardCall.call.callId}/leave`, {
   method: "POST",
   headers: ownerHeaders
@@ -1162,6 +1270,51 @@ await expectFailure(`/v1/rooms/${archivalGroup.room.roomId}/calls`, {
   headers: ownerHeaders,
   json: { callType: "audio" }
 }, 409);
+
+const archiveLiveCallGroup = await api("/v1/rooms/groups", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    name: "Archive live call smoke group",
+    description: "Exercises live call cleanup on room archive"
+  }
+});
+assertRoomResponse(archiveLiveCallGroup, "POST /v1/rooms/groups archive live call");
+const archiveLiveCallInvitation = await api(`/v1/rooms/${archiveLiveCallGroup.room.roomId}/invitations`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    principalId: accepted.principal.principalId,
+    role: "member",
+    expiresInDays: 3
+  }
+});
+assertRoomInvitationResponse(archiveLiveCallInvitation, "POST /v1/rooms/{roomId}/invitations archive live call");
+await api(`/v1/room-invitations/${archiveLiveCallInvitation.invitation.roomInvitationId}/accept`, {
+  method: "POST",
+  headers: userHeaders
+});
+const archiveLiveCall = await api(`/v1/rooms/${archiveLiveCallGroup.room.roomId}/calls`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { callType: "audio" }
+});
+assertCallResponse(archiveLiveCall, "POST /v1/rooms/{roomId}/calls archive cleanup");
+await api(`/v1/calls/${archiveLiveCall.call.callId}/join`, {
+  method: "POST",
+  headers: userHeaders
+});
+await api(`/v1/rooms/${archiveLiveCallGroup.room.roomId}/archive`, {
+  method: "POST",
+  headers: ownerHeaders
+});
+const archivedLiveCall = await api(`/v1/calls/${archiveLiveCall.call.callId}`, {
+  headers: ownerHeaders
+});
+assertCallResponse(archivedLiveCall, "GET /v1/calls/{callId} archived room cleanup");
+if (archivedLiveCall.call.status !== "ended" || archivedLiveCall.call.endedReason !== "room_archived") {
+  throw new Error("archiving a room with a live call did not end the call");
+}
 
 const archivedPendingGroup = await api("/v1/rooms/groups", {
   method: "POST",

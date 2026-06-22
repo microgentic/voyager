@@ -10,6 +10,8 @@ export interface Env {
   CLOUDFLARE_REALTIME_API_BASE?: string;
   CLOUDFLARE_REALTIME_TURN_USERNAME?: string;
   CLOUDFLARE_REALTIME_TURN_CREDENTIAL?: string;
+  CALL_RING_TIMEOUT_MS?: string;
+  CALL_PARTICIPANT_LIVENESS_TIMEOUT_MS?: string;
   // Comma-separated extra origins allowed by CORS (e.g. the production web host).
   // Dev/localhost and Tauri app origins are always allowed.
   CORS_ALLOWED_ORIGINS?: string;

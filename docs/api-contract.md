@@ -341,13 +341,31 @@ Call responses expose durable metadata only:
       "principalId": "prn_...",
       "deviceId": "dev_...",
       "status": "connected",
-      "mutedAt": null
+      "mutedAt": null,
+      "audioEnabled": true,
+      "videoEnabled": false,
+      "screenEnabled": false,
+      "lastSeenAt": "2026-06-21 12:00:00"
     }
   ]
 }
 ```
 
 Only active room members may create, read, or join calls. Archived rooms reject new calls. A room may have one live call (`ringing` or `active`) at a time. Realtime media endpoints require a connected call participant. If Cloudflare Realtime credentials are absent, they return the same additive shape with `configured: false`, `session: null`, empty track arrays, and STUN/TURN capability data suitable for local/dev handling.
+
+`PATCH /v1/calls/{callId}/participants/me` accepts any non-empty combination of:
+
+```json
+{
+  "muted": false,
+  "audioEnabled": true,
+  "videoEnabled": false,
+  "screenEnabled": false,
+  "heartbeat": true
+}
+```
+
+`muted` remains the compatibility control for microphone mute/unmute. The media-enabled booleans expose server-visible participant state for call recovery; they do not contain or store media. `heartbeat` refreshes participant liveness and may be sent without changing media state.
 
 Realtime session responses may include:
 

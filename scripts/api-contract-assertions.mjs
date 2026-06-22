@@ -435,6 +435,10 @@ function assertCallParticipant(value, context) {
   nullableString(participant.joinedAt, `${context}.joinedAt`);
   nullableString(participant.leftAt, `${context}.leftAt`);
   nullableString(participant.mutedAt, `${context}.mutedAt`);
+  boolean(participant.audioEnabled, `${context}.audioEnabled`);
+  boolean(participant.videoEnabled, `${context}.videoEnabled`);
+  boolean(participant.screenEnabled, `${context}.screenEnabled`);
+  nullableString(participant.lastSeenAt, `${context}.lastSeenAt`);
   string(participant.createdAt, `${context}.createdAt`);
   string(participant.updatedAt, `${context}.updatedAt`);
 }

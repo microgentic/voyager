@@ -457,7 +457,16 @@ export class VoyagerClient {
 		return res.call;
 	}
 
-	async updateCallParticipant(callId: string, input: { muted: boolean }): Promise<Call> {
+	async updateCallParticipant(
+		callId: string,
+		input: {
+			muted?: boolean;
+			audioEnabled?: boolean;
+			videoEnabled?: boolean;
+			screenEnabled?: boolean;
+			heartbeat?: boolean;
+		}
+	): Promise<Call> {
 		const res = await this.request<{ call: Call }>(
 			'PATCH',
 			`/v1/calls/${encodeURIComponent(callId)}/participants/me`,

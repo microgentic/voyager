@@ -1,5 +1,6 @@
 import { hashPassword, randomId, randomToken, sha256Base64Url, verifyPassword } from "./crypto";
 import { HttpError } from "./http";
+import { notifyRoomRealtime } from "./realtime";
 import type { AccountRow, AuthContext, DeviceInput, DeviceRow, Env, PolicyRow, PrincipalRow, SessionRow } from "./types";
 
 const SESSION_DAYS = 30;
@@ -57,6 +58,24 @@ export interface CleanupTestDeviceResult {
 }
 
 type AuthContextRecord = Record<string, string | number | null>;
+
+interface RevokedDeviceCallParticipant {
+  call_participant_id: string;
+  call_id: string;
+  account_id: string;
+  principal_id: string;
+  device_id: string;
+  room_id: string;
+  call_type: "audio" | "video";
+}
+
+interface RevokedDeviceCallState {
+  call_id: string;
+  room_id: string;
+  call_type: "audio" | "video";
+  status: "ringing" | "active" | "ended" | "missed" | "declined" | "failed";
+  ended_reason: string | null;
+}
 
 export async function audit(
   env: Env,
@@ -836,14 +855,148 @@ export async function revokeDevice(env: Env, deviceId: string, reason: string, a
   const deviceBinds = accountId ? [reason, deviceId, accountId] : [reason, deviceId];
   const sessionWhere = accountId ? "device_id = ? AND account_id = ? AND revoked_at IS NULL" : "device_id = ? AND revoked_at IS NULL";
   const sessionBinds = accountId ? [deviceId, accountId] : [deviceId];
+  const participantWhere = accountId ? "device_id = ? AND account_id = ?" : "device_id = ?";
+  const participantBinds = accountId ? [deviceId, accountId] : [deviceId];
+  const participantSelectWhere = accountId ? "cp.device_id = ? AND cp.account_id = ?" : "cp.device_id = ?";
+  const activeParticipants = await env.CONTROL_DB.prepare(
+    `SELECT cp.call_participant_id, cp.call_id, cp.account_id, cp.principal_id, cp.device_id,
+            c.room_id, c.call_type
+     FROM call_participants cp
+     JOIN calls c ON c.call_id = cp.call_id
+     WHERE ${participantSelectWhere}
+       AND cp.status = 'connected'
+       AND c.status IN ('ringing', 'active')`
+  )
+    .bind(...participantBinds)
+    .all<RevokedDeviceCallParticipant>();
+  const callParticipants = activeParticipants.results ?? [];
   await env.CONTROL_DB.batch([
     env.CONTROL_DB.prepare(
       `UPDATE devices SET revoked_at = CURRENT_TIMESTAMP, revocation_reason = ? WHERE ${deviceWhere}`
     ).bind(...deviceBinds),
     env.CONTROL_DB.prepare(
       `UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE ${sessionWhere}`
-    ).bind(...sessionBinds)
+    ).bind(...sessionBinds),
+    env.CONTROL_DB.prepare(
+      `UPDATE call_realtime_tracks
+       SET status = 'closed',
+           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE device_id = ? AND status = 'active'`
+    ).bind(deviceId),
+    env.CONTROL_DB.prepare(
+      `UPDATE call_realtime_sessions
+       SET status = 'closed',
+           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE ${participantWhere} AND status = 'active'`
+    ).bind(...participantBinds),
+    env.CONTROL_DB.prepare(
+      `UPDATE call_participants
+       SET status = 'failed',
+           left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
+           muted_at = NULL,
+           audio_enabled = 0,
+           video_enabled = 0,
+           screen_enabled = 0,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE ${participantWhere} AND status = 'connected'`
+    ).bind(...participantBinds),
+    env.CONTROL_DB.prepare(
+      `UPDATE calls
+       SET status = 'ended',
+           ended_reason = 'device_revoked',
+           ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE status IN ('ringing', 'active')
+         AND call_id IN (
+           SELECT call_id FROM call_participants WHERE ${participantWhere}
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM call_participants cp
+           WHERE cp.call_id = calls.call_id AND cp.status = 'connected'
+         )`
+    ).bind(...participantBinds)
   ]);
+  await notifyRevokedDeviceCallCleanup(env, callParticipants, reason);
+}
+
+async function notifyRevokedDeviceCallCleanup(
+  env: Env,
+  participants: RevokedDeviceCallParticipant[],
+  revocationReason: string
+): Promise<void> {
+  if (!participants.length) return;
+  const callIds = [...new Set(participants.map((participant) => participant.call_id))];
+  const placeholders = callIds.map(() => "?").join(", ");
+  const refreshed = await env.CONTROL_DB.prepare(
+    `SELECT call_id, room_id, call_type, status, ended_reason
+     FROM calls
+     WHERE call_id IN (${placeholders})`
+  )
+    .bind(...callIds)
+    .all<RevokedDeviceCallState>();
+  const callsById = new Map((refreshed.results ?? []).map((call) => [call.call_id, call]));
+
+  for (const participant of participants) {
+    await env.CONTROL_DB.prepare(
+      `INSERT INTO call_events (
+        call_event_id, call_id, actor_account_id, actor_principal_id,
+        actor_device_id, event_type, payload_json
+      ) VALUES (?, ?, NULL, NULL, NULL, 'call.participant.revoked', ?)`
+    )
+      .bind(
+        randomId("cevt"),
+        participant.call_id,
+        JSON.stringify({
+          roomId: participant.room_id,
+          accountId: participant.account_id,
+          principalId: participant.principal_id,
+          deviceId: participant.device_id,
+          reason: "device_revoked",
+          revocationReason
+        })
+      )
+      .run();
+    await notifyRoomRealtime(env, participant.room_id, {
+      type: "call.left",
+      callId: participant.call_id,
+      callType: participant.call_type,
+      principalId: participant.principal_id,
+      deviceId: participant.device_id,
+      reason: "device_revoked"
+    });
+  }
+
+  for (const call of callsById.values()) {
+    if (call.status === "ended" && call.ended_reason === "device_revoked") {
+      await env.CONTROL_DB.prepare(
+        `INSERT INTO call_events (
+          call_event_id, call_id, actor_account_id, actor_principal_id,
+          actor_device_id, event_type, payload_json
+        ) VALUES (?, ?, NULL, NULL, NULL, 'call.ended', ?)`
+      )
+        .bind(
+          randomId("cevt"),
+          call.call_id,
+          JSON.stringify({ roomId: call.room_id, status: call.status, reason: "device_revoked" })
+        )
+        .run();
+      await notifyRoomRealtime(env, call.room_id, {
+        type: "call.ended",
+        callId: call.call_id,
+        callType: call.call_type,
+        endedReason: "device_revoked"
+      });
+    }
+    await notifyRoomRealtime(env, call.room_id, {
+      type: "call.updated",
+      callId: call.call_id,
+      callType: call.call_type,
+      status: call.status
+    });
+  }
 }
 
 export async function getActiveAdminRoles(env: Env, accountId: string): Promise<string[]> {

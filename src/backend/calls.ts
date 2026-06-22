@@ -11,7 +11,7 @@ import type {
   MembershipRow,
 } from "./internal-types";
 import { publicCall } from "./serializers";
-import { nextCursor, pageParams } from "./utils";
+import { nextCursor, pageParams, sqliteTimestamp } from "./utils";
 import { requireActiveRoom, requireRoomMembership } from "./rooms";
 
 type CallType = CallRow["call_type"];
@@ -78,8 +78,9 @@ export async function createCall(
     await env.CONTROL_DB.prepare(
       `INSERT INTO call_participants (
         call_participant_id, call_id, account_id, principal_id, device_id,
-        role, status, joined_at
-      ) VALUES (?, ?, ?, ?, ?, 'participant', ?, ${isCreator ? "CURRENT_TIMESTAMP" : "NULL"})`,
+        role, status, joined_at, audio_enabled, video_enabled, screen_enabled,
+        last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, 'participant', ?, ${isCreator ? "CURRENT_TIMESTAMP" : "NULL"}, ?, 0, 0, ${isCreator ? "CURRENT_TIMESTAMP" : "NULL"})`,
     )
       .bind(
         randomId("cpart"),
@@ -88,6 +89,7 @@ export async function createCall(
         member.principal_id,
         isCreator ? auth.device.device_id : null,
         isCreator ? "connected" : "ringing",
+        isCreator ? 1 : 0,
       )
       .run();
   }
@@ -173,7 +175,8 @@ export async function joinCall(
       await env.CONTROL_DB.prepare(
         `UPDATE call_participants
          SET device_id = ?, status = 'connected', joined_at = COALESCE(joined_at, CURRENT_TIMESTAMP),
-             left_at = NULL, updated_at = CURRENT_TIMESTAMP
+             left_at = NULL, audio_enabled = 1, video_enabled = 0, screen_enabled = 0,
+             last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
          WHERE call_participant_id = ?`,
       )
         .bind(auth.device.device_id, pendingParticipant.call_participant_id)
@@ -182,8 +185,9 @@ export async function joinCall(
       await env.CONTROL_DB.prepare(
         `INSERT INTO call_participants (
           call_participant_id, call_id, account_id, principal_id, device_id,
-          role, status, joined_at
-        ) VALUES (?, ?, ?, ?, ?, 'participant', 'connected', CURRENT_TIMESTAMP)`,
+          role, status, joined_at, audio_enabled, video_enabled, screen_enabled,
+          last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, 'participant', 'connected', CURRENT_TIMESTAMP, 1, 0, 0, CURRENT_TIMESTAMP)`,
       )
         .bind(
           randomId("cpart"),
@@ -227,6 +231,7 @@ export async function leaveCall(
   await updateParticipantStatus(env, participant.call_participant_id, "left", {
     left: true,
     clearMute: true,
+    clearMedia: true,
   });
   await closeParticipantRealtimeSessions(env, callId, participant.call_participant_id);
   await insertCallEvent(env, auth, callId, "call.left", {
@@ -277,6 +282,7 @@ export async function declineCall(
   await updateParticipantStatus(env, participant.call_participant_id, "declined", {
     left: true,
     clearMute: true,
+    clearMedia: true,
   });
   await insertCallEvent(env, auth, callId, "call.declined", {
     roomId: call.room_id,
@@ -315,14 +321,11 @@ export async function setCallMuted(
     );
   }
 
-  await env.CONTROL_DB.prepare(
-    `UPDATE call_participants
-     SET muted_at = ${muted ? "CURRENT_TIMESTAMP" : "NULL"},
-         updated_at = CURRENT_TIMESTAMP
-     WHERE call_participant_id = ?`,
-  )
-    .bind(participant.call_participant_id)
-    .run();
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    muted,
+    audioEnabled: !muted,
+    heartbeat: true,
+  });
   await insertCallEvent(env, auth, callId, muted ? "call.muted" : "call.unmuted", {
     roomId: call.room_id,
     deviceId: auth.device.device_id,
@@ -344,14 +347,77 @@ export async function updateCurrentCallParticipant(
   callId: string,
   body: Record<string, unknown>,
 ): Promise<JsonObject> {
-  const muted = body.muted;
-  if (muted === undefined || muted === null) {
-    throw new HttpError(400, "missing_field", "Missing required field: muted");
+  const muted = optionalBoolean(body, "muted");
+  const audioEnabled = optionalBoolean(body, "audioEnabled");
+  const videoEnabled = optionalBoolean(body, "videoEnabled");
+  const screenEnabled = optionalBoolean(body, "screenEnabled");
+  const heartbeat = optionalBoolean(body, "heartbeat") ?? false;
+  if (
+    muted === undefined &&
+    audioEnabled === undefined &&
+    videoEnabled === undefined &&
+    screenEnabled === undefined &&
+    !heartbeat
+  ) {
+    throw new HttpError(
+      400,
+      "missing_field",
+      "Missing participant update field",
+    );
   }
-  if (typeof muted !== "boolean") {
-    throw new HttpError(400, "invalid_field", "Field must be a boolean: muted");
+
+  const call = await getCall(env, callId);
+  await requireRoomMembership(env, auth, call.room_id);
+  if (!LIVE_CALL_STATUSES.includes(call.status)) {
+    throw new HttpError(409, "call_not_live", "Call is not live");
   }
-  return setCallMuted(env, auth, callId, muted);
+  if (call.call_type === "audio" && (videoEnabled === true || screenEnabled === true)) {
+    throw new HttpError(
+      400,
+      "invalid_call_media_state",
+      "Audio calls cannot enable video or screen media",
+    );
+  }
+  const participant = await requireCurrentParticipant(env, auth, callId);
+  if (participant.status !== "connected") {
+    throw new HttpError(
+      409,
+      "call_not_joined",
+      "Join the call before updating participant state",
+    );
+  }
+
+  const changed =
+    muted !== undefined ||
+    audioEnabled !== undefined ||
+    videoEnabled !== undefined ||
+    screenEnabled !== undefined;
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    muted,
+    audioEnabled: audioEnabled ?? (muted !== undefined ? !muted : undefined),
+    videoEnabled,
+    screenEnabled,
+    heartbeat: true,
+  });
+  if (changed) {
+    await insertCallEvent(env, auth, callId, "call.participant.updated", {
+      roomId: call.room_id,
+      deviceId: auth.device.device_id,
+      muted,
+      audioEnabled: audioEnabled ?? (muted !== undefined ? !muted : undefined),
+      videoEnabled,
+      screenEnabled,
+    });
+    await emitCallEvent(env, call.room_id, {
+      type: "call.updated",
+      callId,
+      callType: call.call_type,
+      status: call.status,
+      principalId: auth.principal.principal_id,
+      deviceId: auth.device.device_id,
+    });
+  }
+  return getPublicCall(env, auth, callId);
 }
 
 export async function getRealtimeSessionConfig(
@@ -364,6 +430,9 @@ export async function getRealtimeSessionConfig(
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
   const participant = await requireConnectedParticipant(env, auth, callId);
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    heartbeat: true,
+  });
   const config = realtimeConfig(env);
   if (!config.configured) return realtimeUnavailable(call, config);
 
@@ -398,7 +467,10 @@ export async function getRealtimeTrackConfig(
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
-  await requireConnectedParticipant(env, auth, callId);
+  const participant = await requireConnectedParticipant(env, auth, callId);
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    heartbeat: true,
+  });
   const config = realtimeConfig(env);
   if (!config.configured) return realtimeUnavailable(call, config);
 
@@ -463,7 +535,10 @@ export async function renegotiateRealtimeSession(
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
-  await requireConnectedParticipant(env, auth, callId);
+  const participant = await requireConnectedParticipant(env, auth, callId);
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    heartbeat: true,
+  });
   const config = realtimeConfig(env);
   if (!config.configured) return realtimeUnavailable(call, config);
 
@@ -492,7 +567,10 @@ export async function closeRealtimeTracks(
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
-  await requireConnectedParticipant(env, auth, callId);
+  const participant = await requireConnectedParticipant(env, auth, callId);
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    heartbeat: true,
+  });
   const config = realtimeConfig(env);
   if (!config.configured) return realtimeUnavailable(call, config);
 
@@ -527,6 +605,74 @@ export async function getCall(env: Env, callId: string): Promise<CallRow> {
   return call;
 }
 
+export interface CallLifecycleReconcileResult {
+  live: boolean;
+  status?: CallStatus;
+  nextAlarmAt?: number;
+}
+
+export async function reconcileCallLifecycleForCoordinator(
+  env: Env,
+  callId: string,
+  options: {
+    ringTimeoutMs: number;
+    participantLivenessTimeoutMs: number;
+    nowMs?: number;
+  },
+): Promise<CallLifecycleReconcileResult> {
+  const nowMs = options.nowMs ?? Date.now();
+  let call: CallRow;
+  try {
+    call = await getCall(env, callId);
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 404) {
+      return { live: false };
+    }
+    throw error;
+  }
+  if (!LIVE_CALL_STATUSES.includes(call.status)) {
+    return { live: false, status: call.status };
+  }
+
+  await expireStaleConnectedParticipants(
+    env,
+    call,
+    nowMs,
+    options.participantLivenessTimeoutMs,
+  );
+  call = await getCall(env, callId);
+  if (!LIVE_CALL_STATUSES.includes(call.status)) {
+    return { live: false, status: call.status };
+  }
+
+  if (call.status === "ringing") {
+    const connected = await participantCount(env, callId, "connected");
+    if (connected >= 2) {
+      await activateCallIfReady(env, call);
+      call = await getCall(env, callId);
+    } else if (nowMs >= timestampMs(call.created_at) + options.ringTimeoutMs) {
+      await endCall(env, call, "missed", "ring_timeout");
+      return { live: false, status: "missed" };
+    }
+  }
+
+  const refreshed = await getCall(env, callId);
+  if (!LIVE_CALL_STATUSES.includes(refreshed.status)) {
+    return { live: false, status: refreshed.status };
+  }
+  return {
+    live: true,
+    status: refreshed.status,
+    nextAlarmAt: await nextLifecycleAlarmAt(
+      env,
+      refreshed,
+      nowMs,
+      options.ringTimeoutMs,
+      options.participantLivenessTimeoutMs,
+    ),
+  };
+}
+
 async function assertNoLiveCallInRoom(env: Env, roomId: string): Promise<void> {
   const existing = await env.CONTROL_DB.prepare(
     "SELECT call_id FROM calls WHERE room_id = ? AND status IN ('ringing', 'active') LIMIT 1",
@@ -556,6 +702,23 @@ function parseCallType(body: Record<string, unknown>): CallType {
     throw new HttpError(400, "invalid_call_type", "Call type is invalid");
   }
   return value;
+}
+
+function optionalBoolean(
+  body: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  const value = body[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, "invalid_field", `Field must be a boolean: ${key}`);
+  }
+  return value;
+}
+
+function d1Changes(result: D1Result): number {
+  const changes = (result.meta as { changes?: number } | undefined)?.changes;
+  return typeof changes === "number" ? changes : 1;
 }
 
 function assertConnectableCall(call: CallRow): void {
@@ -695,7 +858,7 @@ async function updateParticipantStatus(
   env: Env,
   callParticipantId: string,
   status: CallParticipantStatus,
-  options: { joined?: boolean; left?: boolean; clearLeft?: boolean; clearMute?: boolean } = {},
+  options: { joined?: boolean; left?: boolean; clearLeft?: boolean; clearMute?: boolean; clearMedia?: boolean } = {},
 ): Promise<void> {
   await env.CONTROL_DB.prepare(
     `UPDATE call_participants
@@ -703,6 +866,10 @@ async function updateParticipantStatus(
          joined_at = CASE WHEN ? THEN COALESCE(joined_at, CURRENT_TIMESTAMP) ELSE joined_at END,
          left_at = CASE WHEN ? THEN CURRENT_TIMESTAMP WHEN ? THEN NULL ELSE left_at END,
          muted_at = CASE WHEN ? THEN NULL ELSE muted_at END,
+         audio_enabled = CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE audio_enabled END,
+         video_enabled = CASE WHEN ? THEN 0 ELSE video_enabled END,
+         screen_enabled = CASE WHEN ? THEN 0 ELSE screen_enabled END,
+         last_seen_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_seen_at END,
          updated_at = CURRENT_TIMESTAMP
      WHERE call_participant_id = ?`,
   )
@@ -712,6 +879,50 @@ async function updateParticipantStatus(
       options.left ? 1 : 0,
       options.clearLeft ? 1 : 0,
       options.clearMute ? 1 : 0,
+      options.clearMedia ? 1 : 0,
+      options.joined ? 1 : 0,
+      options.clearMedia ? 1 : 0,
+      options.clearMedia ? 1 : 0,
+      options.joined ? 1 : 0,
+      callParticipantId,
+    )
+    .run();
+}
+
+async function updateParticipantMediaState(
+  env: Env,
+  callParticipantId: string,
+  update: {
+    muted?: boolean;
+    audioEnabled?: boolean;
+    videoEnabled?: boolean;
+    screenEnabled?: boolean;
+    heartbeat?: boolean;
+  },
+): Promise<void> {
+  await env.CONTROL_DB.prepare(
+    `UPDATE call_participants
+     SET muted_at = CASE
+           WHEN ? THEN CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END
+           ELSE muted_at
+         END,
+         audio_enabled = CASE WHEN ? THEN ? ELSE audio_enabled END,
+         video_enabled = CASE WHEN ? THEN ? ELSE video_enabled END,
+         screen_enabled = CASE WHEN ? THEN ? ELSE screen_enabled END,
+         last_seen_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_seen_at END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE call_participant_id = ?`,
+  )
+    .bind(
+      update.muted === undefined ? 0 : 1,
+      update.muted === true ? 1 : 0,
+      update.audioEnabled === undefined ? 0 : 1,
+      update.audioEnabled === true ? 1 : 0,
+      update.videoEnabled === undefined ? 0 : 1,
+      update.videoEnabled === true ? 1 : 0,
+      update.screenEnabled === undefined ? 0 : 1,
+      update.screenEnabled === true ? 1 : 0,
+      update.heartbeat ? 1 : 0,
       callParticipantId,
     )
     .run();
@@ -759,13 +970,92 @@ async function maybeEndDeclinedCall(env: Env, callId: string): Promise<void> {
   }
 }
 
+async function expireStaleConnectedParticipants(
+  env: Env,
+  call: CallRow,
+  nowMs: number,
+  participantLivenessTimeoutMs: number,
+): Promise<void> {
+  const cutoff = sqliteTimestamp(nowMs - participantLivenessTimeoutMs);
+  const result = await env.CONTROL_DB.prepare(
+    `SELECT *
+     FROM call_participants
+     WHERE call_id = ?
+       AND status = 'connected'
+       AND COALESCE(last_seen_at, joined_at, updated_at, created_at) <= ?`,
+  )
+    .bind(call.call_id, cutoff)
+    .all<CallParticipantRow>();
+  const staleParticipants = result.results ?? [];
+  for (const participant of staleParticipants) {
+    const update = await env.CONTROL_DB.prepare(
+      `UPDATE call_participants
+       SET status = 'failed',
+           left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
+           muted_at = NULL,
+           audio_enabled = 0,
+           video_enabled = 0,
+           screen_enabled = 0,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE call_participant_id = ? AND status = 'connected'`,
+    )
+      .bind(participant.call_participant_id)
+      .run();
+    if (d1Changes(update) === 0) continue;
+    await closeParticipantRealtimeSessions(env, call.call_id, participant.call_participant_id);
+    await insertCallEvent(env, null, call.call_id, "call.participant.timeout", {
+      roomId: call.room_id,
+      principalId: participant.principal_id,
+      deviceId: participant.device_id,
+    });
+    await emitCallEvent(env, call.room_id, {
+      type: "call.left",
+      callId: call.call_id,
+      callType: call.call_type,
+      principalId: participant.principal_id,
+      deviceId: participant.device_id ?? undefined,
+      reason: "timeout",
+    });
+  }
+  if (staleParticipants.length > 0) {
+    await maybeEndCallAfterDeparture(env, call.call_id, "participant_timeout");
+    await emitCallUpdated(env, call.call_id);
+  }
+}
+
+async function nextLifecycleAlarmAt(
+  env: Env,
+  call: CallRow,
+  nowMs: number,
+  ringTimeoutMs: number,
+  participantLivenessTimeoutMs: number,
+): Promise<number | undefined> {
+  const deadlines: number[] = [];
+  if (call.status === "ringing") {
+    deadlines.push(timestampMs(call.created_at) + ringTimeoutMs);
+  }
+  const result = await env.CONTROL_DB.prepare(
+    `SELECT COALESCE(last_seen_at, joined_at, updated_at, created_at) AS seen_at
+     FROM call_participants
+     WHERE call_id = ? AND status = 'connected'`,
+  )
+    .bind(call.call_id)
+    .all<{ seen_at: string | null }>();
+  for (const row of result.results ?? []) {
+    if (row.seen_at) deadlines.push(timestampMs(row.seen_at) + participantLivenessTimeoutMs);
+  }
+  const futureDeadlines = deadlines.filter((deadline) => Number.isFinite(deadline));
+  if (!futureDeadlines.length) return undefined;
+  return Math.max(nowMs + 1_000, Math.min(...futureDeadlines));
+}
+
 async function endCall(
   env: Env,
   call: CallRow,
   status: Extract<CallStatus, "ended" | "declined" | "missed" | "failed">,
   reason: string,
 ): Promise<void> {
-  await env.CONTROL_DB.prepare(
+  const result = await env.CONTROL_DB.prepare(
     `UPDATE calls
      SET status = ?,
          ended_reason = ?,
@@ -775,6 +1065,7 @@ async function endCall(
   )
     .bind(status, reason, call.call_id)
     .run();
+  if (d1Changes(result) === 0) return;
   await env.CONTROL_DB.prepare(
     `UPDATE call_participants
      SET status = CASE
@@ -784,6 +1075,9 @@ async function endCall(
          END,
          left_at = CASE WHEN left_at IS NULL AND status = 'connected' THEN CURRENT_TIMESTAMP ELSE left_at END,
          muted_at = CASE WHEN status = 'connected' THEN NULL ELSE muted_at END,
+         audio_enabled = 0,
+         video_enabled = 0,
+         screen_enabled = 0,
          updated_at = CURRENT_TIMESTAMP
      WHERE call_id = ? AND status IN ('invited', 'ringing', 'joining', 'connected')`,
   )
@@ -801,6 +1095,20 @@ async function endCall(
     callType: call.call_type,
     endedReason: reason,
   });
+  await emitCallEvent(env, call.room_id, {
+    type: "call.updated",
+    callId: call.call_id,
+    callType: call.call_type,
+    status,
+  });
+}
+
+function timestampMs(value: string): number {
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : Date.now();
 }
 
 async function participantCount(
@@ -1283,7 +1591,9 @@ async function upsertRealtimeTracks(
   session: CallRealtimeSessionRow,
   tracks: RealtimeTrackInput[],
 ): Promise<void> {
+  const localKinds = new Set<CallRealtimeTrackKind>();
   for (const track of tracks) {
+    if (track.location === "local") localKinds.add(track.kind);
     const ownerProviderSessionId =
       track.location === "remote" ? track.sessionId ?? null : session.provider_session_id;
     await env.CONTROL_DB.prepare(
@@ -1316,6 +1626,14 @@ async function upsertRealtimeTracks(
         auth.device.device_id,
       )
       .run();
+  }
+  if (localKinds.size > 0) {
+    await updateParticipantMediaState(env, session.call_participant_id, {
+      audioEnabled: localKinds.has("audio") ? true : undefined,
+      videoEnabled: localKinds.has("video") ? true : undefined,
+      screenEnabled: localKinds.has("screen") ? true : undefined,
+      heartbeat: true,
+    });
   }
 }
 
@@ -1378,6 +1696,7 @@ async function markRealtimeTracksClosed(
   )
     .bind(session.call_realtime_session_id, ...mids)
     .run();
+  await refreshParticipantMediaStateFromTracks(env, session.call_participant_id);
 }
 
 async function closeParticipantRealtimeSessions(
@@ -1411,6 +1730,13 @@ async function closeParticipantRealtimeSessions(
   )
     .bind(callId, callParticipantId)
     .run();
+  await updateParticipantMediaState(env, callParticipantId, {
+    audioEnabled: false,
+    videoEnabled: false,
+    screenEnabled: false,
+    muted: false,
+    heartbeat: true,
+  });
 }
 
 async function closeCallRealtimeSessions(env: Env, callId: string): Promise<void> {
@@ -1432,6 +1758,42 @@ async function closeCallRealtimeSessions(env: Env, callId: string): Promise<void
   )
     .bind(callId)
     .run();
+  await env.CONTROL_DB.prepare(
+    `UPDATE call_participants
+     SET audio_enabled = 0,
+         video_enabled = 0,
+         screen_enabled = 0,
+         muted_at = NULL,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE call_id = ?`,
+  )
+    .bind(callId)
+    .run();
+}
+
+async function refreshParticipantMediaStateFromTracks(
+  env: Env,
+  callParticipantId: string,
+): Promise<void> {
+  const result = await env.CONTROL_DB.prepare(
+    `SELECT t.kind
+     FROM call_realtime_tracks t
+     JOIN call_realtime_sessions s
+       ON s.call_realtime_session_id = t.call_realtime_session_id
+     WHERE s.call_participant_id = ?
+       AND s.status = 'active'
+       AND t.status = 'active'
+       AND t.location = 'local'`,
+  )
+    .bind(callParticipantId)
+    .all<{ kind: CallRealtimeTrackKind }>();
+  const kinds = new Set((result.results ?? []).map((row) => row.kind));
+  await updateParticipantMediaState(env, callParticipantId, {
+    audioEnabled: kinds.has("audio"),
+    videoEnabled: kinds.has("video"),
+    screenEnabled: kinds.has("screen"),
+    heartbeat: true,
+  });
 }
 
 function publicRealtimeSession(session: CallRealtimeSessionRow): JsonObject {
