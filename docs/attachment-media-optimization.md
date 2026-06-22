@@ -18,11 +18,13 @@ PR 1 of the media/calling roadmap added the backend foundation for optimized att
 ## Client Scope
 
 - The composer generates optimized image variants locally with browser-native image APIs before upload.
-- Static images default to an optimized primary `original`, optional `preview`, and `thumbnail`; unsupported images and generic files fall back to the opaque original-only path.
+- Static images default to an optimized primary `original`, optional `preview`, and `thumbnail`; when the composer's original-image switch is enabled, the selected source image is uploaded as the downloadable `original` while timeline/viewer variants stay optimized.
+- Video and audio uploads keep the opaque original-only path, but the client records browser-readable duration and video dimensions when metadata is available.
 - The composer shows staged upload progress, local pending thumbnails, cancel, retry, and cleanup of unsent attachment allocations.
 - Web/desktop users can drag files into the composer drop target; mobile continues to use the platform file picker exposed through the same file input.
-- Chat bubbles load `thumbnail` first for image timelines and open a private authenticated viewer that prefers `preview` and falls back to `original`.
-- Generic files render as downloadable file cards.
+- Chat bubbles lazy-load `thumbnail` first for image timelines through a bounded attachment download queue and open a private authenticated viewer that prefers `preview` and falls back to `original`.
+- Messages with multiple image attachments render as a compact grid; the viewer supports previous/next buttons, keyboard arrows, and swipe-style pointer navigation across images in the same message.
+- Generic files render as downloadable file cards. Video and audio attachments render as media cards with duration metadata when available and open a controls-based viewer on explicit click.
 - Thread replies use the same composer path, so image/file attachments work in threads.
 - Message attachment references include per-variant MIME metadata so the viewer and forwarding path do not assume all variants share the same content type.
 - Forwarding a visible attachment message clones the attachment variants into the target room before calling the existing forward endpoint, preserving room-local attachment ownership and cleaning up cloned rows if the final forward request fails.
@@ -40,19 +42,23 @@ R2 buckets must remain private. Voyager uses authenticated Worker downloads for 
 
 Each attachment has one durable row and up to three object variants:
 
-| Variant | Purpose |
-| --- | --- |
-| `original` | Backward-compatible full attachment blob. |
-| `preview` | Optimized viewer/timeline media for images or videos. |
-| `thumbnail` | Small timeline or grid preview. |
+| Variant     | Purpose                                               |
+| ----------- | ----------------------------------------------------- |
+| `original`  | Backward-compatible full attachment blob.             |
+| `preview`   | Optimized viewer/timeline media for images or videos. |
+| `thumbnail` | Small timeline or grid preview.                       |
 
-Clients should prefer `thumbnail` in dense timelines, `preview` in viewers, and `original` only for explicit download or "send original" flows.
+Clients should prefer `thumbnail` in dense timelines, `preview` in viewers, and `original` only for explicit download or source-original flows.
 
 ## Future Notes
 
 - Direct-to-R2 multipart uploads remain deferred until large file/video uploads need resumable transfer.
 - Cloudflare Images or signed media URLs remain deferred until the access-control and leakage model is designed.
 - This PR does not claim end-to-end encrypted attachments; it preserves the backend abstraction needed for that later work.
-- A dedicated "send original camera/source file" option remains deferred. The current default sends an optimized primary image as the required `original` variant.
 - Fine-grained upload byte progress remains deferred because the current authenticated Worker upload path uses `fetch`; the composer reports deterministic processing/upload stages instead.
 - Full camera capture polish and platform-specific save-to-gallery affordances remain part of later mobile hardening.
+- Large-file direct-to-R2 or multipart upload, quota accounting, signed media URLs, and cleanup of uploaded-but-never-referenced rows remain part of later operational hardening.
+
+## Manual QA
+
+Run the attachment UX checklist in [`attachment-ux-manual-qa.md`](attachment-ux-manual-qa.md) alongside the automated check suite when changing composer, viewer, forwarding, delete, or thread attachment behavior.
