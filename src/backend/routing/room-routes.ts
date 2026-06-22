@@ -12,7 +12,6 @@ import {
   listRoomInvitations,
   listRooms,
 } from "../rooms";
-import { listThreads } from "../threads";
 import { capitalize, mutationTimingHeaders, readTimingHeaders } from "../utils";
 import type { RouteResult } from "../internal-types";
 import type { BackendRouteContext } from "./types";
@@ -25,15 +24,6 @@ export async function handleRoomRoutes(context: BackendRouteContext): Promise<Ro
     return json(
       { ok: true, ...(await listRooms(env, auth, url)) },
       { headers: readTimingHeaders("rooms", authTimingMs, startedAt) },
-    );
-  }
-
-  if (url.pathname === "/v1/threads") {
-    requireMethod(request, "GET");
-    const startedAt = performance.now();
-    return json(
-      { ok: true, ...(await listThreads(env, auth, url)) },
-      { headers: readTimingHeaders("threads", authTimingMs, startedAt) },
     );
   }
 

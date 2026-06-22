@@ -19,7 +19,9 @@ clearer home than the former single large `src/backend.ts` file.
   should stay focused on HTTP method checks, path matching, body parsing,
   auditing, response wrapping, Server-Timing headers, and calling backend
   operations. They should not contain D1 query logic, R2 object logic,
-  Cloudflare Realtime provider logic, or domain business rules.
+  Cloudflare Realtime provider logic, or domain business rules. Thread and
+  maintenance endpoints have their own route modules instead of living inside
+  the broader message, room, or admin route groups.
 - `src/backend/conversation-coordinator.ts` contains the
   `ConversationCoordinator` Durable Object plus the internal Worker-to-DO send
   and mutation dispatch helpers.
@@ -39,17 +41,20 @@ clearer home than the former single large `src/backend.ts` file.
   and room member serialization helpers.
 - `src/backend/messaging/` contains message send/list/acknowledgement,
   delivery receipt, message idempotency, attachment-reference, thread, and
-  message realtime hint operation exports. `src/backend/messages.ts` and
+  message realtime hint implementations. `src/backend/messages.ts` and
   `src/backend/threads.ts` remain compatibility barrels.
 - `src/backend/sync.ts` contains account sync, startup bootstrap, and pending
   message reads.
 - `src/backend/attachments/` contains R2-backed opaque attachment allocation,
-  upload, completion, download, deletion, variant, and attachment ownership
-  operation exports. `src/backend/attachments.ts` remains a compatibility
-  barrel.
+  upload, completion, download, deletion, variant, quota, and attachment
+  ownership implementations. `src/backend/attachments.ts` remains a
+  compatibility barrel.
 - `src/backend/calls/` contains call lifecycle, read, Realtime config/session/
-  track, media mutation, usage, and Durable Object coordinator operation
-  exports. `src/backend/calls.ts` remains a compatibility barrel.
+  track, media mutation, usage, participant-state, event, and Durable Object
+  coordinator modules. `src/backend/calls/core.ts` remains the internal
+  lifecycle/media orchestration module for coupled call flows; stable helper
+  layers live in the smaller sibling modules. `src/backend/calls.ts` remains a
+  compatibility barrel.
 - `src/backend/sidebar.ts` contains sidebar collection and collection-item
   operations.
 - `src/backend/agents.ts` contains agent request review and agent principal

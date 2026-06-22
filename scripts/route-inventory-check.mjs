@@ -10,10 +10,12 @@ const SOURCE_FILES = [
   "src/backend/routing/attachment-routes.ts",
   "src/backend/routing/call-routes.ts",
   "src/backend/routing/identity-routes.ts",
+  "src/backend/routing/maintenance-routes.ts",
   "src/backend/routing/message-routes.ts",
   "src/backend/routing/room-routes.ts",
   "src/backend/routing/sidebar-routes.ts",
   "src/backend/routing/sync-routes.ts",
+  "src/backend/routing/thread-routes.ts",
 ];
 const ROUTE_KEY = (route) => `${route.method} ${normalizePath(route.path)}`;
 
