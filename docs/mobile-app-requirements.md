@@ -38,6 +38,9 @@ rewrite.
   simulator/emulator). The same Vite dev server + proxy is used in dev.
 - The `tauri.conf.json` CSP `connect-src` must include the production API origin
   (and, in production, the API must allow the app origin — see §6).
+- Audio/video calls use WebView media APIs with OS-level platform declarations
+  and a minimal Tauri capability surface. See `docs/call-device-prejoin-qa.md`
+  for the current browser/native permission checklist.
 
 ## 3. Native plugins / capabilities to add
 

@@ -80,7 +80,7 @@
 
 		{#if !agentDirect}
 			<button
-				onclick={() => calls.startAudioCall(room)}
+				onclick={() => calls.openStartPrejoin(room, 'audio')}
 				disabled={!canStartCall || startingAudioCall || startingVideoCall}
 				title="Start audio call"
 				class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
@@ -93,7 +93,7 @@
 				{/if}
 			</button>
 			<button
-				onclick={() => calls.startVideoCall(room)}
+				onclick={() => calls.openStartPrejoin(room, 'video')}
 				disabled={!canStartCall || startingAudioCall || startingVideoCall}
 				title="Start video call"
 				class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
