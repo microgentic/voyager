@@ -585,8 +585,6 @@ export interface CallUsageReportInput {
 		roundTripTimeMs?: number | null;
 		packetsLost?: number | null;
 	};
-	providerEgressBytes?: number | null;
-	providerBillingSource?: string | null;
 }
 
 export interface CallUsageReport {
@@ -594,6 +592,7 @@ export interface CallUsageReport {
 	callId: string;
 	provider: 'cloudflare_realtime';
 	providerSessionId: string | null;
+	source: 'client_estimate' | 'provider_authoritative';
 	durationMs: number;
 	audioDurationMs: number;
 	videoDurationMs: number;

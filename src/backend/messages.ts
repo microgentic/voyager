@@ -265,6 +265,12 @@ export async function sendMessageEnvelope(
       "UPDATE rooms SET version = version + 1, updated_at = CURRENT_TIMESTAMP WHERE room_id = ?",
     ).bind(roomId),
   ]);
+  try {
+    await assertAttachmentsReferenced(env, auth, roomId, attachmentIds);
+  } catch (error) {
+    await purgeMessageAfterAttachmentReferenceFailure(env, envelopeId);
+    throw error;
+  }
   const postWriteMs = durationSince(postWriteStartedAt);
 
   const message = await getPublicMessage(
@@ -497,6 +503,7 @@ export async function editMessageEnvelope(
   });
   await assertAttachmentCountWithinPolicy(env, auth, attachmentIds);
   await assertAttachmentsReferenceable(env, auth, roomId, attachmentIds);
+  await markAttachmentsReferenced(env, auth, roomId, attachmentIds);
   const editedAt = sqliteTimestamp(Date.now());
 
   await env.CONTROL_DB.batch([
@@ -543,7 +550,6 @@ export async function editMessageEnvelope(
       roomId,
       auth.principal.principal_id,
     ),
-    ...markAttachmentsReferencedStatements(env, auth, roomId, attachmentIds),
     env.CONTROL_DB.prepare(
       "UPDATE rooms SET version = version + 1, updated_at = CURRENT_TIMESTAMP WHERE room_id = ?",
     ).bind(roomId),
@@ -1231,6 +1237,7 @@ export async function markAttachmentsReferenced(
       (statement) => statement.run(),
     ),
   );
+  await assertAttachmentsReferenced(env, auth, roomId, attachmentIds);
 }
 
 export function markAttachmentsReferencedStatements(
@@ -1282,6 +1289,50 @@ async function assertAttachmentsReferenceable(
       "All attachments must be uploaded by the sender before they can be referenced",
     );
   }
+}
+
+async function assertAttachmentsReferenced(
+  env: Env,
+  auth: AuthContext,
+  roomId: string,
+  attachmentIds: string[],
+): Promise<void> {
+  const ids = uniqueStrings(attachmentIds);
+  if (!ids.length) return;
+  const placeholders = ids.map(() => "?").join(", ");
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT COUNT(DISTINCT attachment_id) AS count
+     FROM attachments
+     WHERE attachment_id IN (${placeholders})
+       AND room_id = ?
+       AND uploader_account_id = ?
+       AND state = 'referenced'
+       AND original_object_key IS NOT NULL
+       AND original_bytes IS NOT NULL`,
+  )
+    .bind(...ids, roomId, auth.account.account_id)
+    .first<{ count: number }>();
+  if (Number(row?.count ?? 0) !== ids.length) {
+    throw new HttpError(
+      409,
+      "attachment_not_referenceable",
+      "All attachments must remain referenced before a message can use them",
+    );
+  }
+}
+
+async function purgeMessageAfterAttachmentReferenceFailure(
+  env: Env,
+  envelopeId: string,
+): Promise<void> {
+  await env.CONTROL_DB.prepare(
+    `UPDATE message_envelopes
+     SET state = 'purged'
+     WHERE envelope_id = ?
+       AND state NOT IN ('expired', 'purged')`,
+  )
+    .bind(envelopeId)
+    .run();
 }
 
 async function assertAttachmentCountWithinPolicy(

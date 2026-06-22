@@ -11,7 +11,7 @@ PR 1 of the media/calling roadmap added the backend foundation for optimized att
 - Uploads stream request bodies to R2 when `Content-Length` is available; the fallback path still buffers to preserve compatibility with clients that cannot provide a length.
 - `expectedBytes` is a total attachment budget across all variants. Replacing a variant subtracts the previous byte count before applying the new one.
 - Preview or thumbnail uploads do not make an attachment sendable. The primary `original` variant must be uploaded before completion or message reference.
-- Generic attachment delete is pre-reference cleanup only: allocated and uploaded-but-unreferenced attachments may be deleted, which deletes all known variant objects. Referenced attachments return `409 attachment_already_referenced`; deleted, expired, quarantined, or otherwise invalid rows return `409 attachment_not_deletable`.
+- Generic attachment delete and completion are pre-reference cleanup/finalization paths only: allocated and uploaded-but-unreferenced attachments may be deleted, and uploaded-but-unreferenced attachments may be completed. Referenced attachments return `409 attachment_already_referenced` for delete or repeat completion; deleted, expired, quarantined, or otherwise invalid rows return `409 attachment_not_deletable` or `409 attachment_not_referenceable` depending on the attempted operation.
 - Allocation enforces a small pending-attachment cap per device, a policy max attachments per message, policy image dimensions, and policy daily expected-byte quotas per account and room.
 - Maintenance cleanup deletes known variant objects for expired attachments, abandoned allocated attachments, and uploaded-but-never-referenced attachments before marking those rows expired.
 

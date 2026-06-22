@@ -29,8 +29,8 @@ The active implementation focuses on curlable, provider-light backend contracts:
 - Device key-package metadata for later cryptographic clients.
 - Direct and group rooms.
 - Room membership, roles, removal, leaving, archiving, and ownership transfer.
-- Opaque encrypted message envelopes with idempotency, per-room sequencing, sync, and acknowledgements.
-- Encrypted attachment allocation, Worker-mediated R2 upload/download, completion, deletion, and metadata.
+- Opaque message envelopes with idempotency, per-room sequencing, sync, and acknowledgements. MLS/E2EE payload semantics remain future work.
+- Private opaque attachment allocation, Worker-mediated R2 upload/download, completion, deletion, and metadata.
 - Sidebar collections as user-owned room organization metadata.
 - Agent request submission, admin review, and manual agent principal creation.
 
@@ -40,4 +40,4 @@ The active implementation focuses on curlable, provider-light backend contracts:
 - Realtime delivery now uses Durable Object WebSocket event hints to wake the HTTP sync path. The core room/message data model is unchanged, and Conversation Durable Objects coordinate message writes without becoming a read source.
 - Agent support is metadata-first. Agents can exist as principals and room members, but no runtime is contacted or executed.
 - Attachments are uploaded through the Worker for curlability. Direct-to-R2 upload authorization can be added later when frontend and CORS details matter.
-- The backend continues to treat message and attachment content as opaque encrypted data. It stores routing metadata, ciphertext, ciphertext size, and lifecycle state only.
+- The backend continues to treat message and attachment content as opaque data. It stores routing metadata, envelope payload, payload size, attachment metadata, and lifecycle state only; MLS/E2EE and client-side attachment encryption remain future client-security work.

@@ -25,6 +25,9 @@ const CONNECTABLE_STATUSES: CallStatus[] = ["ringing", "active"];
 const REALTIME_PROVIDER = "cloudflare_realtime" as const;
 const DEFAULT_REALTIME_API_BASE = "https://rtc.live.cloudflare.com/v1";
 const FEATURE_DISABLED_VALUES = new Set(["0", "false", "off", "disabled", "no"]);
+const CLIENT_USAGE_REPORT_SOURCE = "client_estimate" as const;
+const MAX_USAGE_REPORT_DURATION_MS = 24 * 60 * 60 * 1000;
+const MAX_USAGE_REPORT_BYTES = 50 * 1024 * 1024 * 1024;
 
 export type CallMediaMutationRunner = (
   operation: string,
@@ -462,6 +465,7 @@ export async function getRealtimeSessionConfig(
       runMediaMutation,
     );
   }
+  const requestedSessionDescription = parseOptionalSessionDescription(body);
 
   const existingSession = await activeRealtimeSessionForParticipant(
     env,
@@ -469,6 +473,62 @@ export async function getRealtimeSessionConfig(
     participant.call_participant_id,
   );
   if (existingSession) {
+    if (requestedSessionDescription) {
+      const payload = await realtimeProviderRequest(
+        env,
+        auth,
+        call,
+        participant,
+        "session.renegotiate",
+        config,
+        `/sessions/${encodeURIComponent(existingSession.provider_session_id)}/renegotiate`,
+        {
+          method: "PUT",
+          body: { sessionDescription: requestedSessionDescription },
+        },
+        runMediaMutation,
+      );
+      try {
+        await commitCallMediaMutation(
+          env,
+          auth,
+          call,
+          "call.media.renegotiate.record",
+          { providerSessionId: existingSession.provider_session_id },
+          runMediaMutation,
+          async () => {
+            await recordRealtimeRenegotiated(
+              env,
+              auth,
+              call,
+              participant,
+              existingSession.provider_session_id,
+            );
+          },
+        );
+      } catch (error) {
+        await recordProviderCommitFailure(env, auth, call, {
+          endpoint: "session.renegotiate",
+          providerSessionId: existingSession.provider_session_id,
+          cleanupAttempted: false,
+          cleanupSucceeded: false,
+          reason: errorMessage(error),
+        });
+        throw error;
+      }
+      const availableTracks = await availableRealtimeTracks(
+        env,
+        callId,
+        existingSession.provider_session_id,
+      );
+      return realtimeResponse(env, call, config, {
+        session: publicRealtimeSession(existingSession),
+        sessionDescription: payload.sessionDescription ?? null,
+        tracks: availableTracks,
+        availableTracks,
+        message: "Realtime session renegotiated",
+      });
+    }
     const availableTracks = await availableRealtimeTracks(
       env,
       callId,
@@ -494,23 +554,34 @@ export async function getRealtimeSessionConfig(
       method: "POST",
       query: { correlationId: `${callId}:${participant.call_participant_id}` },
       body: {
-        sessionDescription: parseOptionalSessionDescription(body),
+        sessionDescription: requestedSessionDescription,
       },
     },
     runMediaMutation,
   );
   const providerSessionId = stringPayload(payload, "sessionId", "realtime_session_missing");
-  await commitCallMediaMutation(
-    env,
-    auth,
-    call,
-    "call.media.session.upsert",
-    { providerSessionId },
-    runMediaMutation,
-    async () => {
-      await upsertRealtimeSession(env, auth, participant, providerSessionId);
-    },
-  );
+  try {
+    await commitCallMediaMutation(
+      env,
+      auth,
+      call,
+      "call.media.session.upsert",
+      { providerSessionId },
+      runMediaMutation,
+      async () => {
+        await upsertRealtimeSession(env, auth, participant, providerSessionId);
+      },
+    );
+  } catch (error) {
+    await recordProviderCommitFailure(env, auth, call, {
+      endpoint: "session",
+      providerSessionId,
+      cleanupAttempted: false,
+      cleanupSucceeded: false,
+      reason: errorMessage(error),
+    });
+    throw error;
+  }
   const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
@@ -592,20 +663,37 @@ export async function getRealtimeTrackConfig(
     runMediaMutation,
   );
   const tracks = tracksFromPayload(payload, requestedTracks);
-  await commitCallMediaMutation(
-    env,
-    auth,
-    call,
-    "call.media.tracks.upsert",
-    {
+  try {
+    await commitCallMediaMutation(
+      env,
+      auth,
+      call,
+      "call.media.tracks.upsert",
+      {
+        providerSessionId,
+        tracks,
+      },
+      runMediaMutation,
+      async () => {
+        await upsertRealtimeTracks(env, auth, session, tracks);
+      },
+    );
+  } catch (error) {
+    const cleanup = await bestEffortCloseProviderTracks(
+      env,
+      config,
       providerSessionId,
       tracks,
-    },
-    runMediaMutation,
-    async () => {
-      await upsertRealtimeTracks(env, auth, session, tracks);
-    },
-  );
+    );
+    await recordProviderCommitFailure(env, auth, call, {
+      endpoint: "tracks",
+      providerSessionId,
+      cleanupAttempted: cleanup.attempted,
+      cleanupSucceeded: cleanup.succeeded,
+      reason: errorMessage(error),
+    });
+    throw error;
+  }
   if (tracks.some((track) => track.location === "local")) {
     await emitCallEvent(env, call.room_id, {
       type: "call.updated",
@@ -667,17 +755,28 @@ export async function renegotiateRealtimeSession(
     },
     runMediaMutation,
   );
-  await commitCallMediaMutation(
-    env,
-    auth,
-    call,
-    "call.media.renegotiate.record",
-    { providerSessionId },
-    runMediaMutation,
-    async () => {
-      await recordRealtimeRenegotiated(env, auth, call, participant, providerSessionId);
-    },
-  );
+  try {
+    await commitCallMediaMutation(
+      env,
+      auth,
+      call,
+      "call.media.renegotiate.record",
+      { providerSessionId },
+      runMediaMutation,
+      async () => {
+        await recordRealtimeRenegotiated(env, auth, call, participant, providerSessionId);
+      },
+    );
+  } catch (error) {
+    await recordProviderCommitFailure(env, auth, call, {
+      endpoint: "renegotiate",
+      providerSessionId,
+      cleanupAttempted: false,
+      cleanupSucceeded: false,
+      reason: errorMessage(error),
+    });
+    throw error;
+  }
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(env, call, config, {
@@ -734,20 +833,31 @@ export async function closeRealtimeTracks(
     },
     runMediaMutation,
   );
-  await commitCallMediaMutation(
-    env,
-    auth,
-    call,
-    "call.media.tracks.close",
-    {
+  try {
+    await commitCallMediaMutation(
+      env,
+      auth,
+      call,
+      "call.media.tracks.close",
+      {
+        providerSessionId,
+        tracks,
+      },
+      runMediaMutation,
+      async () => {
+        await markRealtimeTracksClosed(env, session, tracks);
+      },
+    );
+  } catch (error) {
+    await recordProviderCommitFailure(env, auth, call, {
+      endpoint: "tracks.close",
       providerSessionId,
-      tracks,
-    },
-    runMediaMutation,
-    async () => {
-      await markRealtimeTracksClosed(env, session, tracks);
-    },
-  );
+      cleanupAttempted: false,
+      cleanupSucceeded: false,
+      reason: errorMessage(error),
+    });
+    throw error;
+  }
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(env, call, config, {
@@ -769,18 +879,35 @@ export async function recordCallUsageReport(
   await requireRoomMembership(env, auth, call.room_id);
   const participant = await requireCurrentParticipant(env, auth, callId);
   const report = parseCallUsageReport(body);
+  if (report.providerSessionId) {
+    await requireOwnedRealtimeSessionForUsage(
+      env,
+      auth,
+      callId,
+      report.providerSessionId,
+    );
+  }
+  const existingReport = await existingCallUsageReport(
+    env,
+    call.call_id,
+    auth.device.device_id,
+    report.providerSessionId,
+  );
+  if (existingReport) {
+    return { usageReport: publicCallUsageReport(existingReport) };
+  }
   const usageReportId = randomId("cur");
   const createdAt = new Date().toISOString();
 
-  await env.CONTROL_DB.prepare(
-    `INSERT INTO call_usage_reports (
+  const insertResult = await env.CONTROL_DB.prepare(
+    `INSERT OR IGNORE INTO call_usage_reports (
       call_usage_report_id, call_id, account_id, principal_id, device_id,
       provider, provider_session_id, duration_ms, audio_duration_ms,
       video_duration_ms, screen_duration_ms, bytes_sent_estimate,
       bytes_received_estimate, relay_likely, candidate_type,
-      provider_egress_bytes, provider_billing_source, tracks_json,
-      network_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      provider_egress_bytes, provider_billing_source, source, tracks_json,
+      network_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       usageReportId,
@@ -798,12 +925,30 @@ export async function recordCallUsageReport(
       report.bytesReceivedEstimate,
       report.relayLikely ? 1 : 0,
       report.candidateType,
-      report.providerEgressBytes,
-      report.providerBillingSource,
+      null,
+      null,
+      report.source,
       JSON.stringify(report.tracks),
       report.network ? JSON.stringify(report.network) : null,
+      createdAt,
     )
     .run();
+  if (d1Changes(insertResult) === 0) {
+    const currentReport = await existingCallUsageReport(
+      env,
+      call.call_id,
+      auth.device.device_id,
+      report.providerSessionId,
+    );
+    if (currentReport) {
+      return { usageReport: publicCallUsageReport(currentReport) };
+    }
+    throw new HttpError(
+      409,
+      "usage_report_conflict",
+      "Usage report already exists",
+    );
+  }
 
   await insertCallEvent(env, auth, call.call_id, "call.usage.reported", {
     roomId: call.room_id,
@@ -814,25 +959,67 @@ export async function recordCallUsageReport(
     bytesSentEstimate: report.bytesSentEstimate,
     bytesReceivedEstimate: report.bytesReceivedEstimate,
     relayLikely: report.relayLikely,
+    source: report.source,
   });
 
   return {
-    usageReport: {
-      usageReportId,
-      callId: call.call_id,
+    usageReport: publicCallUsageReport({
+      call_usage_report_id: usageReportId,
+      call_id: call.call_id,
       provider: REALTIME_PROVIDER,
-      providerSessionId: report.providerSessionId,
-      durationMs: report.durationMs,
-      audioDurationMs: report.audioDurationMs,
-      videoDurationMs: report.videoDurationMs,
-      screenDurationMs: report.screenDurationMs,
-      bytesSentEstimate: report.bytesSentEstimate,
-      bytesReceivedEstimate: report.bytesReceivedEstimate,
-      relayLikely: report.relayLikely,
-      candidateType: report.candidateType,
-      createdAt,
-    },
+      provider_session_id: report.providerSessionId,
+      duration_ms: report.durationMs,
+      audio_duration_ms: report.audioDurationMs,
+      video_duration_ms: report.videoDurationMs,
+      screen_duration_ms: report.screenDurationMs,
+      bytes_sent_estimate: report.bytesSentEstimate,
+      bytes_received_estimate: report.bytesReceivedEstimate,
+      relay_likely: report.relayLikely ? 1 : 0,
+      candidate_type: report.candidateType,
+      source: report.source,
+      created_at: createdAt,
+    }),
   };
+}
+
+function publicCallUsageReport(row: Record<string, unknown>): JsonObject {
+  return {
+    usageReportId: String(row.call_usage_report_id),
+    callId: String(row.call_id),
+    provider: REALTIME_PROVIDER,
+    providerSessionId: typeof row.provider_session_id === "string" ? row.provider_session_id : null,
+    source: row.source === "provider_authoritative" ? "provider_authoritative" : CLIENT_USAGE_REPORT_SOURCE,
+    durationMs: Number(row.duration_ms ?? 0),
+    audioDurationMs: Number(row.audio_duration_ms ?? 0),
+    videoDurationMs: Number(row.video_duration_ms ?? 0),
+    screenDurationMs: Number(row.screen_duration_ms ?? 0),
+    bytesSentEstimate: Number(row.bytes_sent_estimate ?? 0),
+    bytesReceivedEstimate: Number(row.bytes_received_estimate ?? 0),
+    relayLikely: Number(row.relay_likely ?? 0) === 1,
+    candidateType: typeof row.candidate_type === "string" ? row.candidate_type : null,
+    createdAt: String(row.created_at),
+  };
+}
+
+async function existingCallUsageReport(
+  env: Env,
+  callId: string,
+  deviceId: string,
+  providerSessionId: string | null,
+): Promise<Record<string, unknown> | null> {
+  return (
+    (await env.CONTROL_DB.prepare(
+      `SELECT *
+       FROM call_usage_reports
+       WHERE call_id = ?
+         AND device_id = ?
+         AND COALESCE(provider_session_id, '') = COALESCE(?, '')
+       ORDER BY created_at ASC
+       LIMIT 1`,
+    )
+      .bind(callId, deviceId, providerSessionId)
+      .first<Record<string, unknown>>()) ?? null
+  );
 }
 
 export async function getCall(env: Env, callId: string): Promise<CallRow> {
@@ -1471,6 +1658,7 @@ interface CallFeatureFlags extends JsonObject {
 
 interface ParsedCallUsageReport {
   providerSessionId: string | null;
+  source: typeof CLIENT_USAGE_REPORT_SOURCE;
   durationMs: number;
   audioDurationMs: number;
   videoDurationMs: number;
@@ -1479,8 +1667,6 @@ interface ParsedCallUsageReport {
   bytesReceivedEstimate: number;
   relayLikely: boolean;
   candidateType: string | null;
-  providerEgressBytes: number | null;
-  providerBillingSource: string | null;
   tracks: JsonObject[];
   network: JsonObject | null;
 }
@@ -1521,15 +1707,20 @@ export function getCallRealtimeStatus(env: Env): JsonObject {
   const turnConfigured = config.iceServers.some((server) => Array.isArray(server.urls)
     ? server.urls.some((url) => typeof url === "string" && url.startsWith("turn"))
     : typeof server.urls === "string" && server.urls.startsWith("turn"));
-  const lastProviderCheckStatus = !features.realtimeMediaEnabled
+  const configurationStatus = !features.realtimeMediaEnabled
     ? "disabled"
     : config.configured
       ? "configured"
       : "not_configured";
+  const checkedAt = new Date().toISOString();
   return {
     provider: REALTIME_PROVIDER,
     configured: config.configured,
-    status: lastProviderCheckStatus,
+    status: configurationStatus,
+    configurationStatus,
+    configurationCheckedAt: checkedAt,
+    providerHealthStatus: "not_checked",
+    providerHealthCheckedAt: null,
     mock: config.mock,
     apiBase: config.apiBase,
     turnConfigured,
@@ -1539,8 +1730,8 @@ export function getCallRealtimeStatus(env: Env): JsonObject {
       appSecretConfigured: Boolean(config.appSecret) || config.mock,
       turnCredentialsConfigured: turnConfigured,
     },
-    lastProviderCheckAt: new Date().toISOString(),
-    lastProviderCheckStatus,
+    lastProviderCheckAt: null,
+    lastProviderCheckStatus: "not_checked",
     estimatedSfuTurnEgressStatus: "unavailable_provider_metric",
   };
 }
@@ -1654,6 +1845,61 @@ async function realtimeProviderRequest(
     );
     throw error;
   }
+}
+
+async function bestEffortCloseProviderTracks(
+  env: Env,
+  config: RealtimeConfig,
+  providerSessionId: string,
+  tracks: RealtimeTrackInput[],
+): Promise<{ attempted: boolean; succeeded: boolean }> {
+  const mids = tracks
+    .map((track) => track.mid)
+    .filter((mid): mid is string => typeof mid === "string" && mid.length > 0);
+  if (!mids.length) return { attempted: false, succeeded: false };
+  try {
+    await realtimeApiRequest(
+      env,
+      config,
+      `/sessions/${encodeURIComponent(providerSessionId)}/tracks/close`,
+      {
+        method: "PUT",
+        body: {
+          tracks: mids.map((mid) => ({ mid })),
+          force: true,
+        },
+      },
+    );
+    return { attempted: true, succeeded: true };
+  } catch (error) {
+    console.warn("best-effort realtime provider track cleanup failed", error);
+    return { attempted: true, succeeded: false };
+  }
+}
+
+async function recordProviderCommitFailure(
+  env: Env,
+  auth: AuthContext,
+  call: CallRow,
+  details: {
+    endpoint: string;
+    providerSessionId: string;
+    cleanupAttempted: boolean;
+    cleanupSucceeded: boolean;
+    reason: string;
+  },
+): Promise<void> {
+  await insertCallEvent(env, auth, call.call_id, "call.media.provider_orphan_risk", {
+    roomId: call.room_id,
+    provider: REALTIME_PROVIDER,
+    ...details,
+  }).catch((error) => {
+    console.warn("could not record realtime provider orphan risk", error);
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function recordRealtimeMediaFailure(
@@ -2042,6 +2288,13 @@ function parseCloseRealtimeTracks(body: Record<string, unknown>): CloseRealtimeT
 
 function parseCallUsageReport(body: Record<string, unknown>): ParsedCallUsageReport {
   const providerSessionId = stringField(body, "sessionId", { max: 160 }) ?? null;
+  if (body.providerEgressBytes !== undefined || body.providerBillingSource !== undefined) {
+    throw new HttpError(
+      400,
+      "provider_usage_not_authoritative",
+      "Provider billing metrics must come from an authoritative provider source",
+    );
+  }
   const rawTracks = body.tracks;
   if (rawTracks !== undefined && !Array.isArray(rawTracks)) {
     throw new HttpError(400, "invalid_field", "Field must be an array: tracks");
@@ -2067,8 +2320,8 @@ function parseCallUsageReport(body: Record<string, unknown>): ParsedCallUsageRep
     if (direction !== "send" && direction !== "receive") {
       throw new HttpError(400, "invalid_field", `Field is invalid: tracks[${index}].direction`);
     }
-    const durationMs = optionalIntegerField(track, "durationMs", 0, 7 * 24 * 60 * 60_000) ?? 0;
-    const bytes = optionalIntegerField(track, "bytes", 0, Number.MAX_SAFE_INTEGER) ?? 0;
+    const durationMs = optionalIntegerField(track, "durationMs", 0, MAX_USAGE_REPORT_DURATION_MS) ?? 0;
+    const bytes = optionalIntegerField(track, "bytes", 0, MAX_USAGE_REPORT_BYTES) ?? 0;
     const qualityLayer = stringField(track, "qualityLayer", { max: 40 }) ?? null;
     if (kind === "audio") audioDurationMs += durationMs;
     else if (kind === "video") videoDurationMs += durationMs;
@@ -2087,13 +2340,14 @@ function parseCallUsageReport(body: Record<string, unknown>): ParsedCallUsageRep
   const network = optionalObject(body, "network");
   const relayLikely = network ? optionalBoolean(network, "relayLikely") === true : false;
   const candidateType = network ? stringField(network, "candidateType", { max: 40 }) ?? null : null;
-  const declaredDurationMs = optionalIntegerField(body, "durationMs", 0, 7 * 24 * 60 * 60_000);
+  const declaredDurationMs = optionalIntegerField(body, "durationMs", 0, MAX_USAGE_REPORT_DURATION_MS);
   const durationMs = declaredDurationMs ?? Math.max(audioDurationMs, videoDurationMs, screenDurationMs, 0);
-  const declaredBytesSent = optionalIntegerField(body, "bytesSentEstimate", 0, Number.MAX_SAFE_INTEGER);
-  const declaredBytesReceived = optionalIntegerField(body, "bytesReceivedEstimate", 0, Number.MAX_SAFE_INTEGER);
+  const declaredBytesSent = optionalIntegerField(body, "bytesSentEstimate", 0, MAX_USAGE_REPORT_BYTES);
+  const declaredBytesReceived = optionalIntegerField(body, "bytesReceivedEstimate", 0, MAX_USAGE_REPORT_BYTES);
 
   return {
     providerSessionId,
+    source: CLIENT_USAGE_REPORT_SOURCE,
     durationMs,
     audioDurationMs,
     videoDurationMs,
@@ -2102,15 +2356,13 @@ function parseCallUsageReport(body: Record<string, unknown>): ParsedCallUsageRep
     bytesReceivedEstimate: declaredBytesReceived ?? bytesReceivedEstimate,
     relayLikely,
     candidateType,
-    providerEgressBytes: optionalIntegerField(body, "providerEgressBytes", 0, Number.MAX_SAFE_INTEGER) ?? null,
-    providerBillingSource: stringField(body, "providerBillingSource", { max: 80 }) ?? null,
     tracks,
     network: network
       ? {
           candidateType,
           relayLikely,
           roundTripTimeMs: optionalIntegerField(network, "roundTripTimeMs", 0, 60_000) ?? null,
-          packetsLost: optionalIntegerField(network, "packetsLost", 0, Number.MAX_SAFE_INTEGER) ?? null,
+          packetsLost: optionalIntegerField(network, "packetsLost", 0, MAX_USAGE_REPORT_BYTES) ?? null,
         }
       : null,
   };
@@ -2249,6 +2501,42 @@ async function requireOwnedRealtimeSession(
        AND principal_id = ?
        AND device_id = ?
        AND status = 'active'
+     LIMIT 1`,
+  )
+    .bind(
+      callId,
+      REALTIME_PROVIDER,
+      providerSessionId,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      auth.device.device_id,
+    )
+    .first<CallRealtimeSessionRow>();
+  if (!session) {
+    throw new HttpError(
+      404,
+      "realtime_session_not_found",
+      "Realtime session not found",
+    );
+  }
+  return session;
+}
+
+async function requireOwnedRealtimeSessionForUsage(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  providerSessionId: string,
+): Promise<CallRealtimeSessionRow> {
+  const session = await env.CONTROL_DB.prepare(
+    `SELECT *
+     FROM call_realtime_sessions
+     WHERE call_id = ?
+       AND provider = ?
+       AND provider_session_id = ?
+       AND account_id = ?
+       AND principal_id = ?
+       AND device_id = ?
      LIMIT 1`,
   )
     .bind(

@@ -12,7 +12,7 @@ mock testing.
 - Set `CLOUDFLARE_REALTIME_APP_SECRET` as a secret. Do not commit it.
 - Leave `CLOUDFLARE_REALTIME_API_BASE` unset unless Cloudflare directs a different stable endpoint.
 - Configure `CLOUDFLARE_REALTIME_TURN_USERNAME` and `CLOUDFLARE_REALTIME_TURN_CREDENTIAL` only when TURN credentials are available for the environment.
-- Confirm `GET /v1/admin/calls/realtime-status` returns `configured: true` and the expected feature flags.
+- Confirm `GET /v1/admin/calls/realtime-status` returns `configured: true`, `configurationStatus: "configured"`, `providerHealthStatus: "not_checked"`, and the expected feature flags. This endpoint confirms configuration state, not live provider reachability.
 
 ## Feature Flags
 

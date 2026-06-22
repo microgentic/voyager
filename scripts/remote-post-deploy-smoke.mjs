@@ -482,7 +482,7 @@ async function runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders) 
     method: "POST",
     headers: ownerHeaders,
     json: {
-      sessionId: providerSessionId ?? `${runId}-unconfigured-session`,
+      ...(providerSessionId ? { sessionId: providerSessionId } : {}),
       durationMs: 15_000,
       bytesSentEstimate: 2_048,
       bytesReceivedEstimate: 4_096,
