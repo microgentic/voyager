@@ -45,6 +45,14 @@
 	function selectedValue(event: Event): string {
 		return (event.currentTarget as HTMLSelectElement).value;
 	}
+
+	function handleClose() {
+		if (calls.prejoinBusy) {
+			modalOpen = true;
+			return;
+		}
+		calls.cancelPrejoin();
+	}
 </script>
 
 <Modal
@@ -53,7 +61,7 @@
 	description={roomName}
 	size="lg"
 	hideClose={calls.prejoinBusy}
-	onClose={() => calls.cancelPrejoin()}
+	onClose={handleClose}
 >
 	<div class="space-y-4">
 		{#if calls.prejoin?.callType === 'video'}

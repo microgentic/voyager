@@ -141,6 +141,7 @@ class CallsStore {
 	private subscribing = false;
 	private mediaHeartbeat: ReturnType<typeof setInterval> | null = null;
 	private remoteAudioElements = new Set<HTMLMediaElement>();
+	private prejoinPreviewRequestId = 0;
 
 	constructor() {
 		this.loadDevicePreferences();
@@ -221,6 +222,7 @@ class CallsStore {
 				videoInputId: options.videoInputId
 			});
 			await this.ensureMicrophonePermission(options.audioInputId);
+			this.cancelPendingPrejoinPreview();
 			this.releasePrejoinPreview();
 			const connected =
 				prejoin.mode === 'start' && prejoin.room
@@ -393,19 +395,28 @@ class CallsStore {
 	}
 
 	private async startPrejoinPreview(): Promise<void> {
-		if (!this.prejoin || this.prejoin.callType !== 'video') return;
+		const prejoin = this.prejoin;
+		if (!prejoin || prejoin.callType !== 'video') return;
+		const requestId = ++this.prejoinPreviewRequestId;
 		this.releasePrejoinPreview();
 		this.prejoinError = null;
+		let stream: MediaStream | null = null;
 		try {
-			const stream = await navigator.mediaDevices.getUserMedia({
+			stream = await navigator.mediaDevices.getUserMedia({
 				audio: false,
 				video: videoConstraints(this.cameraFacingMode, this.prejoinVideoInputId || undefined)
 			});
 			if (!stream.getVideoTracks()[0]) throw new Error('Camera did not provide a video track.');
+			if (requestId !== this.prejoinPreviewRequestId || this.prejoin !== prejoin) {
+				for (const track of stream.getTracks()) track.stop();
+				return;
+			}
 			this.prejoinPreviewStream = stream;
 			this.prejoinCameraEnabled = true;
 			await this.refreshCallDevices({ quiet: true });
 		} catch (error) {
+			for (const track of stream?.getTracks() ?? []) track.stop();
+			if (requestId !== this.prejoinPreviewRequestId || this.prejoin !== prejoin) return;
 			this.releasePrejoinPreview();
 			this.prejoinCameraEnabled = false;
 			this.prejoinError = displayError(error, 'Could not start camera preview.');
@@ -419,8 +430,13 @@ class CallsStore {
 	}
 
 	private stopPrejoinPreview(): void {
+		this.cancelPendingPrejoinPreview();
 		this.releasePrejoinPreview();
 		this.prejoinCameraEnabled = false;
+	}
+
+	private cancelPendingPrejoinPreview(): void {
+		this.prejoinPreviewRequestId += 1;
 	}
 
 	private loadDevicePreferences(): void {
