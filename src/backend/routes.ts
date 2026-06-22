@@ -63,6 +63,7 @@ import {
   uploadAttachmentBlob,
   addSidebarCollectionItem,
   closeRealtimeTracks,
+  recordCallUsageReport,
   runCleanup,
   markThreadRead,
   renegotiateRealtimeSession,
@@ -669,6 +670,18 @@ export async function handleBackendFirstRoutes(
         },
       );
     }
+  }
+
+  const callUsageReportMatch = routeParams(
+    /^\/v1\/calls\/([^/]+)\/usage-report$/,
+    url.pathname,
+  );
+  if (callUsageReportMatch) {
+    requireMethod(request, "POST");
+    return json({
+      ok: true,
+      ...(await recordCallUsageReport(env, auth, callUsageReportMatch[1], await readJsonObject(request))),
+    });
   }
 
   const callMatch = routeParams(/^\/v1\/calls\/([^/]+)$/, url.pathname);

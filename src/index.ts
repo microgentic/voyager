@@ -31,6 +31,7 @@ import {
   updateAccountPolicy
 } from "./db";
 import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
+import { getCallRealtimeStatus } from "./backend/operations";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import { handleRealtimeConnect, REALTIME_PROTOCOL, RealtimeMailbox } from "./realtime";
@@ -578,6 +579,12 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "GET");
     requireAdmin(auth, ["quota_operator", "security_admin", "auditor"]);
     return json({ ok: true, usage: await getUsage(env) });
+  }
+
+  if (url.pathname === "/v1/admin/calls/realtime-status") {
+    requireMethod(request, "GET");
+    requireAdmin(auth, ["quota_operator", "security_admin", "auditor"]);
+    return json({ ok: true, realtime: getCallRealtimeStatus(env) });
   }
 
   if (url.pathname === "/v1/admin/audit-events") {

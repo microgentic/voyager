@@ -541,9 +541,18 @@ export interface CallRealtimeCloseTracksInput {
 	force?: boolean;
 }
 
+export interface CallFeatureFlags {
+	callsEnabled: boolean;
+	audioCallsEnabled: boolean;
+	videoCallsEnabled: boolean;
+	screenShareEnabled: boolean;
+	realtimeMediaEnabled: boolean;
+}
+
 export interface CallRealtimeConfig {
 	provider: 'cloudflare_realtime';
 	configured: boolean;
+	features?: CallFeatureFlags;
 	callId: string;
 	callType: CallType;
 	status: CallStatus;
@@ -554,6 +563,46 @@ export interface CallRealtimeConfig {
 	availableTracks?: CallRealtimeTrack[];
 	requiresImmediateRenegotiation?: boolean;
 	message: string;
+}
+
+export interface CallUsageReportTrackInput {
+	kind: CallRealtimeTrackKind;
+	direction: 'send' | 'receive';
+	durationMs?: number;
+	bytes?: number;
+	qualityLayer?: string | null;
+}
+
+export interface CallUsageReportInput {
+	sessionId?: string | null;
+	durationMs?: number;
+	bytesSentEstimate?: number;
+	bytesReceivedEstimate?: number;
+	tracks?: CallUsageReportTrackInput[];
+	network?: {
+		candidateType?: string | null;
+		relayLikely?: boolean;
+		roundTripTimeMs?: number | null;
+		packetsLost?: number | null;
+	};
+	providerEgressBytes?: number | null;
+	providerBillingSource?: string | null;
+}
+
+export interface CallUsageReport {
+	usageReportId: string;
+	callId: string;
+	provider: 'cloudflare_realtime';
+	providerSessionId: string | null;
+	durationMs: number;
+	audioDurationMs: number;
+	videoDurationMs: number;
+	screenDurationMs: number;
+	bytesSentEstimate: number;
+	bytesReceivedEstimate: number;
+	relayLikely: boolean;
+	candidateType: string | null;
+	createdAt: string;
 }
 
 export interface SendMessageInput {

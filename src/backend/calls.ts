@@ -24,6 +24,7 @@ const LIVE_CALL_STATUSES: CallStatus[] = ["ringing", "active"];
 const CONNECTABLE_STATUSES: CallStatus[] = ["ringing", "active"];
 const REALTIME_PROVIDER = "cloudflare_realtime" as const;
 const DEFAULT_REALTIME_API_BASE = "https://rtc.live.cloudflare.com/v1";
+const FEATURE_DISABLED_VALUES = new Set(["0", "false", "off", "disabled", "no"]);
 
 export type CallMediaMutationRunner = (
   operation: string,
@@ -38,6 +39,8 @@ export async function createCall(
   body: Record<string, unknown>,
 ): Promise<JsonObject> {
   const callType = parseCallType(body);
+  assertCallsEnabled(env);
+  assertCallTypeEnabled(env, callType);
   await requireActiveRoom(env, roomId);
   await requireRoomMembership(env, auth, roomId);
   await assertNoLiveCallInRoom(env, roomId);
@@ -153,6 +156,8 @@ export async function joinCall(
   callId: string,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
+  assertCallsEnabled(env);
+  assertCallTypeEnabled(env, call.call_type);
   await requireActiveRoom(env, call.room_id);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
@@ -262,6 +267,7 @@ export async function declineCall(
   callId: string,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
+  assertCallsEnabled(env);
   await requireRoomMembership(env, auth, call.room_id);
   if (!LIVE_CALL_STATUSES.includes(call.status)) {
     return getPublicCall(env, auth, callId);
@@ -313,6 +319,8 @@ export async function setCallMuted(
   muted: boolean,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
+  assertCallsEnabled(env);
+  assertCallTypeEnabled(env, call.call_type);
   await requireRoomMembership(env, auth, call.room_id);
   if (!LIVE_CALL_STATUSES.includes(call.status)) {
     throw new HttpError(409, "call_not_live", "Call is not live");
@@ -370,6 +378,11 @@ export async function updateCurrentCallParticipant(
       "Missing participant update field",
     );
   }
+  if (!heartbeat || muted !== undefined || audioEnabled !== undefined || videoEnabled !== undefined || screenEnabled !== undefined) {
+    assertCallsEnabled(env);
+  }
+  if (videoEnabled === true) assertVideoCallsEnabled(env);
+  if (screenEnabled === true) assertScreenShareEnabled(env);
 
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
@@ -435,6 +448,7 @@ export async function getRealtimeSessionConfig(
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
+  assertRealtimeMediaEnabled(env);
   const participant = await requireConnectedParticipant(env, auth, callId);
   const config = realtimeConfig(env);
   if (!config.configured) {
@@ -460,7 +474,7 @@ export async function getRealtimeSessionConfig(
       callId,
       existingSession.provider_session_id,
     );
-    return realtimeResponse(call, config, {
+    return realtimeResponse(env, call, config, {
       session: publicRealtimeSession(existingSession),
       tracks: availableTracks,
       availableTracks,
@@ -500,7 +514,7 @@ export async function getRealtimeSessionConfig(
   const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
-  return realtimeResponse(call, config, {
+  return realtimeResponse(env, call, config, {
     session: {
       ...publicRealtimeSession(session),
       sessionDescription: payload.sessionDescription ?? null,
@@ -521,6 +535,7 @@ export async function getRealtimeTrackConfig(
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
+  assertRealtimeMediaEnabled(env);
   const participant = await requireConnectedParticipant(env, auth, callId);
   const config = realtimeConfig(env);
   if (!config.configured) {
@@ -538,7 +553,7 @@ export async function getRealtimeTrackConfig(
   const providerSessionId = stringField(body, "sessionId", { max: 160 });
   if (!providerSessionId) {
     const availableTracks = await availableRealtimeTracks(env, callId);
-    return realtimeResponse(call, config, {
+    return realtimeResponse(env, call, config, {
       tracks: availableTracks,
       availableTracks,
       message: "Realtime tracks ready",
@@ -547,9 +562,10 @@ export async function getRealtimeTrackConfig(
 
   const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
   const requestedTracks = parseRealtimeTracks(body, call);
+  assertRealtimeTrackKindsEnabled(env, requestedTracks);
   if (requestedTracks.length === 0) {
     const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
-    return realtimeResponse(call, config, {
+    return realtimeResponse(env, call, config, {
       session: publicRealtimeSession(session),
       tracks: availableTracks,
       availableTracks,
@@ -600,7 +616,7 @@ export async function getRealtimeTrackConfig(
   }
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
-  return realtimeResponse(call, config, {
+  return realtimeResponse(env, call, config, {
     session: publicRealtimeSession(session),
     sessionDescription: payload.sessionDescription ?? null,
     requiresImmediateRenegotiation: payload.requiresImmediateRenegotiation === true,
@@ -620,6 +636,7 @@ export async function renegotiateRealtimeSession(
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
+  assertRealtimeMediaEnabled(env);
   const participant = await requireConnectedParticipant(env, auth, callId);
   const config = realtimeConfig(env);
   if (!config.configured) {
@@ -663,7 +680,7 @@ export async function renegotiateRealtimeSession(
   );
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
-  return realtimeResponse(call, config, {
+  return realtimeResponse(env, call, config, {
     session: publicRealtimeSession(session),
     sessionDescription: payload.sessionDescription ?? null,
     tracks: availableTracks,
@@ -681,6 +698,7 @@ export async function closeRealtimeTracks(
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
+  assertRealtimeMediaEnabled(env);
   const participant = await requireConnectedParticipant(env, auth, callId);
   const config = realtimeConfig(env);
   if (!config.configured) {
@@ -732,13 +750,89 @@ export async function closeRealtimeTracks(
   );
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
-  return realtimeResponse(call, config, {
+  return realtimeResponse(env, call, config, {
     session: publicRealtimeSession(session),
     sessionDescription: payload.sessionDescription ?? null,
     tracks: availableTracks,
     availableTracks,
     message: "Realtime tracks closed",
   });
+}
+
+export async function recordCallUsageReport(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const call = await getCall(env, callId);
+  await requireRoomMembership(env, auth, call.room_id);
+  const participant = await requireCurrentParticipant(env, auth, callId);
+  const report = parseCallUsageReport(body);
+  const usageReportId = randomId("cur");
+  const createdAt = new Date().toISOString();
+
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO call_usage_reports (
+      call_usage_report_id, call_id, account_id, principal_id, device_id,
+      provider, provider_session_id, duration_ms, audio_duration_ms,
+      video_duration_ms, screen_duration_ms, bytes_sent_estimate,
+      bytes_received_estimate, relay_likely, candidate_type,
+      provider_egress_bytes, provider_billing_source, tracks_json,
+      network_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      usageReportId,
+      call.call_id,
+      auth.account.account_id,
+      auth.principal.principal_id,
+      auth.device.device_id,
+      REALTIME_PROVIDER,
+      report.providerSessionId,
+      report.durationMs,
+      report.audioDurationMs,
+      report.videoDurationMs,
+      report.screenDurationMs,
+      report.bytesSentEstimate,
+      report.bytesReceivedEstimate,
+      report.relayLikely ? 1 : 0,
+      report.candidateType,
+      report.providerEgressBytes,
+      report.providerBillingSource,
+      JSON.stringify(report.tracks),
+      report.network ? JSON.stringify(report.network) : null,
+    )
+    .run();
+
+  await insertCallEvent(env, auth, call.call_id, "call.usage.reported", {
+    roomId: call.room_id,
+    callParticipantId: participant.call_participant_id,
+    provider: REALTIME_PROVIDER,
+    providerSessionId: report.providerSessionId,
+    durationMs: report.durationMs,
+    bytesSentEstimate: report.bytesSentEstimate,
+    bytesReceivedEstimate: report.bytesReceivedEstimate,
+    relayLikely: report.relayLikely,
+  });
+
+  return {
+    usageReport: {
+      usageReportId,
+      callId: call.call_id,
+      provider: REALTIME_PROVIDER,
+      providerSessionId: report.providerSessionId,
+      durationMs: report.durationMs,
+      audioDurationMs: report.audioDurationMs,
+      videoDurationMs: report.videoDurationMs,
+      screenDurationMs: report.screenDurationMs,
+      bytesSentEstimate: report.bytesSentEstimate,
+      bytesReceivedEstimate: report.bytesReceivedEstimate,
+      relayLikely: report.relayLikely,
+      candidateType: report.candidateType,
+      createdAt,
+    },
+  };
 }
 
 export async function getCall(env: Env, callId: string): Promise<CallRow> {
@@ -846,6 +940,60 @@ function parseCallType(body: Record<string, unknown>): CallType {
     throw new HttpError(400, "invalid_call_type", "Call type is invalid");
   }
   return value;
+}
+
+function callFeatureFlags(env: Env): CallFeatureFlags {
+  return {
+    callsEnabled: envFlagEnabled(env.CALLS_ENABLED, true),
+    audioCallsEnabled: envFlagEnabled(env.AUDIO_CALLS_ENABLED, true),
+    videoCallsEnabled: envFlagEnabled(env.VIDEO_CALLS_ENABLED, true),
+    screenShareEnabled: envFlagEnabled(env.SCREEN_SHARE_ENABLED, true),
+    realtimeMediaEnabled: envFlagEnabled(env.CALLS_REALTIME_MEDIA_ENABLED, true),
+  };
+}
+
+function envFlagEnabled(raw: string | undefined, fallback: boolean): boolean {
+  const value = trimmedEnv(raw);
+  if (value === undefined) return fallback;
+  return !FEATURE_DISABLED_VALUES.has(value.toLowerCase());
+}
+
+function assertCallsEnabled(env: Env): void {
+  if (!callFeatureFlags(env).callsEnabled) {
+    throw new HttpError(403, "feature_disabled", "Calls are disabled for this environment");
+  }
+}
+
+function assertCallTypeEnabled(env: Env, callType: CallType): void {
+  if (callType === "audio" && !callFeatureFlags(env).audioCallsEnabled) {
+    throw new HttpError(403, "feature_disabled", "Audio calls are disabled for this environment");
+  }
+  if (callType === "video") assertVideoCallsEnabled(env);
+}
+
+function assertVideoCallsEnabled(env: Env): void {
+  if (!callFeatureFlags(env).videoCallsEnabled) {
+    throw new HttpError(403, "feature_disabled", "Video calls are disabled for this environment");
+  }
+}
+
+function assertScreenShareEnabled(env: Env): void {
+  if (!callFeatureFlags(env).screenShareEnabled) {
+    throw new HttpError(403, "feature_disabled", "Screen sharing is disabled for this environment");
+  }
+}
+
+function assertRealtimeMediaEnabled(env: Env): void {
+  if (!callFeatureFlags(env).realtimeMediaEnabled) {
+    throw new HttpError(403, "feature_disabled", "Realtime call media is disabled for this environment");
+  }
+}
+
+function assertRealtimeTrackKindsEnabled(env: Env, tracks: RealtimeTrackInput[]): void {
+  for (const track of tracks) {
+    if (track.kind === "video") assertVideoCallsEnabled(env);
+    if (track.kind === "screen") assertScreenShareEnabled(env);
+  }
 }
 
 function optionalBoolean(
@@ -1313,6 +1461,30 @@ interface CloseRealtimeTrackInput {
   mid: string;
 }
 
+interface CallFeatureFlags extends JsonObject {
+  callsEnabled: boolean;
+  audioCallsEnabled: boolean;
+  videoCallsEnabled: boolean;
+  screenShareEnabled: boolean;
+  realtimeMediaEnabled: boolean;
+}
+
+interface ParsedCallUsageReport {
+  providerSessionId: string | null;
+  durationMs: number;
+  audioDurationMs: number;
+  videoDurationMs: number;
+  screenDurationMs: number;
+  bytesSentEstimate: number;
+  bytesReceivedEstimate: number;
+  relayLikely: boolean;
+  candidateType: string | null;
+  providerEgressBytes: number | null;
+  providerBillingSource: string | null;
+  tracks: JsonObject[];
+  network: JsonObject | null;
+}
+
 function realtimeConfig(env: Env): RealtimeConfig {
   const mock = env.CLOUDFLARE_REALTIME_MOCK === "1";
   const appId = trimmedEnv(env.CLOUDFLARE_REALTIME_APP_ID);
@@ -1343,6 +1515,36 @@ function realtimeConfig(env: Env): RealtimeConfig {
   };
 }
 
+export function getCallRealtimeStatus(env: Env): JsonObject {
+  const config = realtimeConfig(env);
+  const features = callFeatureFlags(env);
+  const turnConfigured = config.iceServers.some((server) => Array.isArray(server.urls)
+    ? server.urls.some((url) => typeof url === "string" && url.startsWith("turn"))
+    : typeof server.urls === "string" && server.urls.startsWith("turn"));
+  const lastProviderCheckStatus = !features.realtimeMediaEnabled
+    ? "disabled"
+    : config.configured
+      ? "configured"
+      : "not_configured";
+  return {
+    provider: REALTIME_PROVIDER,
+    configured: config.configured,
+    status: lastProviderCheckStatus,
+    mock: config.mock,
+    apiBase: config.apiBase,
+    turnConfigured,
+    features,
+    credentialState: {
+      appIdConfigured: Boolean(config.appId) || config.mock,
+      appSecretConfigured: Boolean(config.appSecret) || config.mock,
+      turnCredentialsConfigured: turnConfigured,
+    },
+    lastProviderCheckAt: new Date().toISOString(),
+    lastProviderCheckStatus,
+    estimatedSfuTurnEgressStatus: "unavailable_provider_metric",
+  };
+}
+
 function trimmedEnv(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -1360,8 +1562,8 @@ function configuredMs(
   return Math.max(min, Math.min(max, Math.trunc(value)));
 }
 
-function realtimeUnavailable(call: CallRow, config: RealtimeConfig): JsonObject {
-  return realtimeResponse(call, config, {
+function realtimeUnavailable(env: Env, call: CallRow, config: RealtimeConfig): JsonObject {
+  return realtimeResponse(env, call, config, {
     session: null,
     tracks: [],
     availableTracks: [],
@@ -1396,7 +1598,7 @@ async function recordRealtimeUnavailable(
       );
     },
   );
-  return realtimeUnavailable(call, config);
+  return realtimeUnavailable(env, call, config);
 }
 
 async function commitCallMediaMutation(
@@ -1495,6 +1697,7 @@ async function recordRealtimeRenegotiated(
 }
 
 function realtimeResponse(
+  env: Env,
   call: CallRow,
   config: RealtimeConfig,
   extra: JsonObject,
@@ -1502,6 +1705,7 @@ function realtimeResponse(
   return {
     provider: REALTIME_PROVIDER,
     configured: config.configured,
+    features: callFeatureFlags(env),
     callId: call.call_id,
     callType: call.call_type,
     status: call.status,
@@ -1834,6 +2038,99 @@ function parseCloseRealtimeTracks(body: Record<string, unknown>): CloseRealtimeT
     })!;
     return { mid };
   });
+}
+
+function parseCallUsageReport(body: Record<string, unknown>): ParsedCallUsageReport {
+  const providerSessionId = stringField(body, "sessionId", { max: 160 }) ?? null;
+  const rawTracks = body.tracks;
+  if (rawTracks !== undefined && !Array.isArray(rawTracks)) {
+    throw new HttpError(400, "invalid_field", "Field must be an array: tracks");
+  }
+  const trackInputs = (rawTracks ?? []) as unknown[];
+  if (trackInputs.length > 32) {
+    throw new HttpError(400, "invalid_field", "Field has too many items: tracks");
+  }
+
+  let audioDurationMs = 0;
+  let videoDurationMs = 0;
+  let screenDurationMs = 0;
+  let bytesSentEstimate = 0;
+  let bytesReceivedEstimate = 0;
+  const tracks: JsonObject[] = [];
+  for (const [index, rawTrack] of trackInputs.entries()) {
+    if (!rawTrack || typeof rawTrack !== "object" || Array.isArray(rawTrack)) {
+      throw new HttpError(400, "invalid_field", `Field must be an object: tracks[${index}]`);
+    }
+    const track = rawTrack as Record<string, unknown>;
+    const kind = parseTrackKind(track, `tracks[${index}].kind`);
+    const direction = stringField(track, "direction", { max: 20 }) ?? "send";
+    if (direction !== "send" && direction !== "receive") {
+      throw new HttpError(400, "invalid_field", `Field is invalid: tracks[${index}].direction`);
+    }
+    const durationMs = optionalIntegerField(track, "durationMs", 0, 7 * 24 * 60 * 60_000) ?? 0;
+    const bytes = optionalIntegerField(track, "bytes", 0, Number.MAX_SAFE_INTEGER) ?? 0;
+    const qualityLayer = stringField(track, "qualityLayer", { max: 40 }) ?? null;
+    if (kind === "audio") audioDurationMs += durationMs;
+    else if (kind === "video") videoDurationMs += durationMs;
+    else if (kind === "screen") screenDurationMs += durationMs;
+    if (direction === "send") bytesSentEstimate += bytes;
+    else bytesReceivedEstimate += bytes;
+    tracks.push({
+      kind,
+      direction,
+      durationMs,
+      bytes,
+      qualityLayer,
+    });
+  }
+
+  const network = optionalObject(body, "network");
+  const relayLikely = network ? optionalBoolean(network, "relayLikely") === true : false;
+  const candidateType = network ? stringField(network, "candidateType", { max: 40 }) ?? null : null;
+  const declaredDurationMs = optionalIntegerField(body, "durationMs", 0, 7 * 24 * 60 * 60_000);
+  const durationMs = declaredDurationMs ?? Math.max(audioDurationMs, videoDurationMs, screenDurationMs, 0);
+  const declaredBytesSent = optionalIntegerField(body, "bytesSentEstimate", 0, Number.MAX_SAFE_INTEGER);
+  const declaredBytesReceived = optionalIntegerField(body, "bytesReceivedEstimate", 0, Number.MAX_SAFE_INTEGER);
+
+  return {
+    providerSessionId,
+    durationMs,
+    audioDurationMs,
+    videoDurationMs,
+    screenDurationMs,
+    bytesSentEstimate: declaredBytesSent ?? bytesSentEstimate,
+    bytesReceivedEstimate: declaredBytesReceived ?? bytesReceivedEstimate,
+    relayLikely,
+    candidateType,
+    providerEgressBytes: optionalIntegerField(body, "providerEgressBytes", 0, Number.MAX_SAFE_INTEGER) ?? null,
+    providerBillingSource: stringField(body, "providerBillingSource", { max: 80 }) ?? null,
+    tracks,
+    network: network
+      ? {
+          candidateType,
+          relayLikely,
+          roundTripTimeMs: optionalIntegerField(network, "roundTripTimeMs", 0, 60_000) ?? null,
+          packetsLost: optionalIntegerField(network, "packetsLost", 0, Number.MAX_SAFE_INTEGER) ?? null,
+        }
+      : null,
+  };
+}
+
+function optionalIntegerField(
+  body: Record<string, unknown>,
+  key: string,
+  min: number,
+  max: number,
+): number | undefined {
+  const value = body[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new HttpError(400, "invalid_field", `Field must be a number: ${key}`);
+  }
+  if (value < min || value > max) {
+    throw new HttpError(400, "invalid_field", `Field is out of range: ${key}`);
+  }
+  return Math.trunc(value);
 }
 
 function providerTrackInput(track: RealtimeTrackInput): JsonObject {

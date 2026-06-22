@@ -2,12 +2,14 @@ import { api, isApiError } from '$lib/api';
 import type {
 	Call,
 	CallParticipant,
+	CallFeatureFlags,
 	CallRealtimeConfig,
 	CallRealtimeSessionDescription,
 	CallRealtimeTrack,
 	CallRealtimeTrackInput,
 	CallRealtimeTrackKind,
 	CallType,
+	CallUsageReportTrackInput,
 	RealtimeCallEvent,
 	Room
 } from '$lib/api/types';
@@ -37,6 +39,26 @@ export interface CallConnectionStatus {
 	quality: CallConnectionQuality;
 	label: string;
 	detail: string;
+}
+
+export interface CallDiagnosticsSnapshot {
+	callId: string | null;
+	sessionId: string | null;
+	active: boolean;
+	sampledAt: string | null;
+	durationMs: number;
+	bytesSentEstimate: number;
+	bytesReceivedEstimate: number;
+	packetsLost: number;
+	roundTripTimeMs: number | null;
+	candidateType: string | null;
+	relayLikely: boolean;
+	peerConnectionState: RTCPeerConnectionState;
+	iceConnectionState: RTCIceConnectionState;
+	iceGatheringState: RTCIceGatheringState;
+	signalingState: RTCSignalingState;
+	lastUsageReportAt: string | null;
+	lastUsageReportError: string | null;
 }
 
 export interface CallVideoQualityOption {
@@ -106,8 +128,35 @@ const VIDEO_QUALITY_OPTIONS: CallVideoQualityOption[] = [
 ];
 const CALL_HISTORY_LIMIT = 50;
 const MEDIA_HEARTBEAT_MS = 25_000;
+const CALL_STATS_POLL_MS = 5_000;
 const CALL_DEVICE_PREFERENCES_KEY = 'voyager.callDevicePreferences.v1';
 const CALL_VIDEO_QUALITY_KEY = 'voyager.callVideoQuality.v1';
+const DEFAULT_CALL_FEATURES: CallFeatureFlags = {
+	callsEnabled: true,
+	audioCallsEnabled: true,
+	videoCallsEnabled: true,
+	screenShareEnabled: true,
+	realtimeMediaEnabled: true
+};
+const EMPTY_CALL_DIAGNOSTICS: CallDiagnosticsSnapshot = {
+	callId: null,
+	sessionId: null,
+	active: false,
+	sampledAt: null,
+	durationMs: 0,
+	bytesSentEstimate: 0,
+	bytesReceivedEstimate: 0,
+	packetsLost: 0,
+	roundTripTimeMs: null,
+	candidateType: null,
+	relayLikely: false,
+	peerConnectionState: 'new',
+	iceConnectionState: 'new',
+	iceGatheringState: 'new',
+	signalingState: 'stable',
+	lastUsageReportAt: null,
+	lastUsageReportError: null
+};
 
 class CallsStore {
 	activeCall = $state<Call | null>(null);
@@ -139,6 +188,10 @@ class CallsStore {
 	videoOrientation = $state<'portrait' | 'landscape'>('portrait');
 	peerConnectionState = $state<RTCPeerConnectionState>('new');
 	iceConnectionState = $state<RTCIceConnectionState>('new');
+	iceGatheringState = $state<RTCIceGatheringState>('new');
+	signalingState = $state<RTCSignalingState>('stable');
+	callFeatures = $state<CallFeatureFlags>({ ...DEFAULT_CALL_FEATURES });
+	diagnostics = $state<CallDiagnosticsSnapshot>({ ...EMPTY_CALL_DIAGNOSTICS });
 	devicePreferences = $state<CallDevicePreferences>({});
 	deviceOptions = $state<CallDeviceOption[]>([]);
 	deviceLoading = $state(false);
@@ -169,6 +222,7 @@ class CallsStore {
 		connectionStatus(this.mediaState, this.peerConnectionState, this.iceConnectionState)
 	);
 	readonly cameraFacingLabel = $derived(this.cameraFacingMode === 'environment' ? 'Back camera' : 'Front camera');
+	readonly screenShareAvailable = $derived(this.screenShareSupported && this.callFeatures.screenShareEnabled);
 
 	private peer: RTCPeerConnection | null = null;
 	private localStream: MediaStream | null = null;
@@ -183,9 +237,12 @@ class CallsStore {
 	private screenTrackMid: string | null = null;
 	private subscribing = false;
 	private mediaHeartbeat: ReturnType<typeof setInterval> | null = null;
+	private statsHeartbeat: ReturnType<typeof setInterval> | null = null;
 	private remoteAudioElements = new Set<HTMLMediaElement>();
 	private prejoinPreviewRequestId = 0;
 	private mediaAttemptId = 0;
+	private mediaStartedAt: number | null = null;
+	private usageReportSent = false;
 
 	constructor() {
 		this.loadDevicePreferences();
@@ -703,6 +760,10 @@ class CallsStore {
 
 	async toggleScreenShare(): Promise<void> {
 		if (this.activeCall?.callType !== 'video' || this.mediaState !== 'active' || this.startingScreenShare) return;
+		if (!this.screenShareAvailable) {
+			toasts.error('Screen sharing is not available for this environment.');
+			return;
+		}
 		if (this.screenShareEnabled || this.localScreenStream) {
 			await this.stopScreenShare();
 			return;
@@ -875,6 +936,7 @@ class CallsStore {
 		try {
 			const sessionConfig = await api.getCallRealtimeSessionConfig(call.callId);
 			if (!this.isCurrentMediaAttempt(attemptId, call.callId)) return false;
+			this.callFeatures = sessionConfig.features ?? { ...DEFAULT_CALL_FEATURES };
 			if (!sessionConfig.configured || !sessionConfig.session?.sessionId) {
 				this.mediaState = 'unavailable';
 				this.lastError = sessionConfig.message;
@@ -902,6 +964,19 @@ class CallsStore {
 			this.screenTrackMid = null;
 			this.peerConnectionState = peer.connectionState;
 			this.iceConnectionState = peer.iceConnectionState;
+			this.iceGatheringState = peer.iceGatheringState;
+			this.signalingState = peer.signalingState;
+			this.mediaStartedAt = null;
+			this.usageReportSent = false;
+			this.diagnostics = {
+				...EMPTY_CALL_DIAGNOSTICS,
+				callId: call.callId,
+				sessionId: sessionConfig.session.sessionId,
+				peerConnectionState: peer.connectionState,
+				iceConnectionState: peer.iceConnectionState,
+				iceGatheringState: peer.iceGatheringState,
+				signalingState: peer.signalingState
+			};
 			this.activeAudioInputId = options.audioInputId ?? this.devicePreferences.audioInputId ?? '';
 			this.activeVideoInputId = options.videoInputId ?? this.devicePreferences.videoInputId ?? '';
 			this.wirePeer(peer);
@@ -967,8 +1042,11 @@ class CallsStore {
 			this.publishedMids = publishedTrackMids(trackConfig, publishMids);
 			await this.applyProviderDescription(trackConfig);
 			this.mediaState = 'active';
+			this.mediaStartedAt = Date.now();
 			await this.syncParticipantMediaState();
 			this.startMediaHeartbeat();
+			this.startStatsHeartbeat();
+			await this.refreshCallStats();
 			await this.applyAudioOutputToAll();
 			await this.subscribeAvailableTracks([
 				...(sessionConfig.availableTracks ?? sessionConfig.tracks ?? []),
@@ -988,6 +1066,15 @@ class CallsStore {
 		const updateConnectionState = () => {
 			this.peerConnectionState = peer.connectionState;
 			this.iceConnectionState = peer.iceConnectionState;
+			this.iceGatheringState = peer.iceGatheringState;
+			this.signalingState = peer.signalingState;
+			this.diagnostics = {
+				...this.diagnostics,
+				peerConnectionState: peer.connectionState,
+				iceConnectionState: peer.iceConnectionState,
+				iceGatheringState: peer.iceGatheringState,
+				signalingState: peer.signalingState
+			};
 		};
 		updateConnectionState();
 		peer.ontrack = (event) => {
@@ -1024,6 +1111,8 @@ class CallsStore {
 			}
 		};
 		peer.oniceconnectionstatechange = updateConnectionState;
+		peer.onicegatheringstatechange = updateConnectionState;
+		peer.onsignalingstatechange = updateConnectionState;
 	}
 
 	private async refreshAvailableTracks(): Promise<void> {
@@ -1141,7 +1230,7 @@ class CallsStore {
 		const sessionId = this.sessionId;
 		const peer = this.peer;
 		if (!peer || !call || !sessionId || !this.mediaCallId || this.startingScreenShare) return;
-		if (!this.screenShareSupported) {
+		if (!this.screenShareAvailable) {
 			toasts.error('Screen sharing is not available on this device.');
 			return;
 		}
@@ -1297,6 +1386,83 @@ class CallsStore {
 		this.mediaHeartbeat = null;
 	}
 
+	private startStatsHeartbeat(): void {
+		this.stopStatsHeartbeat();
+		this.statsHeartbeat = setInterval(() => {
+			void this.refreshCallStats();
+		}, CALL_STATS_POLL_MS);
+	}
+
+	private stopStatsHeartbeat(): void {
+		if (this.statsHeartbeat) clearInterval(this.statsHeartbeat);
+		this.statsHeartbeat = null;
+	}
+
+	private async refreshCallStats(): Promise<CallDiagnosticsSnapshot> {
+		const peer = this.peer;
+		if (!peer || !this.mediaCallId || !this.sessionId) return this.diagnostics;
+		const stats = await collectPeerStats(peer);
+		const next: CallDiagnosticsSnapshot = {
+			...this.diagnostics,
+			callId: this.mediaCallId,
+			sessionId: this.sessionId,
+			active: this.mediaState === 'active',
+			sampledAt: new Date().toISOString(),
+			durationMs: this.mediaStartedAt ? Math.max(0, Date.now() - this.mediaStartedAt) : 0,
+			bytesSentEstimate: stats.bytesSentEstimate,
+			bytesReceivedEstimate: stats.bytesReceivedEstimate,
+			packetsLost: stats.packetsLost,
+			roundTripTimeMs: stats.roundTripTimeMs,
+			candidateType: stats.candidateType,
+			relayLikely: stats.relayLikely,
+			peerConnectionState: peer.connectionState,
+			iceConnectionState: peer.iceConnectionState,
+			iceGatheringState: peer.iceGatheringState,
+			signalingState: peer.signalingState
+		};
+		this.diagnostics = next;
+		return next;
+	}
+
+	private async reportCallUsageBeforeClose(callId: string, sessionId: string): Promise<void> {
+		if (this.usageReportSent) return;
+		this.usageReportSent = true;
+		const snapshot = await this.refreshCallStats().catch(() => this.diagnostics);
+		const tracks = buildUsageReportTracks(snapshot.durationMs, {
+			audio: Boolean(this.audioSender),
+			video: Boolean(this.videoSender),
+			screen: Boolean(this.screenSender),
+			remoteAudio: this.remoteStreams.length > 0,
+			remoteVideo: this.remoteVideoStreams.some((stream) => stream.kind === 'video'),
+			remoteScreen: this.remoteVideoStreams.some((stream) => stream.kind === 'screen')
+		});
+		try {
+			await api.reportCallUsage(callId, {
+				sessionId,
+				durationMs: snapshot.durationMs,
+				bytesSentEstimate: snapshot.bytesSentEstimate,
+				bytesReceivedEstimate: snapshot.bytesReceivedEstimate,
+				tracks,
+				network: {
+					candidateType: snapshot.candidateType,
+					relayLikely: snapshot.relayLikely,
+					roundTripTimeMs: snapshot.roundTripTimeMs,
+					packetsLost: snapshot.packetsLost
+				}
+			});
+			this.diagnostics = {
+				...this.diagnostics,
+				lastUsageReportAt: new Date().toISOString(),
+				lastUsageReportError: null
+			};
+		} catch (error) {
+			this.diagnostics = {
+				...this.diagnostics,
+				lastUsageReportError: displayError(error, 'Could not report call usage.')
+			};
+		}
+	}
+
 	private async syncParticipantMediaState(
 		options: { videoEnabled?: boolean; screenEnabled?: boolean; heartbeatOnly?: boolean } = {}
 	): Promise<void> {
@@ -1323,10 +1489,14 @@ class CallsStore {
 	private async closeMedia(options: { notifyProvider?: boolean } = {}): Promise<void> {
 		this.mediaAttemptId += 1;
 		this.stopMediaHeartbeat();
+		this.stopStatsHeartbeat();
 		const notifyProvider = options.notifyProvider ?? true;
 		const callId = this.mediaCallId;
 		const sessionId = this.sessionId;
 		const mids = [...this.publishedMids];
+		if (notifyProvider && callId && sessionId) {
+			await this.reportCallUsageBeforeClose(callId, sessionId);
+		}
 		for (const track of this.localScreenStream?.getTracks() ?? []) {
 			track.onended = null;
 			track.stop();
@@ -1362,6 +1532,17 @@ class CallsStore {
 		this.callDevicePanelOpen = false;
 		this.peerConnectionState = 'closed';
 		this.iceConnectionState = 'closed';
+		this.iceGatheringState = 'complete';
+		this.signalingState = 'closed';
+		this.mediaStartedAt = null;
+		this.diagnostics = {
+			...this.diagnostics,
+			active: false,
+			peerConnectionState: 'closed',
+			iceConnectionState: 'closed',
+			iceGatheringState: 'complete',
+			signalingState: 'closed'
+		};
 	}
 
 	private isCurrentMediaAttempt(attemptId: number, callId: string): boolean {
@@ -1412,6 +1593,7 @@ class CallsStore {
 	private reset(): void {
 		void this.closeMedia({ notifyProvider: false });
 		this.stopMediaHeartbeat();
+		this.stopStatsHeartbeat();
 		this.activeCall = null;
 		this.activeRoom = null;
 		this.incoming = [];
@@ -1429,6 +1611,8 @@ class CallsStore {
 		this.startingScreenShare = false;
 		this.switchingCamera = false;
 		this.callDevicePanelOpen = false;
+		this.callFeatures = { ...DEFAULT_CALL_FEATURES };
+		this.diagnostics = { ...EMPTY_CALL_DIAGNOSTICS };
 		this.cancelPrejoin();
 	}
 }
@@ -1443,6 +1627,83 @@ function hasMediaSupport(): boolean {
 
 function hasDisplayMediaSupport(): boolean {
 	return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+}
+
+interface PeerStatsSummary {
+	bytesSentEstimate: number;
+	bytesReceivedEstimate: number;
+	packetsLost: number;
+	roundTripTimeMs: number | null;
+	candidateType: string | null;
+	relayLikely: boolean;
+}
+
+async function collectPeerStats(peer: RTCPeerConnection): Promise<PeerStatsSummary> {
+	const report = await peer.getStats();
+	const byId = new Map<string, RTCStats & Record<string, unknown>>();
+	report.forEach((stat) => {
+		byId.set(stat.id, stat as RTCStats & Record<string, unknown>);
+	});
+	let bytesSentEstimate = 0;
+	let bytesReceivedEstimate = 0;
+	let packetsLost = 0;
+	let roundTripTimeMs: number | null = null;
+	let candidateType: string | null = null;
+	for (const stat of byId.values()) {
+		if (stat.type === 'outbound-rtp') {
+			bytesSentEstimate += statNumber(stat, 'bytesSent');
+		} else if (stat.type === 'inbound-rtp') {
+			bytesReceivedEstimate += statNumber(stat, 'bytesReceived');
+			packetsLost += statNumber(stat, 'packetsLost');
+		} else if (stat.type === 'candidate-pair' && (stat.selected === true || stat.nominated === true)) {
+			const currentRoundTripTime = statNumber(stat, 'currentRoundTripTime');
+			if (currentRoundTripTime > 0) roundTripTimeMs = Math.round(currentRoundTripTime * 1000);
+			const localCandidateId = statString(stat, 'localCandidateId');
+			if (localCandidateId) {
+				const localCandidate = byId.get(localCandidateId);
+				candidateType = localCandidate ? statString(localCandidate, 'candidateType') : null;
+			}
+		}
+	}
+	return {
+		bytesSentEstimate,
+		bytesReceivedEstimate,
+		packetsLost,
+		roundTripTimeMs,
+		candidateType,
+		relayLikely: candidateType === 'relay'
+	};
+}
+
+function statNumber(stat: Record<string, unknown>, key: string): number {
+	const value = stat[key];
+	return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function statString(stat: Record<string, unknown>, key: string): string | null {
+	const value = stat[key];
+	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function buildUsageReportTracks(
+	durationMs: number,
+	active: {
+		audio: boolean;
+		video: boolean;
+		screen: boolean;
+		remoteAudio: boolean;
+		remoteVideo: boolean;
+		remoteScreen: boolean;
+	}
+): CallUsageReportTrackInput[] {
+	const tracks: CallUsageReportTrackInput[] = [];
+	if (active.audio) tracks.push({ kind: 'audio', direction: 'send', durationMs });
+	if (active.remoteAudio) tracks.push({ kind: 'audio', direction: 'receive', durationMs });
+	if (active.video) tracks.push({ kind: 'video', direction: 'send', durationMs });
+	if (active.remoteVideo) tracks.push({ kind: 'video', direction: 'receive', durationMs });
+	if (active.screen) tracks.push({ kind: 'screen', direction: 'send', durationMs });
+	if (active.remoteScreen) tracks.push({ kind: 'screen', direction: 'receive', durationMs });
+	return tracks;
 }
 
 async function createOffer(peer: RTCPeerConnection): Promise<CallRealtimeSessionDescription> {

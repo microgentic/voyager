@@ -161,7 +161,12 @@ const port = await freePort();
 let worker;
 const workerVars = [
   `BOOTSTRAP_TOKEN:${bootstrapToken}`,
-  "CALL_RING_TIMEOUT_MS:5000"
+  "CALL_RING_TIMEOUT_MS:5000",
+  "CALLS_ENABLED:1",
+  "AUDIO_CALLS_ENABLED:1",
+  "VIDEO_CALLS_ENABLED:1",
+  "SCREEN_SHARE_ENABLED:1",
+  "CALLS_REALTIME_MEDIA_ENABLED:1"
 ];
 if (process.env.CLOUDFLARE_REALTIME_MOCK === "1") {
   workerVars.push("CLOUDFLARE_REALTIME_MOCK:1");
