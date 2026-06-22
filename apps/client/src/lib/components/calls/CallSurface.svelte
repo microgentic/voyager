@@ -8,10 +8,13 @@
 		Phone,
 		PhoneCall,
 		PhoneOff,
+		Settings,
 		SwitchCamera,
-		Video
+		Video,
+		Volume2
 	} from '@lucide/svelte';
 	import type { Call } from '$lib/api/types';
+	import CallPrejoinDialog from '$lib/components/calls/CallPrejoinDialog.svelte';
 	import { calls, rooms } from '$lib/stores';
 	import { cn } from '$lib/utils/cn';
 
@@ -28,6 +31,14 @@
 				node.srcObject = null;
 			}
 		};
+	}
+
+	function attachRemoteAudio(node: HTMLMediaElement) {
+		return calls.attachRemoteAudio(node);
+	}
+
+	function selectedValue(event: Event): string {
+		return (event.currentTarget as HTMLSelectElement).value;
 	}
 
 	function callRoomName(call: Call): string {
@@ -57,8 +68,10 @@
 	);
 </script>
 
+<CallPrejoinDialog />
+
 {#each calls.remoteStreams as remote (remote.id)}
-	<audio autoplay playsinline class="sr-only" use:attachStream={remote.stream}></audio>
+	<audio autoplay playsinline class="sr-only" use:attachStream={remote.stream} use:attachRemoteAudio></audio>
 {/each}
 
 {#if calls.incoming.length}
@@ -77,7 +90,7 @@
 				<div class="flex shrink-0 items-center gap-1">
 					<button
 						type="button"
-						onclick={() => calls.acceptCall(call)}
+						onclick={() => calls.openAcceptPrejoin(call)}
 						disabled={calls.busyCallId === call.callId}
 						title="Accept call"
 						aria-label="Accept call"
@@ -160,99 +173,181 @@
 
 	<div class="pointer-events-none fixed inset-x-0 bottom-[calc(var(--sab)+0.75rem)] z-50 px-3">
 		<div
-			class="pointer-events-auto mx-auto flex w-full max-w-2xl items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2 shadow-xl"
+			class="pointer-events-auto mx-auto w-full max-w-2xl overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
 		>
-			<div
-				class={cn(
-					'grid h-9 w-9 shrink-0 place-items-center rounded-full',
-					calls.mediaState === 'active' ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'
-				)}
-			>
-				{#if calls.mediaState === 'connecting' || calls.mediaState === 'ending'}
-					<Loader2 class="h-4.5 w-4.5 animate-spin" />
-				{:else if isVideoCall}
-					<Video class="h-4.5 w-4.5" />
-				{:else}
-					<PhoneCall class="h-4.5 w-4.5" />
-				{/if}
-			</div>
-			<div class="min-w-0 flex-1">
-				<p class="truncate text-sm font-semibold text-foreground">{activeTitle}</p>
-				<p class="truncate text-xs text-muted">
-					{#if calls.mediaState === 'connecting'}
-						Connecting
-					{:else if calls.mediaState === 'unavailable'}
-						Call media unavailable
-					{:else if calls.lastError}
-						{calls.lastError}
-					{:else}
-						{activeDetail}
+			{#if calls.callDevicePanelOpen}
+				<div class="grid gap-3 border-b border-border bg-surface-2 px-3 py-3 sm:grid-cols-2">
+					<label class="flex flex-col gap-1.5 text-xs font-medium text-muted">
+						Microphone
+						<select
+							value={calls.activeAudioInputId || calls.devicePreferences.audioInputId || ''}
+							disabled={isBusy || calls.mediaState !== 'active'}
+							onfocus={() => calls.refreshCallDevices({ quiet: true })}
+							onchange={(event) => calls.setActiveAudioInput(selectedValue(event))}
+							class="h-9 rounded-lg border border-border bg-surface px-3 text-sm text-foreground outline-none focus:border-primary disabled:opacity-60"
+						>
+							<option value="">Default microphone</option>
+							{#each calls.microphones as device (device.deviceId)}
+								<option value={device.deviceId}>{device.label}</option>
+							{/each}
+						</select>
+					</label>
+
+					{#if calls.audioOutputSupported}
+						<label class="flex flex-col gap-1.5 text-xs font-medium text-muted">
+							Speaker
+							<select
+								value={calls.devicePreferences.audioOutputId ?? ''}
+								disabled={isBusy || calls.mediaState !== 'active'}
+								onfocus={() => calls.refreshCallDevices({ quiet: true })}
+								onchange={(event) => calls.setAudioOutputDevice(selectedValue(event))}
+								class="h-9 rounded-lg border border-border bg-surface px-3 text-sm text-foreground outline-none focus:border-primary disabled:opacity-60"
+							>
+								<option value="">Default speaker</option>
+								{#each calls.speakers as device (device.deviceId)}
+									<option value={device.deviceId}>{device.label}</option>
+								{/each}
+							</select>
+						</label>
 					{/if}
-				</p>
-			</div>
-			<div class="flex shrink-0 items-center gap-1">
-				<button
-					type="button"
-					onclick={() => calls.toggleMute()}
-					disabled={isBusy || calls.mediaState !== 'active'}
-					title={calls.muted ? 'Unmute microphone' : 'Mute microphone'}
-					aria-label={calls.muted ? 'Unmute microphone' : 'Mute microphone'}
+
+					{#if isVideoCall}
+						<label class="flex flex-col gap-1.5 text-xs font-medium text-muted {calls.audioOutputSupported ? 'sm:col-span-2' : ''}">
+							Camera
+							<select
+								value={calls.activeVideoInputId || calls.devicePreferences.videoInputId || ''}
+								disabled={isBusy || calls.mediaState !== 'active'}
+								onfocus={() => calls.refreshCallDevices({ quiet: true })}
+								onchange={(event) => calls.setActiveVideoInput(selectedValue(event))}
+								class="h-9 rounded-lg border border-border bg-surface px-3 text-sm text-foreground outline-none focus:border-primary disabled:opacity-60"
+							>
+								<option value="">Default camera</option>
+								{#each calls.cameras as device (device.deviceId)}
+									<option value={device.deviceId}>{device.label}</option>
+								{/each}
+							</select>
+						</label>
+					{/if}
+					{#if calls.deviceError}
+						<p class="rounded-md border border-danger/30 bg-danger/10 px-2 py-1 text-xs text-danger sm:col-span-2">
+							{calls.deviceError}
+						</p>
+					{/if}
+				</div>
+			{/if}
+
+			<div class="flex items-center gap-3 px-3 py-2">
+				<div
 					class={cn(
-						'grid h-10 w-10 place-items-center rounded-lg border border-border transition disabled:cursor-not-allowed disabled:opacity-50',
-						calls.muted ? 'bg-warning/15 text-warning hover:bg-warning/20' : 'bg-surface-2 text-foreground hover:bg-surface-3'
+						'grid h-9 w-9 shrink-0 place-items-center rounded-full',
+						calls.mediaState === 'active' ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'
 					)}
 				>
-					{#if calls.muted}
-						<MicOff class="h-4.5 w-4.5" />
+					{#if calls.mediaState === 'connecting' || calls.mediaState === 'ending'}
+						<Loader2 class="h-4.5 w-4.5 animate-spin" />
+					{:else if isVideoCall}
+						<Video class="h-4.5 w-4.5" />
 					{:else}
-						<Mic class="h-4.5 w-4.5" />
+						<PhoneCall class="h-4.5 w-4.5" />
 					{/if}
-				</button>
-				{#if isVideoCall}
+				</div>
+				<div class="min-w-0 flex-1">
+					<p class="truncate text-sm font-semibold text-foreground">{activeTitle}</p>
+					<p class="truncate text-xs text-muted">
+						{#if calls.mediaState === 'connecting'}
+							Connecting
+						{:else if calls.mediaState === 'unavailable'}
+							Call media unavailable
+						{:else if calls.lastError}
+							{calls.lastError}
+						{:else}
+							{activeDetail}
+						{/if}
+					</p>
+				</div>
+				<div class="flex shrink-0 items-center gap-1">
 					<button
 						type="button"
-						onclick={() => calls.toggleCamera()}
+						onclick={() => calls.toggleMute()}
 						disabled={isBusy || calls.mediaState !== 'active'}
-						title={calls.cameraEnabled ? 'Turn camera off' : 'Turn camera on'}
-						aria-label={calls.cameraEnabled ? 'Turn camera off' : 'Turn camera on'}
+						title={calls.muted ? 'Unmute microphone' : 'Mute microphone'}
+						aria-label={calls.muted ? 'Unmute microphone' : 'Mute microphone'}
 						class={cn(
 							'grid h-10 w-10 place-items-center rounded-lg border border-border transition disabled:cursor-not-allowed disabled:opacity-50',
-							calls.cameraEnabled
-								? 'bg-surface-2 text-foreground hover:bg-surface-3'
-								: 'bg-warning/15 text-warning hover:bg-warning/20'
+							calls.muted ? 'bg-warning/15 text-warning hover:bg-warning/20' : 'bg-surface-2 text-foreground hover:bg-surface-3'
 						)}
 					>
-						{#if calls.cameraEnabled}
-							<Camera class="h-4.5 w-4.5" />
+						{#if calls.muted}
+							<MicOff class="h-4.5 w-4.5" />
 						{:else}
-							<CameraOff class="h-4.5 w-4.5" />
+							<Mic class="h-4.5 w-4.5" />
 						{/if}
 					</button>
 					<button
 						type="button"
-						onclick={() => calls.switchCamera()}
-						disabled={isBusy || calls.mediaState !== 'active' || calls.switchingCamera}
-						title="Switch camera"
-						aria-label="Switch camera"
-						class="grid h-10 w-10 place-items-center rounded-lg border border-border bg-surface-2 text-foreground transition hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+						onclick={() => calls.toggleCallDevicePanel()}
+						disabled={isBusy || calls.mediaState !== 'active'}
+						title="Call devices"
+						aria-label="Call devices"
+						class={cn(
+							'grid h-10 w-10 place-items-center rounded-lg border border-border transition disabled:cursor-not-allowed disabled:opacity-50',
+							calls.callDevicePanelOpen
+								? 'bg-primary-soft text-primary hover:brightness-105'
+								: 'bg-surface-2 text-foreground hover:bg-surface-3'
+						)}
 					>
-						{#if calls.switchingCamera}
-							<Loader2 class="h-4.5 w-4.5 animate-spin" />
+						{#if calls.audioOutputSupported}
+							<Volume2 class="h-4.5 w-4.5" />
 						{:else}
-							<SwitchCamera class="h-4.5 w-4.5" />
+							<Settings class="h-4.5 w-4.5" />
 						{/if}
 					</button>
-				{/if}
-				<button
-					type="button"
-					onclick={() => calls.endActiveCall()}
-					disabled={isBusy}
-					title="Leave call"
-					aria-label="Leave call"
-					class="grid h-10 w-10 place-items-center rounded-lg bg-danger text-white transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50"
-				>
-					<PhoneOff class="h-4.5 w-4.5" />
-				</button>
+					{#if isVideoCall}
+						<button
+							type="button"
+							onclick={() => calls.toggleCamera()}
+							disabled={isBusy || calls.mediaState !== 'active'}
+							title={calls.cameraEnabled ? 'Turn camera off' : 'Turn camera on'}
+							aria-label={calls.cameraEnabled ? 'Turn camera off' : 'Turn camera on'}
+							class={cn(
+								'grid h-10 w-10 place-items-center rounded-lg border border-border transition disabled:cursor-not-allowed disabled:opacity-50',
+								calls.cameraEnabled
+									? 'bg-surface-2 text-foreground hover:bg-surface-3'
+									: 'bg-warning/15 text-warning hover:bg-warning/20'
+							)}
+						>
+							{#if calls.cameraEnabled}
+								<Camera class="h-4.5 w-4.5" />
+							{:else}
+								<CameraOff class="h-4.5 w-4.5" />
+							{/if}
+						</button>
+						<button
+							type="button"
+							onclick={() => calls.switchCamera()}
+							disabled={isBusy || calls.mediaState !== 'active' || calls.switchingCamera}
+							title="Switch camera"
+							aria-label="Switch camera"
+							class="grid h-10 w-10 place-items-center rounded-lg border border-border bg-surface-2 text-foreground transition hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							{#if calls.switchingCamera}
+								<Loader2 class="h-4.5 w-4.5 animate-spin" />
+							{:else}
+								<SwitchCamera class="h-4.5 w-4.5" />
+							{/if}
+						</button>
+					{/if}
+					<button
+						type="button"
+						onclick={() => calls.endActiveCall()}
+						disabled={isBusy}
+						title="Leave call"
+						aria-label="Leave call"
+						class="grid h-10 w-10 place-items-center rounded-lg bg-danger text-white transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50"
+					>
+						<PhoneOff class="h-4.5 w-4.5" />
+					</button>
+				</div>
 			</div>
 		</div>
 	</div>

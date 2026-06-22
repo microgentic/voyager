@@ -16,6 +16,8 @@ import { rooms } from './rooms.svelte';
 import { toasts } from './toast.svelte';
 
 type CallMediaState = 'idle' | 'connecting' | 'active' | 'ending' | 'unavailable' | 'error';
+type CallPrejoinMode = 'start' | 'accept';
+type CallDeviceKind = 'audioinput' | 'audiooutput' | 'videoinput';
 
 export interface RemoteAudioStream {
 	id: string;
@@ -29,7 +31,35 @@ export interface RemoteVideoStream {
 	displayName?: string | null;
 }
 
+export interface CallDeviceOption {
+	deviceId: string;
+	groupId: string;
+	kind: CallDeviceKind;
+	label: string;
+}
+
+export interface CallPrejoinState {
+	mode: CallPrejoinMode;
+	callType: CallType;
+	room?: Room;
+	call?: Call;
+}
+
 type CameraFacingMode = 'user' | 'environment';
+type SinkIdMediaElement = HTMLMediaElement & { setSinkId?: (sinkId: string) => Promise<void> };
+
+interface CallDevicePreferences {
+	audioInputId?: string;
+	audioOutputId?: string;
+	videoInputId?: string;
+}
+
+interface ConnectMediaOptions {
+	audioInputId?: string;
+	audioOutputId?: string;
+	videoInputId?: string;
+	startWithCamera?: boolean;
+}
 
 const LIVE_CALL_STATUSES = new Set(['ringing', 'active']);
 const INCOMING_PARTICIPANT_STATUSES = new Set(['invited', 'ringing', 'joining']);
@@ -51,6 +81,7 @@ const VIDEO_SIMULCAST_POLICY = {
 } as const;
 const CALL_HISTORY_LIMIT = 50;
 const MEDIA_HEARTBEAT_MS = 25_000;
+const CALL_DEVICE_PREFERENCES_KEY = 'voyager.callDevicePreferences.v1';
 
 class CallsStore {
 	activeCall = $state<Call | null>(null);
@@ -71,6 +102,22 @@ class CallsStore {
 	switchingCamera = $state(false);
 	cameraFacingMode = $state<CameraFacingMode>('user');
 	videoQualityPolicy = VIDEO_SIMULCAST_POLICY;
+	devicePreferences = $state<CallDevicePreferences>({});
+	deviceOptions = $state<CallDeviceOption[]>([]);
+	deviceLoading = $state(false);
+	deviceError = $state<string | null>(null);
+	prejoin = $state<CallPrejoinState | null>(null);
+	prejoinAudioInputId = $state('');
+	prejoinAudioOutputId = $state('');
+	prejoinVideoInputId = $state('');
+	prejoinCameraEnabled = $state(false);
+	prejoinPreviewStream = $state<MediaStream | null>(null);
+	prejoinBusy = $state(false);
+	prejoinError = $state<string | null>(null);
+	audioOutputSupported = $state(false);
+	callDevicePanelOpen = $state(false);
+	activeAudioInputId = $state('');
+	activeVideoInputId = $state('');
 
 	readonly connectedParticipants = $derived(
 		this.activeCall?.participants.filter((participant) => participant.status === 'connected') ?? []
@@ -78,6 +125,9 @@ class CallsStore {
 	readonly ringingParticipants = $derived(
 		this.activeCall?.participants.filter((participant) => participant.status === 'ringing') ?? []
 	);
+	readonly microphones = $derived(this.deviceOptions.filter((device) => device.kind === 'audioinput'));
+	readonly speakers = $derived(this.deviceOptions.filter((device) => device.kind === 'audiooutput'));
+	readonly cameras = $derived(this.deviceOptions.filter((device) => device.kind === 'videoinput'));
 
 	private peer: RTCPeerConnection | null = null;
 	private localStream: MediaStream | null = null;
@@ -86,11 +136,22 @@ class CallsStore {
 	private publishedMids = new Set<string>();
 	private subscribedTracks = new Set<string>();
 	private pendingRemoteVideoTracks: CallRealtimeTrack[] = [];
+	private audioSender: RTCRtpSender | null = null;
 	private videoSender: RTCRtpSender | null = null;
 	private subscribing = false;
 	private mediaHeartbeat: ReturnType<typeof setInterval> | null = null;
+	private remoteAudioElements = new Set<HTMLMediaElement>();
 
 	constructor() {
+		this.loadDevicePreferences();
+		if (typeof HTMLMediaElement !== 'undefined') {
+			this.audioOutputSupported = 'setSinkId' in HTMLMediaElement.prototype;
+		}
+		if (typeof navigator !== 'undefined' && navigator.mediaDevices?.addEventListener) {
+			navigator.mediaDevices.addEventListener('devicechange', () => {
+				void this.refreshCallDevices({ quiet: true });
+			});
+		}
 		auth.onSignOut(() => this.reset());
 		if (typeof document !== 'undefined') {
 			document.addEventListener('visibilitychange', () => {
@@ -107,20 +168,299 @@ class CallsStore {
 			!rooms.isAgentDirect(room) &&
 			rooms.activeMembers(room).length > 1 &&
 			!this.activeCall &&
-			!this.startingRoomId
+			!this.startingRoomId &&
+			!this.prejoin
 		);
 	}
 
 	async startAudioCall(room: Room): Promise<void> {
-		await this.startCall(room, 'audio');
+		this.openStartPrejoin(room, 'audio');
 	}
 
 	async startVideoCall(room: Room): Promise<void> {
-		await this.startCall(room, 'video');
+		this.openStartPrejoin(room, 'video');
 	}
 
-	private async startCall(room: Room, callType: CallType): Promise<void> {
+	openStartPrejoin(room: Room, callType: CallType): void {
 		if (!this.canStart(room)) return;
+		this.openPrejoin({ mode: 'start', callType, room });
+	}
+
+	openAcceptPrejoin(call: Call): void {
+		if (this.activeCall && this.activeCall.callId !== call.callId) {
+			toasts.info('Leave the current call before joining another.');
+			return;
+		}
+		this.openPrejoin({ mode: 'accept', callType: call.callType, call });
+	}
+
+	cancelPrejoin(): void {
+		this.stopPrejoinPreview();
+		this.prejoin = null;
+		this.prejoinBusy = false;
+		this.prejoinError = null;
+		this.deviceError = null;
+	}
+
+	async confirmPrejoin(): Promise<void> {
+		const prejoin = this.prejoin;
+		if (!prejoin || this.prejoinBusy) return;
+		this.prejoinBusy = true;
+		this.prejoinError = null;
+		this.lastError = null;
+		const options: ConnectMediaOptions = {
+			audioInputId: this.prejoinAudioInputId || undefined,
+			audioOutputId: this.prejoinAudioOutputId || undefined,
+			videoInputId: this.prejoinVideoInputId || undefined,
+			startWithCamera: prejoin.callType === 'video' && this.prejoinCameraEnabled
+		};
+		try {
+			this.saveDevicePreferences({
+				audioInputId: options.audioInputId,
+				audioOutputId: options.audioOutputId,
+				videoInputId: options.videoInputId
+			});
+			await this.ensureMicrophonePermission(options.audioInputId);
+			this.releasePrejoinPreview();
+			const connected =
+				prejoin.mode === 'start' && prejoin.room
+					? await this.startCall(prejoin.room, prejoin.callType, options)
+					: prejoin.call
+						? await this.joinCall(prejoin.call, options)
+						: false;
+			if (connected) {
+				this.prejoin = null;
+				this.prejoinError = null;
+			} else {
+				this.prejoinCameraEnabled = false;
+				this.prejoinError = this.lastError ?? 'Could not connect call media.';
+			}
+		} catch (error) {
+			this.prejoinCameraEnabled = false;
+			this.mediaState = this.activeCall ? this.mediaState : 'idle';
+			this.prejoinError = displayError(error, 'Microphone permission is required to join the call.');
+			toasts.error(this.prejoinError);
+		} finally {
+			this.prejoinBusy = false;
+		}
+	}
+
+	async refreshCallDevices(options: { quiet?: boolean } = {}): Promise<void> {
+		if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return;
+		if (!options.quiet) this.deviceLoading = true;
+		this.deviceError = null;
+		try {
+			const devices = await navigator.mediaDevices.enumerateDevices();
+			this.deviceOptions = mapMediaDeviceOptions(devices);
+			this.prejoinAudioInputId = availableDeviceId(this.prejoinAudioInputId || this.devicePreferences.audioInputId, this.microphones);
+			this.prejoinAudioOutputId = availableDeviceId(
+				this.prejoinAudioOutputId || this.devicePreferences.audioOutputId,
+				this.speakers
+			);
+			this.prejoinVideoInputId = availableDeviceId(this.prejoinVideoInputId || this.devicePreferences.videoInputId, this.cameras);
+			if (!this.activeAudioInputId) this.activeAudioInputId = availableDeviceId(this.devicePreferences.audioInputId, this.microphones);
+			if (!this.activeVideoInputId) this.activeVideoInputId = availableDeviceId(this.devicePreferences.videoInputId, this.cameras);
+		} catch (error) {
+			this.deviceError = displayError(error, 'Could not load media devices.');
+		} finally {
+			this.deviceLoading = false;
+		}
+	}
+
+	setPrejoinAudioInput(deviceId: string): void {
+		this.prejoinAudioInputId = deviceId;
+		this.saveDevicePreferences({ audioInputId: deviceId || undefined });
+	}
+
+	async setPrejoinVideoInput(deviceId: string): Promise<void> {
+		this.prejoinVideoInputId = deviceId;
+		this.saveDevicePreferences({ videoInputId: deviceId || undefined });
+		if (this.prejoinCameraEnabled) await this.startPrejoinPreview();
+	}
+
+	async setPrejoinAudioOutput(deviceId: string): Promise<void> {
+		this.prejoinAudioOutputId = deviceId;
+		this.saveDevicePreferences({ audioOutputId: deviceId || undefined });
+		await this.applyAudioOutputToAll();
+	}
+
+	async setPrejoinCameraEnabled(enabled: boolean): Promise<void> {
+		if (!this.prejoin || this.prejoin.callType !== 'video' || this.prejoinBusy) return;
+		if (!enabled) {
+			this.stopPrejoinPreview();
+			return;
+		}
+		await this.startPrejoinPreview();
+	}
+
+	async setActiveAudioInput(deviceId: string): Promise<void> {
+		if (!this.localStream || !this.audioSender || this.mediaState !== 'active') return;
+		const previousId = this.activeAudioInputId;
+		let nextTrack: MediaStreamTrack | null = null;
+		try {
+			const nextStream = await navigator.mediaDevices.getUserMedia({
+				audio: audioConstraints(deviceId || undefined),
+				video: false
+			});
+			nextTrack = nextStream.getAudioTracks()[0] ?? null;
+			if (!nextTrack) {
+				for (const track of nextStream.getTracks()) track.stop();
+				throw new Error('Selected microphone did not provide an audio track.');
+			}
+			const previousTrack = this.localStream.getAudioTracks()[0];
+			nextTrack.enabled = !this.muted;
+			await this.audioSender.replaceTrack(nextTrack);
+			if (previousTrack) {
+				previousTrack.stop();
+				this.localStream.removeTrack(previousTrack);
+			}
+			this.localStream.addTrack(nextTrack);
+			this.activeAudioInputId = deviceId;
+			this.saveDevicePreferences({ audioInputId: deviceId || undefined });
+		} catch (error) {
+			nextTrack?.stop();
+			this.activeAudioInputId = previousId;
+			toasts.error(displayError(error, 'Could not switch microphone.'));
+		}
+	}
+
+	async setActiveVideoInput(deviceId: string): Promise<void> {
+		const previousId = this.activeVideoInputId;
+		this.activeVideoInputId = deviceId;
+		this.saveDevicePreferences({ videoInputId: deviceId || undefined });
+		if (!this.cameraEnabled) return;
+		try {
+			await this.replaceCameraTrack(this.cameraFacingMode, deviceId || undefined);
+			await this.syncParticipantMediaState({ videoEnabled: true });
+		} catch (error) {
+			this.activeVideoInputId = previousId;
+			this.saveDevicePreferences({ videoInputId: previousId || undefined });
+			toasts.error(displayError(error, 'Could not switch camera.'));
+		}
+	}
+
+	async setAudioOutputDevice(deviceId: string): Promise<void> {
+		this.saveDevicePreferences({ audioOutputId: deviceId || undefined });
+		this.prejoinAudioOutputId = deviceId;
+		await this.applyAudioOutputToAll();
+	}
+
+	toggleCallDevicePanel(): void {
+		this.callDevicePanelOpen = !this.callDevicePanelOpen;
+		if (this.callDevicePanelOpen) void this.refreshCallDevices({ quiet: true });
+	}
+
+	attachRemoteAudio = (node: HTMLMediaElement) => {
+		this.remoteAudioElements.add(node);
+		void this.applyAudioOutput(node);
+		return {
+			destroy: () => {
+				this.remoteAudioElements.delete(node);
+			}
+		};
+	};
+
+	private openPrejoin(prejoin: CallPrejoinState): void {
+		if (!hasMediaSupport()) {
+			this.mediaState = 'unavailable';
+			this.lastError = 'Calls are not available in this browser.';
+			toasts.error(this.lastError);
+			return;
+		}
+		this.stopPrejoinPreview();
+		this.prejoin = prejoin;
+		this.prejoinAudioInputId = this.devicePreferences.audioInputId ?? '';
+		this.prejoinAudioOutputId = this.devicePreferences.audioOutputId ?? '';
+		this.prejoinVideoInputId = this.devicePreferences.videoInputId ?? '';
+		this.prejoinBusy = false;
+		this.prejoinError = null;
+		this.deviceError = null;
+		void this.refreshCallDevices({ quiet: true });
+	}
+
+	private async ensureMicrophonePermission(deviceId?: string): Promise<void> {
+		if (!hasMediaSupport()) throw new Error('Calls are not available in this browser.');
+		const stream = await navigator.mediaDevices.getUserMedia({
+			audio: audioConstraints(deviceId),
+			video: false
+		});
+		try {
+			if (!stream.getAudioTracks()[0]) throw new Error('Microphone did not provide an audio track.');
+		} finally {
+			for (const track of stream.getTracks()) track.stop();
+		}
+		await this.refreshCallDevices({ quiet: true });
+	}
+
+	private async startPrejoinPreview(): Promise<void> {
+		if (!this.prejoin || this.prejoin.callType !== 'video') return;
+		this.releasePrejoinPreview();
+		this.prejoinError = null;
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({
+				audio: false,
+				video: videoConstraints(this.cameraFacingMode, this.prejoinVideoInputId || undefined)
+			});
+			if (!stream.getVideoTracks()[0]) throw new Error('Camera did not provide a video track.');
+			this.prejoinPreviewStream = stream;
+			this.prejoinCameraEnabled = true;
+			await this.refreshCallDevices({ quiet: true });
+		} catch (error) {
+			this.releasePrejoinPreview();
+			this.prejoinCameraEnabled = false;
+			this.prejoinError = displayError(error, 'Could not start camera preview.');
+			toasts.error(this.prejoinError);
+		}
+	}
+
+	private releasePrejoinPreview(): void {
+		for (const track of this.prejoinPreviewStream?.getTracks() ?? []) track.stop();
+		this.prejoinPreviewStream = null;
+	}
+
+	private stopPrejoinPreview(): void {
+		this.releasePrejoinPreview();
+		this.prejoinCameraEnabled = false;
+	}
+
+	private loadDevicePreferences(): void {
+		if (typeof localStorage === 'undefined') return;
+		try {
+			const parsed = JSON.parse(localStorage.getItem(CALL_DEVICE_PREFERENCES_KEY) ?? '{}') as CallDevicePreferences;
+			this.devicePreferences = cleanDevicePreferences(parsed);
+		} catch {
+			this.devicePreferences = {};
+		}
+	}
+
+	private saveDevicePreferences(next: Partial<CallDevicePreferences>): void {
+		const preferences = cleanDevicePreferences({ ...this.devicePreferences, ...next });
+		this.devicePreferences = preferences;
+		if (typeof localStorage === 'undefined') return;
+		try {
+			localStorage.setItem(CALL_DEVICE_PREFERENCES_KEY, JSON.stringify(preferences));
+		} catch {
+			/* local preferences are best effort */
+		}
+	}
+
+	private async applyAudioOutputToAll(): Promise<void> {
+		await Promise.all([...this.remoteAudioElements].map((element) => this.applyAudioOutput(element)));
+	}
+
+	private async applyAudioOutput(node: HTMLMediaElement): Promise<void> {
+		if (!this.audioOutputSupported) return;
+		const setSinkId = (node as SinkIdMediaElement).setSinkId;
+		if (!setSinkId) return;
+		try {
+			await setSinkId.call(node, this.devicePreferences.audioOutputId ?? '');
+		} catch (error) {
+			this.deviceError = displayError(error, 'Could not switch speaker output.');
+		}
+	}
+
+	private async startCall(room: Room, callType: CallType, options: ConnectMediaOptions = {}): Promise<boolean> {
+		if (!this.canStart(room) && this.prejoin?.room?.roomId !== room.roomId) return false;
 		this.startingRoomId = room.roomId;
 		this.startingCallType = callType;
 		this.lastError = null;
@@ -132,15 +472,18 @@ class CallsStore {
 			this.upsertRoomHistory(call);
 			this.muted = false;
 			this.cameraEnabled = false;
-			const connected = await this.connectMedia(call);
+			const connected = await this.connectMedia(call, options);
 			if (!connected) {
 				await this.leaveCallQuietly(call.callId);
 				this.clearActiveCall();
+				return false;
 			}
+			return true;
 		} catch (error) {
 			this.mediaState = 'error';
 			this.lastError = displayError(error, `Could not start the ${callType} call.`);
 			toasts.error(this.lastError);
+			return false;
 		} finally {
 			this.startingRoomId = null;
 			this.startingCallType = null;
@@ -148,9 +491,13 @@ class CallsStore {
 	}
 
 	async acceptCall(call: Call): Promise<void> {
+		this.openAcceptPrejoin(call);
+	}
+
+	private async joinCall(call: Call, options: ConnectMediaOptions = {}): Promise<boolean> {
 		if (this.activeCall && this.activeCall.callId !== call.callId) {
 			toasts.info('Leave the current call before joining another.');
-			return;
+			return false;
 		}
 		this.busyCallId = call.callId;
 		this.lastError = null;
@@ -163,15 +510,18 @@ class CallsStore {
 			this.upsertRoomHistory(joined);
 			this.muted = false;
 			this.cameraEnabled = false;
-			const connected = await this.connectMedia(joined);
+			const connected = await this.connectMedia(joined, options);
 			if (!connected) {
 				await this.leaveCallQuietly(joined.callId);
 				this.clearActiveCall();
+				return false;
 			}
+			return true;
 		} catch (error) {
 			this.mediaState = 'error';
 			this.lastError = displayError(error, 'Could not join the call.');
 			toasts.error(this.lastError);
+			return false;
 		} finally {
 			this.busyCallId = null;
 		}
@@ -230,14 +580,17 @@ class CallsStore {
 	async switchCamera(): Promise<void> {
 		if (this.activeCall?.callType !== 'video' || this.mediaState !== 'active' || this.switchingCamera) return;
 		const previous = this.cameraFacingMode;
+		const previousDeviceId = this.activeVideoInputId;
 		const next: CameraFacingMode = previous === 'user' ? 'environment' : 'user';
 		this.cameraFacingMode = next;
+		this.activeVideoInputId = '';
 		if (!this.cameraEnabled) return;
 		this.switchingCamera = true;
 		try {
 			await this.replaceCameraTrack(next);
 		} catch (error) {
 			this.cameraFacingMode = previous;
+			this.activeVideoInputId = previousDeviceId;
 			toasts.error(displayError(error, 'Could not switch camera.'));
 		} finally {
 			this.switchingCamera = false;
@@ -354,7 +707,7 @@ class CallsStore {
 		}
 	}
 
-	private async connectMedia(call: Call): Promise<boolean> {
+	private async connectMedia(call: Call, options: ConnectMediaOptions = {}): Promise<boolean> {
 		if (!hasMediaSupport()) {
 			this.mediaState = 'unavailable';
 			this.lastError = 'Calls are not available in this browser.';
@@ -382,12 +735,18 @@ class CallsStore {
 			this.remoteStreams = [];
 			this.remoteVideoStreams = [];
 			this.localVideoStream = null;
+			this.audioSender = null;
 			this.cameraEnabled = false;
+			this.activeAudioInputId = options.audioInputId ?? this.devicePreferences.audioInputId ?? '';
+			this.activeVideoInputId = options.videoInputId ?? this.devicePreferences.videoInputId ?? '';
 			this.wirePeer(peer);
 
 			this.localStream = await navigator.mediaDevices.getUserMedia({
-				audio: AUDIO_CONSTRAINTS,
-				video: call.callType === 'video' ? videoConstraints(this.cameraFacingMode) : false
+				audio: audioConstraints(this.activeAudioInputId || undefined),
+				video:
+					call.callType === 'video' && options.startWithCamera
+						? videoConstraints(this.cameraFacingMode, this.activeVideoInputId || undefined)
+						: false
 			});
 			const audioTrack = this.localStream.getAudioTracks()[0];
 			if (!audioTrack) throw new Error('Microphone did not provide an audio track.');
@@ -397,6 +756,7 @@ class CallsStore {
 				direction: 'sendonly',
 				streams: [this.localStream]
 			});
+			this.audioSender = audioTransceiver.sender;
 			publishMids.push(audioTransceiver.mid);
 			publishTracks.push({
 				location: 'local',
@@ -405,7 +765,7 @@ class CallsStore {
 				mid: audioTransceiver.mid
 			});
 
-			if (call.callType === 'video') {
+			if (call.callType === 'video' && options.startWithCamera) {
 				const videoTrack = this.localStream.getVideoTracks()[0];
 				if (!videoTrack) throw new Error('Camera did not provide a video track.');
 				const videoTransceiver = addCameraTransceiver(peer, videoTrack, this.localStream);
@@ -432,6 +792,7 @@ class CallsStore {
 			this.mediaState = 'active';
 			await this.syncParticipantMediaState();
 			this.startMediaHeartbeat();
+			await this.applyAudioOutputToAll();
 			await this.subscribeAvailableTracks([
 				...(sessionConfig.availableTracks ?? sessionConfig.tracks ?? []),
 				...(trackConfig.availableTracks ?? [])
@@ -556,12 +917,12 @@ class CallsStore {
 	}
 
 	private async setCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
-		if (!this.peer || !this.localStream || !this.videoSender) return;
+		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
 		const notifyOnError = options.notifyOnError ?? true;
 		if (!enabled) {
 			const currentTrack = this.localStream.getVideoTracks()[0];
 			try {
-				await this.videoSender.replaceTrack(null);
+				await this.videoSender?.replaceTrack(null);
 			} catch (error) {
 				if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera off.'));
 			} finally {
@@ -576,7 +937,11 @@ class CallsStore {
 			return;
 		}
 		try {
-			await this.replaceCameraTrack(this.cameraFacingMode);
+			if (this.videoSender) {
+				await this.replaceCameraTrack(this.cameraFacingMode, this.activeVideoInputId || undefined);
+			} else {
+				await this.publishCameraTrack();
+			}
 			this.cameraEnabled = true;
 			await this.syncParticipantMediaState({ videoEnabled: true });
 		} catch (error) {
@@ -587,11 +952,58 @@ class CallsStore {
 		}
 	}
 
-	private async replaceCameraTrack(facingMode: CameraFacingMode): Promise<void> {
+	private async publishCameraTrack(): Promise<void> {
+		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
+		let nextTrack: MediaStreamTrack | null = null;
+		let addedToStream = false;
+		let transceiver: RTCRtpTransceiver | null = null;
+		try {
+			const cameraStream = await navigator.mediaDevices.getUserMedia({
+				audio: false,
+				video: videoConstraints(this.cameraFacingMode, this.activeVideoInputId || undefined)
+			});
+			nextTrack = cameraStream.getVideoTracks()[0] ?? null;
+			if (!nextTrack) {
+				for (const track of cameraStream.getTracks()) track.stop();
+				throw new Error('Camera did not provide a video track.');
+			}
+			this.localStream.addTrack(nextTrack);
+			addedToStream = true;
+			transceiver = addCameraTransceiver(this.peer, nextTrack, this.localStream);
+			this.videoSender = transceiver.sender;
+			const offer = await createOffer(this.peer);
+			const trackConfig = await api.getCallRealtimeTrackConfig(this.activeCall.callId, {
+				sessionId: this.sessionId,
+				sessionDescription: offer,
+				tracks: [
+					{
+						location: 'local',
+						trackName: localTrackName(this.activeCall, 'video'),
+						kind: 'video',
+						mid: transceiver.mid
+					}
+				]
+			});
+			this.publishedMids = new Set([...this.publishedMids, ...publishedTrackMids(trackConfig, [transceiver.mid])]);
+			await this.applyProviderDescription(trackConfig);
+			this.cameraEnabled = true;
+			this.updateLocalVideoStream();
+		} catch (error) {
+			if (transceiver) await transceiver.sender.replaceTrack(null).catch(() => undefined);
+			if (nextTrack) {
+				if (addedToStream) this.localStream.removeTrack(nextTrack);
+				nextTrack.stop();
+			}
+			this.videoSender = null;
+			throw error;
+		}
+	}
+
+	private async replaceCameraTrack(facingMode: CameraFacingMode, deviceId?: string): Promise<void> {
 		if (!this.localStream || !this.videoSender) return;
 		const cameraStream = await navigator.mediaDevices.getUserMedia({
 			audio: false,
-			video: videoConstraints(facingMode)
+			video: videoConstraints(facingMode, deviceId)
 		});
 		const nextTrack = cameraStream.getVideoTracks()[0];
 		if (!nextTrack) {
@@ -679,11 +1091,13 @@ class CallsStore {
 		this.publishedMids = new Set();
 		this.subscribedTracks = new Set();
 		this.pendingRemoteVideoTracks = [];
+		this.audioSender = null;
 		this.videoSender = null;
 		this.remoteStreams = [];
 		this.remoteVideoStreams = [];
 		this.localVideoStream = null;
 		this.cameraEnabled = false;
+		this.callDevicePanelOpen = false;
 	}
 
 	private async leaveCallQuietly(callId: string): Promise<void> {
@@ -702,6 +1116,7 @@ class CallsStore {
 		this.muted = false;
 		this.cameraEnabled = false;
 		this.switchingCamera = false;
+		this.callDevicePanelOpen = false;
 	}
 
 	private removeIncoming(callId: string): void {
@@ -738,6 +1153,8 @@ class CallsStore {
 		this.localVideoStream = null;
 		this.cameraEnabled = false;
 		this.switchingCamera = false;
+		this.callDevicePanelOpen = false;
+		this.cancelPrejoin();
 	}
 }
 
@@ -803,12 +1220,64 @@ function addCameraTransceiver(
 	}
 }
 
-function videoConstraints(facingMode: CameraFacingMode): MediaTrackConstraints {
+function audioConstraints(deviceId?: string): MediaTrackConstraints {
+	return {
+		...AUDIO_CONSTRAINTS,
+		...(deviceId ? { deviceId: { exact: deviceId } } : {})
+	};
+}
+
+function videoConstraints(facingMode: CameraFacingMode, deviceId?: string): MediaTrackConstraints {
 	return {
 		width: { ideal: 1280 },
 		height: { ideal: 720 },
 		frameRate: { ideal: 24, max: 30 },
-		facingMode: { ideal: facingMode }
+		...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: facingMode } })
+	};
+}
+
+function mapMediaDeviceOptions(devices: MediaDeviceInfo[]): CallDeviceOption[] {
+	const counts: Record<CallDeviceKind, number> = {
+		audioinput: 0,
+		audiooutput: 0,
+		videoinput: 0
+	};
+	return devices
+		.filter((device): device is MediaDeviceInfo & { kind: CallDeviceKind } =>
+			device.kind === 'audioinput' || device.kind === 'audiooutput' || device.kind === 'videoinput'
+		)
+		.map((device) => {
+			counts[device.kind] += 1;
+			return {
+				deviceId: device.deviceId,
+				groupId: device.groupId,
+				kind: device.kind,
+				label: device.label || fallbackDeviceLabel(device.kind, counts[device.kind], device.deviceId)
+			};
+		});
+}
+
+function fallbackDeviceLabel(kind: CallDeviceKind, index: number, deviceId: string): string {
+	if (deviceId === 'default') {
+		if (kind === 'audioinput') return 'Default microphone';
+		if (kind === 'audiooutput') return 'Default speaker';
+		return 'Default camera';
+	}
+	if (kind === 'audioinput') return `Microphone ${index}`;
+	if (kind === 'audiooutput') return `Speaker ${index}`;
+	return `Camera ${index}`;
+}
+
+function availableDeviceId(preferred: string | undefined, devices: CallDeviceOption[]): string {
+	if (!preferred) return '';
+	return devices.some((device) => device.deviceId === preferred) ? preferred : '';
+}
+
+function cleanDevicePreferences(preferences: Partial<CallDevicePreferences>): CallDevicePreferences {
+	return {
+		...(preferences.audioInputId ? { audioInputId: preferences.audioInputId } : {}),
+		...(preferences.audioOutputId ? { audioOutputId: preferences.audioOutputId } : {}),
+		...(preferences.videoInputId ? { videoInputId: preferences.videoInputId } : {})
 	};
 }
 
