@@ -20,11 +20,12 @@ PR 1 of the media/calling roadmap added the backend foundation for optimized att
 - The composer generates optimized image variants locally with browser-native image APIs before upload.
 - Static images default to an optimized primary `original`, optional `preview`, and `thumbnail`; when the composer's original-image switch is enabled, the selected source image is uploaded as the downloadable `original` while timeline/viewer variants stay optimized.
 - Video and audio uploads keep the opaque original-only path, but the client records browser-readable duration and video dimensions when metadata is available.
-- The composer shows staged upload progress, local pending thumbnails, cancel, retry, and cleanup of unsent attachment allocations.
+- Voice notes are audio attachments captured by the composer with browser `MediaRecorder`; recorded blobs use the same private allocation/upload/complete path as manually attached audio files and store duration metadata only.
+- The composer shows staged upload progress, local pending thumbnails/audio icons, voice-note recording state, cancel, retry, and cleanup of unsent attachment allocations.
 - Web/desktop users can drag files into the composer drop target; mobile continues to use the platform file picker exposed through the same file input.
 - Chat bubbles lazy-load `thumbnail` first for image timelines through a bounded attachment download queue and open a private authenticated viewer that prefers `preview` and falls back to `original`.
 - Messages with multiple image attachments render as a compact grid; the viewer supports previous/next buttons, keyboard arrows, and swipe-style pointer navigation across images in the same message.
-- Generic files render as downloadable file cards. Video and audio attachments render as media cards with duration metadata when available and open a controls-based viewer on explicit click.
+- Generic files render as downloadable file cards. Video attachments render as media cards with duration metadata when available and open a controls-based viewer on explicit click. Audio attachments, including voice notes, render inline with authenticated playback controls and duration metadata when available.
 - Thread replies use the same composer path, so image/file attachments work in threads.
 - Message attachment references include per-variant MIME metadata so the viewer and forwarding path do not assume all variants share the same content type.
 - Forwarding a visible attachment message clones the attachment variants into the target room before calling the existing forward endpoint, preserving room-local attachment ownership and cleaning up cloned rows if the final forward request fails.
