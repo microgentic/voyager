@@ -71,8 +71,9 @@
 	<div class="flex gap-2.5 rounded-xl bg-surface-2 p-3 text-xs text-muted">
 		<ShieldCheck class="mt-0.5 h-4 w-4 shrink-0 text-primary" />
 		<p>
-			Your passphrase unlocks this account and protects your messages end-to-end. It is never sent
-			to anyone and <strong class="font-semibold text-foreground">cannot be recovered</strong> — store it safely.
+			Your passphrase unlocks this account. Messages and media are protected in transit and
+			gated by room membership while MLS end-to-end encryption is in development. It is never
+			sent to anyone and <strong class="font-semibold text-foreground">cannot be recovered</strong> — store it safely.
 		</p>
 	</div>
 

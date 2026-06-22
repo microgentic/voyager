@@ -11,7 +11,7 @@ PR 1 of the media/calling roadmap added the backend foundation for optimized att
 - Uploads stream request bodies to R2 when `Content-Length` is available; the fallback path still buffers to preserve compatibility with clients that cannot provide a length.
 - `expectedBytes` is a total attachment budget across all variants. Replacing a variant subtracts the previous byte count before applying the new one.
 - Preview or thumbnail uploads do not make an attachment sendable. The primary `original` variant must be uploaded before completion or message reference.
-- Deleting an attachment deletes all known variant objects.
+- Generic attachment delete is pre-reference cleanup only: allocated and uploaded-but-unreferenced attachments may be deleted, which deletes all known variant objects. Referenced attachments return `409 attachment_already_referenced`; deleted, expired, quarantined, or otherwise invalid rows return `409 attachment_not_deletable`.
 - Allocation enforces a small pending-attachment cap per device, a policy max attachments per message, policy image dimensions, and policy daily expected-byte quotas per account and room.
 - Maintenance cleanup deletes known variant objects for expired attachments, abandoned allocated attachments, and uploaded-but-never-referenced attachments before marking those rows expired.
 
@@ -28,7 +28,7 @@ PR 1 of the media/calling roadmap added the backend foundation for optimized att
 - Thread replies use the same composer path, so image/file attachments work in threads.
 - Message attachment references include per-variant MIME metadata so the viewer and forwarding path do not assume all variants share the same content type.
 - Forwarding a visible attachment message clones the attachment variants into the target room before calling the existing forward endpoint, preserving room-local attachment ownership and cleaning up cloned rows if the final forward request fails.
-- Delete-for-me hides the message locally without deleting shared blobs; delete-for-everyone tombstones the message display so attachment content is no longer rendered from that message context.
+- Delete-for-me hides the message locally without deleting shared blobs; delete-for-everyone tombstones the message display so attachment content is no longer rendered from that message context. Neither path physically deletes referenced shared R2 blobs.
 
 ## Security Boundary
 

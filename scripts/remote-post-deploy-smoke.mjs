@@ -1,6 +1,9 @@
 import {
+  assertAttachmentResponse,
   assertAuthResult,
   assertBootstrapResponse,
+  assertCallRealtimeConfigResponse,
+  assertCallResponse,
   assertMessageResponse,
   assertMessagesResponse,
   assertRealtimeRoomMessageEvent,
@@ -25,7 +28,10 @@ const cleanupState = {
   receiverToken: null,
   roomId: null,
   createdRoom: false,
-  envelopeId: null
+  envelopeId: null,
+  attachmentId: null,
+  callId: null,
+  receiverDeviceId: null
 };
 
 function auth(token) {
@@ -38,22 +44,36 @@ function realtimeUrl() {
   return url.toString();
 }
 
-async function apiRaw(path, { method = "GET", headers = {}, json } = {}) {
+async function apiRaw(path, { method = "GET", headers = {}, json, body } = {}) {
+  if (json !== undefined && body !== undefined) {
+    throw new Error(`apiRaw ${method} ${path} cannot send both json and body`);
+  }
   const response = await fetch(`${base}${path}`, {
     method,
     headers: {
-      ...(json ? { "content-type": "application/json" } : {}),
+      ...(json !== undefined ? { "content-type": "application/json" } : {}),
       ...headers
     },
-    body: json ? JSON.stringify(json) : undefined
+    body: json !== undefined ? JSON.stringify(json) : body
   });
-  const payload = await response.json().catch(() => null);
+  const contentType = response.headers.get("content-type") ?? "";
+  const payload = contentType.includes("application/json")
+    ? await response.json().catch(() => null)
+    : await response.text().catch(() => null);
   return { response, payload };
 }
 
 async function api(path, options = {}) {
   const { response, payload } = await apiRaw(path, options);
   if (!response.ok || !payload || payload.ok === false) {
+    throw new Error(`${options.method ?? "GET"} ${path} -> ${response.status} ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
+async function apiText(path, options = {}) {
+  const { response, payload } = await apiRaw(path, options);
+  if (!response.ok || typeof payload !== "string") {
     throw new Error(`${options.method ?? "GET"} ${path} -> ${response.status} ${JSON.stringify(payload)}`);
   }
   return payload;
@@ -202,6 +222,26 @@ function encodeSmokePayload(senderPrincipalId) {
 }
 
 async function cleanupSmokeArtifacts() {
+  if (cleanupState.callId) {
+    for (const token of [cleanupState.receiverToken, cleanupState.ownerToken].filter(Boolean)) {
+      await api(`/v1/calls/${cleanupState.callId}/leave`, {
+        method: "POST",
+        headers: auth(token)
+      }).catch((error) => {
+        console.warn(`Could not leave remote smoke call ${cleanupState.callId}: ${error.message ?? error}`);
+      });
+    }
+  }
+
+  if (cleanupState.attachmentId && cleanupState.ownerToken) {
+    await api(`/v1/attachments/${cleanupState.attachmentId}`, {
+      method: "DELETE",
+      headers: auth(cleanupState.ownerToken)
+    }).catch((error) => {
+      console.warn(`Could not delete remote smoke attachment ${cleanupState.attachmentId}: ${error.message ?? error}`);
+    });
+  }
+
   if (cleanupState.envelopeId && cleanupState.roomId && cleanupState.receiverToken) {
     await api(`/v1/rooms/${cleanupState.roomId}/messages/${cleanupState.envelopeId}/ack`, {
       method: "POST",
@@ -254,6 +294,174 @@ async function findDirectRoom(headers, counterpartPrincipalId) {
   return room ?? null;
 }
 
+async function runAttachmentMiniSmoke(roomId, ownerHeaders) {
+  const originalBody = new TextEncoder().encode(`remote attachment original ${runId}`);
+  const thumbnailBody = new TextEncoder().encode(`remote attachment thumbnail ${runId}`);
+  const attachment = await api(`/v1/rooms/${roomId}/attachments`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      expectedBytes: originalBody.byteLength + thumbnailBody.byteLength + 32,
+      contentCategory: "image",
+      mediaKind: "image",
+      originalFilename: `remote-smoke-${runId}.webp`,
+      declaredMimeType: "image/webp",
+      width: 2,
+      height: 2,
+      variantManifest: {
+        original: { smoke: true },
+        thumbnail: { smoke: true }
+      }
+    }
+  });
+  assertAttachmentResponse(attachment, "POST /v1/rooms/{roomId}/attachments remote smoke");
+  const attachmentId = attachment.attachment.attachmentId;
+  cleanupState.attachmentId = attachmentId;
+
+  await api(`/v1/attachments/${attachmentId}/blob`, {
+    method: "PUT",
+    headers: ownerHeaders,
+    body: originalBody
+  });
+  await api(`/v1/attachments/${attachmentId}/blob?variant=thumbnail`, {
+    method: "PUT",
+    headers: ownerHeaders,
+    body: thumbnailBody
+  });
+  const completed = await api(`/v1/attachments/${attachmentId}/complete`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { ciphertextBytes: originalBody.byteLength }
+  });
+  assertAttachmentResponse(completed, "POST /v1/attachments/{attachmentId}/complete remote smoke");
+
+  const originalDownload = await apiText(`/v1/attachments/${attachmentId}/blob`, {
+    headers: ownerHeaders
+  });
+  if (originalDownload !== new TextDecoder().decode(originalBody)) {
+    throw new Error("remote attachment original download mismatch");
+  }
+  const thumbnailDownload = await apiText(`/v1/attachments/${attachmentId}/blob?variant=thumbnail`, {
+    headers: ownerHeaders
+  });
+  if (thumbnailDownload !== new TextDecoder().decode(thumbnailBody)) {
+    throw new Error("remote attachment thumbnail download mismatch");
+  }
+
+  const deleted = await api(`/v1/attachments/${attachmentId}`, {
+    method: "DELETE",
+    headers: ownerHeaders
+  });
+  if (deleted.ok !== true) {
+    throw new Error("remote attachment delete did not return ok");
+  }
+  cleanupState.attachmentId = null;
+
+  const deletedDownload = await apiRaw(`/v1/attachments/${attachmentId}/blob`, {
+    headers: ownerHeaders
+  });
+  if (deletedDownload.response.status !== 404) {
+    throw new Error(`remote deleted attachment download expected 404 but got ${deletedDownload.response.status}`);
+  }
+
+  return attachmentId;
+}
+
+async function runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders) {
+  const created = await apiRaw(`/v1/rooms/${roomId}/calls`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { callType: "audio" }
+  });
+  if (!created.response.ok || !created.payload || created.payload.ok === false) {
+    throw new Error(`POST /v1/rooms/${roomId}/calls -> ${created.response.status} ${JSON.stringify(created.payload)}`);
+  }
+  assertServerTiming(
+    created.response.headers.get("server-timing") ?? "",
+    ["callCreate", "callDo", "callQueue", "callOperation"],
+    "POST /v1/rooms/{roomId}/calls remote smoke"
+  );
+  assertCallResponse(created.payload, "POST /v1/rooms/{roomId}/calls remote smoke");
+  const callId = created.payload.call.callId;
+  cleanupState.callId = callId;
+  if (created.payload.call.status !== "ringing" || created.payload.call.callType !== "audio") {
+    throw new Error("remote smoke audio call did not start ringing");
+  }
+
+  const realtimeSession = await apiRaw(`/v1/calls/${callId}/realtime/session`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  if (realtimeSession.response.ok && realtimeSession.payload) {
+    assertCallRealtimeConfigResponse(realtimeSession.payload, "POST /v1/calls/{callId}/realtime/session remote smoke");
+    if (realtimeSession.payload.realtime.configured === false) {
+      const message = String(realtimeSession.payload.realtime.message ?? "");
+      if (!message.includes("Cloudflare Realtime is not configured")) {
+        throw new Error("remote unconfigured realtime session returned unexpected message");
+      }
+    } else {
+      console.warn("Remote smoke found Cloudflare Realtime configured; PR 3 opt-in media smoke covers live provider assertions.");
+    }
+  } else if (realtimeSession.payload?.error === "realtime_provider_error") {
+    console.warn("Remote smoke skipped live provider assertion after configured provider error; PR 3 will add opt-in media smoke.");
+  } else {
+    throw new Error(`POST /v1/calls/${callId}/realtime/session -> ${realtimeSession.response.status} ${JSON.stringify(realtimeSession.payload)}`);
+  }
+
+  const joined = await api(`/v1/calls/${callId}/join`, {
+    method: "POST",
+    headers: receiverHeaders
+  });
+  assertCallResponse(joined, "POST /v1/calls/{callId}/join remote smoke");
+  if (joined.call.status !== "active") {
+    throw new Error("remote smoke call did not become active after receiver joined");
+  }
+
+  const muted = await api(`/v1/calls/${callId}/mute`, {
+    method: "POST",
+    headers: receiverHeaders
+  });
+  assertCallResponse(muted, "POST /v1/calls/{callId}/mute remote smoke");
+  const receiverMuted = muted.call.participants.find((participant) => participant.deviceId === cleanupState.receiverDeviceId);
+  if (!receiverMuted?.mutedAt) {
+    throw new Error("remote smoke receiver mute did not persist mutedAt");
+  }
+
+  const unmuted = await api(`/v1/calls/${callId}/unmute`, {
+    method: "POST",
+    headers: receiverHeaders
+  });
+  assertCallResponse(unmuted, "POST /v1/calls/{callId}/unmute remote smoke");
+
+  const receiverLeft = await api(`/v1/calls/${callId}/leave`, {
+    method: "POST",
+    headers: receiverHeaders
+  });
+  assertCallResponse(receiverLeft, "POST /v1/calls/{callId}/leave receiver remote smoke");
+  if (receiverLeft.call.status !== "active") {
+    throw new Error("remote smoke call ended before owner left");
+  }
+
+  const ownerLeft = await api(`/v1/calls/${callId}/leave`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallResponse(ownerLeft, "POST /v1/calls/{callId}/leave owner remote smoke");
+  if (ownerLeft.call.status !== "ended" || ownerLeft.call.endedReason !== "all_left") {
+    throw new Error("remote smoke call did not end after both participants left");
+  }
+
+  const finalCall = await api(`/v1/calls/${callId}`, {
+    headers: ownerHeaders
+  });
+  assertCallResponse(finalCall, "GET /v1/calls/{callId} remote smoke final");
+  if (finalCall.call.status !== "ended") {
+    throw new Error("remote smoke final call fetch was not ended");
+  }
+  cleanupState.callId = null;
+  return callId;
+}
+
 async function main() {
   const health = await api("/health");
   if (health.status !== "healthy" || health.d1 !== "bound" || health.r2 !== "bound") {
@@ -266,6 +474,7 @@ async function main() {
   const receiverHeaders = auth(receiver.sessionToken);
   cleanupState.ownerToken = owner.sessionToken;
   cleanupState.receiverToken = receiver.sessionToken;
+  cleanupState.receiverDeviceId = receiver.device.deviceId;
 
   assertBootstrapResponse(await api("/v1/app/bootstrap?limit=100", { headers: ownerHeaders }), "GET /v1/app/bootstrap owner");
   assertBootstrapResponse(await api("/v1/app/bootstrap?limit=100", { headers: receiverHeaders }), "GET /v1/app/bootstrap receiver");
@@ -285,6 +494,9 @@ async function main() {
   }
   const roomId = room.roomId;
   cleanupState.roomId = roomId;
+
+  const attachmentId = await runAttachmentMiniSmoke(roomId, ownerHeaders);
+  const callId = await runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders);
 
   const watcher = await openRealtimeWatcher(receiver.sessionToken, roomId);
   const messageBody = {
@@ -355,6 +567,8 @@ async function main() {
         runId,
         roomId,
         messageId: message.message.envelopeId,
+        attachmentId,
+        callId,
         realtimeEventId: realtimeEvent.eventId,
         ownerDeviceId: owner.device.deviceId,
         receiverDeviceId: receiver.device.deviceId
