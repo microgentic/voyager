@@ -523,7 +523,11 @@ function countByCategory(items) {
 }
 
 function routeKey(route) {
-  return `${route.method} ${route.path}`;
+  return `${route.method} ${normalizeRoutePath(route.path)}`;
+}
+
+function normalizeRoutePath(path) {
+  return path.replace(/\{[^}]+\}/g, "{param}");
 }
 
 function categoryCompare(left, right) {
