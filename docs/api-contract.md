@@ -294,7 +294,7 @@ Room invitations are the human membership path. Reused, expired, declined, or re
 
 ### Calls
 
-Call endpoints are a shared foundation for audio and video. The current call surface combines durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and Cloudflare Realtime session/track negotiation for microphone and camera tracks. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
+Call endpoints are a shared foundation for audio and video. The current call surface combines durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and Cloudflare Realtime session/track negotiation for microphone, camera, and screen tracks. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
 
 | Method | Path | Response |
 | --- | --- | --- |

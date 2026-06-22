@@ -882,6 +882,26 @@ const videoMediaParticipant = videoMediaStateCall.call.participants.find((partic
 if (!videoMediaParticipant?.audioEnabled || !videoMediaParticipant.videoEnabled || videoMediaParticipant.screenEnabled) {
   throw new Error("video media state patch did not persist participant camera state");
 }
+const screenMediaStateCall = await api(`/v1/calls/${videoCall.call.callId}/participants/me`, {
+  method: "PATCH",
+  headers: userHeaders,
+  json: { audioEnabled: true, videoEnabled: true, screenEnabled: true, heartbeat: true }
+});
+assertCallResponse(screenMediaStateCall, "PATCH /v1/calls/{callId}/participants/me screen media");
+const screenMediaParticipant = screenMediaStateCall.call.participants.find((participant) => participant.principalId === accepted.principal.principalId);
+if (!screenMediaParticipant?.audioEnabled || !screenMediaParticipant.videoEnabled || !screenMediaParticipant.screenEnabled) {
+  throw new Error("video media state patch did not persist participant screen state");
+}
+const stoppedScreenMediaStateCall = await api(`/v1/calls/${videoCall.call.callId}/participants/me`, {
+  method: "PATCH",
+  headers: userHeaders,
+  json: { screenEnabled: false, heartbeat: true }
+});
+assertCallResponse(stoppedScreenMediaStateCall, "PATCH /v1/calls/{callId}/participants/me stop screen media");
+const stoppedScreenMediaParticipant = stoppedScreenMediaStateCall.call.participants.find((participant) => participant.principalId === accepted.principal.principalId);
+if (!stoppedScreenMediaParticipant || stoppedScreenMediaParticipant.screenEnabled) {
+  throw new Error("video media state patch did not clear participant screen state");
+}
 const videoCalleeLeftCall = await api(`/v1/calls/${videoCall.call.callId}/leave`, {
   method: "POST",
   headers: userHeaders

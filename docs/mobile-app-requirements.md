@@ -40,7 +40,9 @@ rewrite.
   (and, in production, the API must allow the app origin — see §6).
 - Audio/video calls use WebView media APIs with OS-level platform declarations
   and a minimal Tauri capability surface. See `docs/call-device-prejoin-qa.md`
-  for the current browser/native permission checklist.
+  for the browser/native permission checklist and
+  `docs/call-video-completion-qa.md` for video, screen sharing, fullscreen, and
+  teardown QA.
 
 ## 3. Native plugins / capabilities to add
 
