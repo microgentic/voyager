@@ -325,6 +325,48 @@ export function assertRealtimeTokenResponse(payload, context) {
   string(value.expiresAt, `${context}.expiresAt`);
 }
 
+export function assertAdminUsageResponse(payload, context) {
+  const value = success(payload, context);
+  const usage = object(value.usage, `${context}.usage`);
+  [
+    "accounts",
+    "activeDevices",
+    "activeSessions",
+    "openInvitations",
+    "auditEvents",
+    "rooms",
+    "messages",
+    "attachments",
+    "agentRequests"
+  ].forEach((key) => number(usage[key], `${context}.usage.${key}`));
+
+  const attachmentBytes = object(usage.attachmentBytes, `${context}.usage.attachmentBytes`);
+  number(attachmentBytes.activeExpectedBytes, `${context}.usage.attachmentBytes.activeExpectedBytes`);
+  number(attachmentBytes.allocatedExpectedBytesLast24h, `${context}.usage.attachmentBytes.allocatedExpectedBytesLast24h`);
+  number(attachmentBytes.uploadedStoredBytes, `${context}.usage.attachmentBytes.uploadedStoredBytes`);
+
+  const callMedia = object(usage.callMedia, `${context}.usage.callMedia`);
+  [
+    "totalCalls",
+    "activeCalls",
+    "endedCalls",
+    "failedCalls",
+    "participantRows",
+    "failedParticipants",
+    "maxParticipants",
+    "totalDurationMs",
+    "realtimeSessions",
+    "activeRealtimeSessions",
+    "realtimeTracks",
+    "failedMediaEvents"
+  ].forEach((key) => number(callMedia[key], `${context}.usage.callMedia.${key}`));
+  assertNumericMap(callMedia.tracksByKind, `${context}.usage.callMedia.tracksByKind`);
+  assertNumericMap(callMedia.tracksByQualityLayer, `${context}.usage.callMedia.tracksByQualityLayer`);
+  boolean(callMedia.turnConfigured, `${context}.usage.callMedia.turnConfigured`);
+  nullableNumber(callMedia.estimatedSfuTurnEgressBytes, `${context}.usage.callMedia.estimatedSfuTurnEgressBytes`);
+  string(callMedia.estimatedSfuTurnEgressStatus, `${context}.usage.callMedia.estimatedSfuTurnEgressStatus`);
+}
+
 export function assertEndpointCatalog() {
   const seen = new Set();
   for (const endpoint of endpointStabilityCatalog) {
@@ -704,6 +746,18 @@ function string(value, context) {
 
 function nullableString(value, context) {
   if (value !== null && typeof value !== "string") fail(`${context} must be a string or null`);
+}
+
+function nullableNumber(value, context) {
+  if (value !== null) number(value, context);
+}
+
+function assertNumericMap(value, context) {
+  const map = object(value, context);
+  for (const [key, count] of Object.entries(map)) {
+    string(key, `${context}.key`);
+    number(count, `${context}.${key}`);
+  }
 }
 
 function number(value, context) {

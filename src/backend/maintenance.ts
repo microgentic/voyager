@@ -13,6 +13,9 @@ interface AttachmentObjectKeysRow {
   thumbnail_object_key: string | null;
 }
 
+const ABANDONED_ALLOCATED_ATTACHMENT_MINUTES = 60;
+const UNREFERENCED_UPLOADED_ATTACHMENT_HOURS = 24;
+
 export async function listAdminRooms(env: Env, url: URL): Promise<JsonObject> {
   const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
   const status = url.searchParams.get("status");
@@ -63,14 +66,37 @@ export async function runCleanup(
   env: Env,
   auth: AuthContext,
 ): Promise<JsonObject> {
-  const expiredAttachmentRows = await env.CONTROL_DB.prepare(
-    `SELECT object_key, original_object_key, preview_object_key, thumbnail_object_key
-     FROM attachments
-     WHERE expires_at <= CURRENT_TIMESTAMP
+  const [
+    expiredAttachmentRows,
+    abandonedAllocatedAttachmentRows,
+    unreferencedUploadedAttachmentRows,
+  ] = await Promise.all([
+    attachmentObjectRows(
+      env,
+      `expires_at <= CURRENT_TIMESTAMP
        AND state IN ('allocated', 'uploaded', 'referenced')`,
-  ).all<AttachmentObjectKeysRow>();
+    ),
+    attachmentObjectRows(
+      env,
+      `expires_at > CURRENT_TIMESTAMP
+       AND state = 'allocated'
+       AND created_at <= datetime('now', '-${ABANDONED_ALLOCATED_ATTACHMENT_MINUTES} minutes')`,
+    ),
+    attachmentObjectRows(
+      env,
+      `expires_at > CURRENT_TIMESTAMP
+       AND state = 'uploaded'
+       AND referenced_at IS NULL
+       AND uploaded_at IS NOT NULL
+       AND uploaded_at <= datetime('now', '-${UNREFERENCED_UPLOADED_ATTACHMENT_HOURS} hours')`,
+    ),
+  ]);
   const expiredAttachmentObjectKeys = uniqueAttachmentObjectKeys(
-    expiredAttachmentRows.results ?? [],
+    [
+      ...expiredAttachmentRows,
+      ...abandonedAllocatedAttachmentRows,
+      ...unreferencedUploadedAttachmentRows,
+    ],
   );
   await Promise.all(
     expiredAttachmentObjectKeys.map((objectKey) =>
@@ -85,6 +111,26 @@ export async function runCleanup(
   const expiredAttachments = await runCounted(
     env.CONTROL_DB.prepare(
       "UPDATE attachments SET state = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND state IN ('allocated', 'uploaded', 'referenced')",
+    ),
+  );
+  const abandonedAllocatedAttachments = await runCounted(
+    env.CONTROL_DB.prepare(
+      `UPDATE attachments
+       SET state = 'expired'
+       WHERE expires_at > CURRENT_TIMESTAMP
+         AND state = 'allocated'
+         AND created_at <= datetime('now', '-${ABANDONED_ALLOCATED_ATTACHMENT_MINUTES} minutes')`,
+    ),
+  );
+  const unreferencedUploadedAttachments = await runCounted(
+    env.CONTROL_DB.prepare(
+      `UPDATE attachments
+       SET state = 'expired'
+       WHERE expires_at > CURRENT_TIMESTAMP
+         AND state = 'uploaded'
+         AND referenced_at IS NULL
+         AND uploaded_at IS NOT NULL
+         AND uploaded_at <= datetime('now', '-${UNREFERENCED_UPLOADED_ATTACHMENT_HOURS} hours')`,
     ),
   );
   const expiredKeyPackages = await runCounted(
@@ -122,6 +168,8 @@ export async function runCleanup(
     action: "cleanup",
     expiredMessages,
     expiredAttachments,
+    abandonedAllocatedAttachments,
+    unreferencedUploadedAttachments,
     expiredKeyPackages,
     expiredRoomInvitations,
     revokedCredentialResets,
@@ -129,6 +177,10 @@ export async function runCleanup(
     deletedRealtimeTokens,
     deletedRateLimits,
     deletedAttachmentObjects: expiredAttachmentObjectKeys.length,
+    attachmentCleanupWindows: {
+      allocatedOlderThanMinutes: ABANDONED_ALLOCATED_ATTACHMENT_MINUTES,
+      uploadedUnreferencedOlderThanHours: UNREFERENCED_UPLOADED_ATTACHMENT_HOURS,
+    },
   };
   await env.CONTROL_DB.prepare(
     "INSERT INTO maintenance_runs (maintenance_run_id, action, actor_account_id, result, metadata_json) VALUES (?, 'cleanup', ?, 'success', ?)",
@@ -140,6 +192,18 @@ export async function runCleanup(
     )
     .run();
   return cleanup;
+}
+
+async function attachmentObjectRows(
+  env: Env,
+  whereClause: string,
+): Promise<AttachmentObjectKeysRow[]> {
+  const rows = await env.CONTROL_DB.prepare(
+    `SELECT object_key, original_object_key, preview_object_key, thumbnail_object_key
+     FROM attachments
+     WHERE ${whereClause}`,
+  ).all<AttachmentObjectKeysRow>();
+  return rows.results ?? [];
 }
 
 function uniqueAttachmentObjectKeys(rows: AttachmentObjectKeysRow[]): string[] {

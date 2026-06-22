@@ -141,7 +141,7 @@ Admin:
 - Add room invitation revocation for room owners/admins.
 - Add direct-room reuse or duplicate detection so repeated direct-room creation can be idempotent.
 - Add message retention purge behavior after an additional grace window.
-- Add attachment orphan cleanup that also deletes expired unreferenced R2 objects.
+- Broaden attachment cleanup QA as retention and client encryption semantics mature.
 - Add local development seed helpers for repeatable UI testing fixtures.
 
 ## 7. Verification Path

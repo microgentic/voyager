@@ -252,6 +252,8 @@ export interface CallRealtimeTrackRow {
   location: "local" | "remote";
   kind: "audio" | "video" | "screen" | "data";
   mid: string | null;
+  quality_layer: string | null;
+  simulcast_json: string | null;
   account_id: string;
   principal_id: string;
   device_id: string;

@@ -434,15 +434,33 @@ export async function getRealtimeSessionConfig(
     heartbeat: true,
   });
   const config = realtimeConfig(env);
-  if (!config.configured) return realtimeUnavailable(call, config);
+  if (!config.configured) {
+    return recordRealtimeUnavailable(
+      env,
+      auth,
+      call,
+      participant,
+      config,
+      "session",
+    );
+  }
 
-  const payload = await realtimeApiRequest(env, config, "/sessions/new", {
-    method: "POST",
-    query: { correlationId: `${callId}:${participant.call_participant_id}` },
-    body: {
-      sessionDescription: parseOptionalSessionDescription(body),
+  const payload = await realtimeProviderRequest(
+    env,
+    auth,
+    call,
+    participant,
+    "session",
+    config,
+    "/sessions/new",
+    {
+      method: "POST",
+      query: { correlationId: `${callId}:${participant.call_participant_id}` },
+      body: {
+        sessionDescription: parseOptionalSessionDescription(body),
+      },
     },
-  });
+  );
   const providerSessionId = stringPayload(payload, "sessionId", "realtime_session_missing");
   const session = await upsertRealtimeSession(env, auth, participant, providerSessionId);
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
@@ -472,7 +490,16 @@ export async function getRealtimeTrackConfig(
     heartbeat: true,
   });
   const config = realtimeConfig(env);
-  if (!config.configured) return realtimeUnavailable(call, config);
+  if (!config.configured) {
+    return recordRealtimeUnavailable(
+      env,
+      auth,
+      call,
+      participant,
+      config,
+      "tracks",
+    );
+  }
 
   const providerSessionId = stringField(body, "sessionId", { max: 160 });
   if (!providerSessionId) {
@@ -496,14 +523,23 @@ export async function getRealtimeTrackConfig(
     });
   }
 
-  const payload = await realtimeApiRequest(env, config, `/sessions/${encodeURIComponent(providerSessionId)}/tracks/new`, {
-    method: "POST",
-    body: {
-      sessionDescription: parseOptionalSessionDescription(body),
-      tracks: requestedTracks.map(providerTrackInput),
-      autoDiscover: body.autoDiscover === true,
+  const payload = await realtimeProviderRequest(
+    env,
+    auth,
+    call,
+    participant,
+    "tracks",
+    config,
+    `/sessions/${encodeURIComponent(providerSessionId)}/tracks/new`,
+    {
+      method: "POST",
+      body: {
+        sessionDescription: parseOptionalSessionDescription(body),
+        tracks: requestedTracks.map(providerTrackInput),
+        autoDiscover: body.autoDiscover === true,
+      },
     },
-  });
+  );
   const tracks = tracksFromPayload(payload, requestedTracks);
   await upsertRealtimeTracks(env, auth, session, tracks);
   if (tracks.some((track) => track.location === "local")) {
@@ -540,14 +576,32 @@ export async function renegotiateRealtimeSession(
     heartbeat: true,
   });
   const config = realtimeConfig(env);
-  if (!config.configured) return realtimeUnavailable(call, config);
+  if (!config.configured) {
+    return recordRealtimeUnavailable(
+      env,
+      auth,
+      call,
+      participant,
+      config,
+      "renegotiate",
+    );
+  }
 
   const providerSessionId = stringField(body, "sessionId", { required: true, max: 160 })!;
   const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
-  const payload = await realtimeApiRequest(env, config, `/sessions/${encodeURIComponent(providerSessionId)}/renegotiate`, {
-    method: "PUT",
-    body: { sessionDescription: parseRequiredSessionDescription(body) },
-  });
+  const payload = await realtimeProviderRequest(
+    env,
+    auth,
+    call,
+    participant,
+    "renegotiate",
+    config,
+    `/sessions/${encodeURIComponent(providerSessionId)}/renegotiate`,
+    {
+      method: "PUT",
+      body: { sessionDescription: parseRequiredSessionDescription(body) },
+    },
+  );
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(call, config, {
@@ -572,19 +626,37 @@ export async function closeRealtimeTracks(
     heartbeat: true,
   });
   const config = realtimeConfig(env);
-  if (!config.configured) return realtimeUnavailable(call, config);
+  if (!config.configured) {
+    return recordRealtimeUnavailable(
+      env,
+      auth,
+      call,
+      participant,
+      config,
+      "tracks.close",
+    );
+  }
 
   const providerSessionId = stringField(body, "sessionId", { required: true, max: 160 })!;
   const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
   const tracks = parseCloseRealtimeTracks(body);
-  const payload = await realtimeApiRequest(env, config, `/sessions/${encodeURIComponent(providerSessionId)}/tracks/close`, {
-    method: "PUT",
-    body: {
-      sessionDescription: parseOptionalSessionDescription(body),
-      tracks,
-      force: body.force === true,
+  const payload = await realtimeProviderRequest(
+    env,
+    auth,
+    call,
+    participant,
+    "tracks.close",
+    config,
+    `/sessions/${encodeURIComponent(providerSessionId)}/tracks/close`,
+    {
+      method: "PUT",
+      body: {
+        sessionDescription: parseOptionalSessionDescription(body),
+        tracks,
+        force: body.force === true,
+      },
     },
-  });
+  );
   await markRealtimeTracksClosed(env, session, tracks);
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
@@ -1158,6 +1230,12 @@ interface RealtimeTrackInput {
   simulcast?: JsonObject;
 }
 
+interface RealtimeApiRequestOptions {
+  method: "GET" | "POST" | "PUT";
+  query?: Record<string, string>;
+  body?: Record<string, unknown>;
+}
+
 interface CloseRealtimeTrackInput {
   mid: string;
 }
@@ -1204,6 +1282,50 @@ function realtimeUnavailable(call: CallRow, config: RealtimeConfig): JsonObject 
   });
 }
 
+async function recordRealtimeUnavailable(
+  env: Env,
+  auth: AuthContext,
+  call: CallRow,
+  participant: CallParticipantRow,
+  config: RealtimeConfig,
+  endpoint: string,
+): Promise<JsonObject> {
+  await insertCallEvent(env, auth, call.call_id, "call.media.join_failed", {
+    roomId: call.room_id,
+    callParticipantId: participant.call_participant_id,
+    deviceId: auth.device.device_id,
+    provider: REALTIME_PROVIDER,
+    endpoint,
+    reason: "cloudflare_realtime_not_configured",
+  });
+  return realtimeUnavailable(call, config);
+}
+
+async function realtimeProviderRequest(
+  env: Env,
+  auth: AuthContext,
+  call: CallRow,
+  participant: CallParticipantRow,
+  endpoint: string,
+  config: RealtimeConfig,
+  path: string,
+  options: RealtimeApiRequestOptions,
+): Promise<Record<string, unknown>> {
+  try {
+    return await realtimeApiRequest(env, config, path, options);
+  } catch (error) {
+    await insertCallEvent(env, auth, call.call_id, "call.media.join_failed", {
+      roomId: call.room_id,
+      callParticipantId: participant.call_participant_id,
+      deviceId: auth.device.device_id,
+      provider: REALTIME_PROVIDER,
+      endpoint,
+      reason: error instanceof HttpError ? error.code : "realtime_provider_error",
+    });
+    throw error;
+  }
+}
+
 function realtimeResponse(
   call: CallRow,
   config: RealtimeConfig,
@@ -1224,11 +1346,7 @@ async function realtimeApiRequest(
   _env: Env,
   config: RealtimeConfig,
   path: string,
-  options: {
-    method: "GET" | "POST" | "PUT";
-    query?: Record<string, string>;
-    body?: Record<string, unknown>;
-  },
+  options: RealtimeApiRequestOptions,
 ): Promise<Record<string, unknown>> {
   if (!config.appId || !config.appSecret) {
     throw new HttpError(
@@ -1600,12 +1718,15 @@ async function upsertRealtimeTracks(
       `INSERT INTO call_realtime_tracks (
          call_realtime_track_id, call_id, call_realtime_session_id, provider,
          provider_session_id, owner_provider_session_id, provider_track_name,
-         location, kind, mid, account_id, principal_id, device_id, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+         location, kind, mid, quality_layer, simulcast_json, account_id,
+         principal_id, device_id, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
        ON CONFLICT(call_realtime_session_id, provider_track_name, location) DO UPDATE SET
          owner_provider_session_id = excluded.owner_provider_session_id,
          kind = excluded.kind,
          mid = excluded.mid,
+         quality_layer = excluded.quality_layer,
+         simulcast_json = excluded.simulcast_json,
          status = 'active',
          closed_at = NULL,
          updated_at = CURRENT_TIMESTAMP`,
@@ -1621,6 +1742,8 @@ async function upsertRealtimeTracks(
         track.location,
         track.kind,
         track.mid ?? null,
+        preferredQualityLayer(track.simulcast),
+        track.simulcast ? JSON.stringify(track.simulcast) : null,
         auth.account.account_id,
         auth.principal.principal_id,
         auth.device.device_id,
@@ -1671,11 +1794,33 @@ async function availableRealtimeTracks(
     trackName: track.provider_track_name,
     kind: track.kind,
     mid: track.mid,
+    qualityLayer: track.quality_layer,
+    simulcast: parseJsonObject(track.simulcast_json),
     principalId: track.principal_id,
     deviceId: track.device_id,
     displayName: track.display_name,
     principalType: track.principal_type,
   }));
+}
+
+function preferredQualityLayer(simulcast: JsonObject | undefined): string | null {
+  const preferredRid = simulcast?.preferredRid;
+  return typeof preferredRid === "string" && preferredRid.trim()
+    ? preferredRid.trim()
+    : null;
+}
+
+function parseJsonObject(value: string | null): JsonObject | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as JsonObject;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 async function markRealtimeTracksClosed(

@@ -23,6 +23,9 @@ const MAX_FILENAME_LENGTH = 255;
 const MAX_MIME_LENGTH = 120;
 const MAX_VARIANT_MANIFEST_BYTES = 16_384;
 const MAX_PENDING_ATTACHMENTS_PER_DEVICE = 25;
+const DEFAULT_MAX_IMAGE_DIMENSION = 8192;
+const DEFAULT_DAILY_ATTACHMENT_BYTES_PER_ACCOUNT = 100 * 1024 * 1024;
+const DEFAULT_DAILY_ATTACHMENT_BYTES_PER_ROOM = 500 * 1024 * 1024;
 
 export async function allocateAttachment(
   env: Env,
@@ -54,6 +57,19 @@ export async function allocateAttachment(
     1,
     policy.maximum_attachment_bytes,
   );
+  await assertAttachmentDailyQuota(env, {
+    accountId: auth.account.account_id,
+    roomId,
+    expectedBytes,
+    accountLimit: positivePolicyLimit(
+      policy.daily_attachment_bytes_per_account,
+      DEFAULT_DAILY_ATTACHMENT_BYTES_PER_ACCOUNT,
+    ),
+    roomLimit: positivePolicyLimit(
+      policy.daily_attachment_bytes_per_room,
+      DEFAULT_DAILY_ATTACHMENT_BYTES_PER_ROOM,
+    ),
+  });
   const attachmentId = randomId("att");
   const objectKey = `attachments/${roomId}/${attachmentId}/original`;
   const expiresAt = sqliteTimestamp(
@@ -62,6 +78,12 @@ export async function allocateAttachment(
   const mediaKind = parseMediaKind(
     stringField(body, "mediaKind", { max: 20 }) ?? "unknown",
   );
+  const maxImageDimension = positivePolicyLimit(
+    policy.maximum_image_dimension,
+    DEFAULT_MAX_IMAGE_DIMENSION,
+  );
+  const width = optionalNumberField(body, "width", 1, maxImageDimension);
+  const height = optionalNumberField(body, "height", 1, maxImageDimension);
   await env.CONTROL_DB.prepare(
     `INSERT INTO attachments (
       attachment_id, room_id, uploader_account_id, uploader_principal_id, uploader_device_id,
@@ -85,8 +107,8 @@ export async function allocateAttachment(
       }) ?? null,
       stringField(body, "declaredMimeType", { max: MAX_MIME_LENGTH }) ?? null,
       mediaKind,
-      optionalNumberField(body, "width", 1, 100_000),
-      optionalNumberField(body, "height", 1, 100_000),
+      width,
+      height,
       optionalNumberField(body, "durationMs", 1, 24 * 60 * 60 * 1000),
       objectKey,
       optionalJsonText(body, "variantManifest", MAX_VARIANT_MANIFEST_BYTES),
@@ -364,6 +386,13 @@ export async function completeAttachment(
     );
   }
   const mediaKind = stringField(body, "mediaKind", { max: 20 });
+  const policy = await getPolicy(env, auth.account.policy_id);
+  const maxImageDimension = positivePolicyLimit(
+    policy.maximum_image_dimension,
+    DEFAULT_MAX_IMAGE_DIMENSION,
+  );
+  const width = optionalNumberField(body, "width", 1, maxImageDimension);
+  const height = optionalNumberField(body, "height", 1, maxImageDimension);
   await env.CONTROL_DB.prepare(
     `UPDATE attachments
      SET ciphertext_sha256 = COALESCE(?, ciphertext_sha256),
@@ -390,8 +419,8 @@ export async function completeAttachment(
       }) ?? null,
       stringField(body, "declaredMimeType", { max: MAX_MIME_LENGTH }) ?? null,
       mediaKind ? parseMediaKind(mediaKind) : null,
-      optionalNumberField(body, "width", 1, 100_000),
-      optionalNumberField(body, "height", 1, 100_000),
+      width,
+      height,
       optionalNumberField(body, "durationMs", 1, 24 * 60 * 60 * 1000),
       optionalJsonText(body, "variantManifest", MAX_VARIANT_MANIFEST_BYTES),
       attachmentId,
@@ -494,4 +523,55 @@ export function ensureAttachmentUploader(
       "Only the allocating device can upload or complete this attachment",
     );
   }
+}
+
+async function assertAttachmentDailyQuota(
+  env: Env,
+  input: {
+    accountId: string;
+    roomId: string;
+    expectedBytes: number;
+    accountLimit: number;
+    roomLimit: number;
+  },
+): Promise<void> {
+  const [accountBytes, roomBytes] = await Promise.all([
+    dailyAttachmentExpectedBytes(env, "uploader_account_id", input.accountId),
+    dailyAttachmentExpectedBytes(env, "room_id", input.roomId),
+  ]);
+  if (accountBytes + input.expectedBytes > input.accountLimit) {
+    throw new HttpError(
+      429,
+      "attachment_account_daily_quota_exceeded",
+      "Daily attachment byte quota exceeded for this account",
+    );
+  }
+  if (roomBytes + input.expectedBytes > input.roomLimit) {
+    throw new HttpError(
+      429,
+      "attachment_room_daily_quota_exceeded",
+      "Daily attachment byte quota exceeded for this room",
+    );
+  }
+}
+
+async function dailyAttachmentExpectedBytes(
+  env: Env,
+  column: "uploader_account_id" | "room_id",
+  value: string,
+): Promise<number> {
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT COALESCE(SUM(expected_bytes), 0) AS bytes
+     FROM attachments
+     WHERE ${column} = ?
+       AND created_at >= datetime('now', '-1 day')
+       AND state != 'quarantined_metadata'`,
+  )
+    .bind(value)
+    .first<{ bytes: number }>();
+  return Number(row?.bytes ?? 0);
+}
+
+function positivePolicyLimit(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Number(value) : fallback;
 }

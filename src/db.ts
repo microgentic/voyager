@@ -1179,8 +1179,20 @@ export async function checkRateLimit(
     .run();
 }
 
-export async function getUsage(env: Env): Promise<Record<string, number>> {
-  const [accounts, activeDevices, activeSessions, invitations, audits, rooms, messages, attachments, agentRequests] = await Promise.all([
+export async function getUsage(env: Env): Promise<Record<string, unknown>> {
+  const [
+    accounts,
+    activeDevices,
+    activeSessions,
+    invitations,
+    audits,
+    rooms,
+    messages,
+    attachments,
+    agentRequests,
+    attachmentBytes,
+    callMedia,
+  ] = await Promise.all([
     count(env, "accounts"),
     count(env, "devices", "revoked_at IS NULL"),
     count(env, "sessions", "revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"),
@@ -1189,9 +1201,23 @@ export async function getUsage(env: Env): Promise<Record<string, number>> {
     count(env, "rooms", "status != 'deleted'"),
     count(env, "message_envelopes", "state != 'purged'"),
     count(env, "attachments", "state != 'deleted'"),
-    count(env, "agent_requests")
+    count(env, "agent_requests"),
+    getAttachmentByteUsage(env),
+    getCallMediaUsage(env),
   ]);
-  return { accounts, activeDevices, activeSessions, openInvitations: invitations, auditEvents: audits, rooms, messages, attachments, agentRequests };
+  return {
+    accounts,
+    activeDevices,
+    activeSessions,
+    openInvitations: invitations,
+    auditEvents: audits,
+    rooms,
+    messages,
+    attachments,
+    agentRequests,
+    attachmentBytes,
+    callMedia,
+  };
 }
 
 export async function getAuditEvents(env: Env): Promise<unknown[]> {
@@ -1403,6 +1429,141 @@ async function count(env: Env, table: string, where?: string): Promise<number> {
     count: number;
   }>();
   return row?.count ?? 0;
+}
+
+async function getAttachmentByteUsage(env: Env): Promise<Record<string, number>> {
+  const [activeExpectedBytes, allocatedExpectedBytesLast24h, uploadedStoredBytes] = await Promise.all([
+    scalarNumber(
+      env,
+      `SELECT COALESCE(SUM(expected_bytes), 0) AS value
+       FROM attachments
+       WHERE state NOT IN ('deleted', 'expired', 'quarantined_metadata')`,
+    ),
+    scalarNumber(
+      env,
+      `SELECT COALESCE(SUM(expected_bytes), 0) AS value
+       FROM attachments
+       WHERE created_at >= datetime('now', '-1 day')
+         AND state != 'quarantined_metadata'`,
+    ),
+    scalarNumber(
+      env,
+      `SELECT COALESCE(SUM(
+         COALESCE(original_bytes, 0) + COALESCE(preview_bytes, 0) + COALESCE(thumbnail_bytes, 0)
+       ), 0) AS value
+       FROM attachments
+       WHERE state NOT IN ('deleted', 'expired', 'quarantined_metadata')`,
+    ),
+  ]);
+  return {
+    activeExpectedBytes,
+    allocatedExpectedBytesLast24h,
+    uploadedStoredBytes,
+  };
+}
+
+async function getCallMediaUsage(env: Env): Promise<Record<string, unknown>> {
+  const [
+    totalCalls,
+    activeCalls,
+    endedCalls,
+    failedCalls,
+    participantRows,
+    failedParticipants,
+    maxParticipants,
+    totalDurationMs,
+    realtimeSessions,
+    activeRealtimeSessions,
+    realtimeTracks,
+    failedMediaEvents,
+    tracksByKind,
+    tracksByQualityLayer,
+  ] = await Promise.all([
+    count(env, "calls"),
+    count(env, "calls", "status IN ('ringing', 'active')"),
+    count(env, "calls", "status IN ('ended', 'missed', 'declined')"),
+    count(env, "calls", "status = 'failed'"),
+    count(env, "call_participants"),
+    count(env, "call_participants", "status = 'failed'"),
+    scalarNumber(
+      env,
+      `SELECT COALESCE(MAX(participant_count), 0) AS value
+       FROM (
+         SELECT COUNT(*) AS participant_count
+         FROM call_participants
+         GROUP BY call_id
+       )`,
+    ),
+    scalarNumber(
+      env,
+      `SELECT COALESCE(SUM(
+         CASE
+           WHEN started_at IS NULL THEN 0
+           ELSE (julianday(COALESCE(ended_at, CURRENT_TIMESTAMP)) - julianday(started_at)) * 86400000
+         END
+       ), 0) AS value
+       FROM calls`,
+      { round: true },
+    ),
+    count(env, "call_realtime_sessions"),
+    count(env, "call_realtime_sessions", "status = 'active'"),
+    count(env, "call_realtime_tracks"),
+    count(env, "call_events", "event_type = 'call.media.join_failed'"),
+    groupedCounts(
+      env,
+      `SELECT kind AS name, COUNT(*) AS count
+       FROM call_realtime_tracks
+       GROUP BY kind`,
+    ),
+    groupedCounts(
+      env,
+      `SELECT COALESCE(quality_layer, 'unspecified') AS name, COUNT(*) AS count
+       FROM call_realtime_tracks
+       GROUP BY COALESCE(quality_layer, 'unspecified')`,
+    ),
+  ]);
+  return {
+    totalCalls,
+    activeCalls,
+    endedCalls,
+    failedCalls,
+    participantRows,
+    failedParticipants,
+    maxParticipants,
+    totalDurationMs,
+    realtimeSessions,
+    activeRealtimeSessions,
+    realtimeTracks,
+    failedMediaEvents,
+    tracksByKind,
+    tracksByQualityLayer,
+    turnConfigured: Boolean(env.CLOUDFLARE_REALTIME_TURN_USERNAME && env.CLOUDFLARE_REALTIME_TURN_CREDENTIAL),
+    estimatedSfuTurnEgressBytes: null,
+    estimatedSfuTurnEgressStatus: "unavailable_provider_metric",
+  };
+}
+
+async function scalarNumber(
+  env: Env,
+  sql: string,
+  options: { round?: boolean } = {},
+): Promise<number> {
+  const row = await env.CONTROL_DB.prepare(sql).first<{ value: number }>();
+  const value = Number(row?.value ?? 0);
+  return options.round ? Math.round(value) : value;
+}
+
+async function groupedCounts(env: Env, sql: string): Promise<Record<string, number>> {
+  const result = await env.CONTROL_DB.prepare(sql).all<{
+    name: string | null;
+    count: number;
+  }>();
+  return Object.fromEntries(
+    (result.results ?? []).map((row) => [
+      row.name ?? "unspecified",
+      Number(row.count ?? 0),
+    ]),
+  );
 }
 
 function nullableString(value: unknown): string | null {
