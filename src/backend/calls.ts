@@ -319,6 +319,8 @@ export async function setCallMuted(
   muted: boolean,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
+  assertCallsEnabled(env);
+  assertCallTypeEnabled(env, call.call_type);
   await requireRoomMembership(env, auth, call.room_id);
   if (!LIVE_CALL_STATUSES.includes(call.status)) {
     throw new HttpError(409, "call_not_live", "Call is not live");
@@ -696,6 +698,7 @@ export async function closeRealtimeTracks(
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
+  assertRealtimeMediaEnabled(env);
   const participant = await requireConnectedParticipant(env, auth, callId);
   const config = realtimeConfig(env);
   if (!config.configured) {

@@ -26,7 +26,7 @@ Date: 2026-06-22
 - Simulate a poor network or briefly disable connectivity. Confirm the connection status changes and recovers when media reconnects.
 - End the call while camera and screen share are active. Confirm OS camera/microphone/screen indicators turn off and no local preview remains.
 - Rejoin or start a new call after teardown. Confirm microphone, camera, and screen prompts still work and no stale previous stream is shown.
-- Open Settings -> About -> Advanced during and after a call. Confirm call diagnostics show peer/ICE state, byte estimates, candidate/relay status, and last usage report state.
+- Open Settings -> Advanced during and after a call. Confirm call diagnostics show peer/ICE state, byte estimates, candidate/relay status, and last usage report state.
 
 ## Automated Backend Coverage
 

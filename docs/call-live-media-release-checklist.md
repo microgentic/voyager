@@ -61,7 +61,7 @@ npm run smoke:backend:remote
 
 - Start audio and video calls between two real browser clients.
 - Confirm microphone, camera, and screen indicators stop after call teardown.
-- Confirm Settings -> About -> Advanced shows call diagnostics while a call is active.
+- Confirm Settings -> Advanced shows call diagnostics while a call is active.
 - Confirm usage reports appear in `GET /v1/admin/usage` under `callMedia`.
 - Confirm `GET /v1/admin/calls/realtime-status` does not expose secrets.
 - Toggle each feature flag in a non-production environment and confirm disabled
