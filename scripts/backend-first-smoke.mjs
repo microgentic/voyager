@@ -2356,6 +2356,15 @@ if (groupRealtimeEvent.senderDeviceId !== owner.device.deviceId) {
   throw new Error("group realtime event did not reference the sender device");
 }
 
+const referencedAttachmentDelete = await expectFailure(`/v1/attachments/${attachment.attachment.attachmentId}`, {
+  method: "DELETE",
+  headers: ownerHeaders
+}, 409);
+assertApiErrorShape(referencedAttachmentDelete, "DELETE /v1/attachments/{attachmentId} referenced");
+if (referencedAttachmentDelete.error !== "attachment_already_referenced") {
+  throw new Error(`referenced attachment delete used unexpected error ${referencedAttachmentDelete.error}`);
+}
+
 await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",
   headers: resetHeaders,
@@ -2381,6 +2390,79 @@ if (downloadedThumbnail !== "thumbnail-smoke-blob") throw new Error("attachment 
 await expectFailure(`/v1/attachments/${attachment.attachment.attachmentId}/blob?variant=sidecar`, {
   headers: userHeaders
 }, 400);
+
+const deleteAttachmentMessage = await api(`/v1/rooms/${group.room.roomId}/messages/delete`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    scope: "everyone",
+    envelopeIds: [groupMessage.message.envelopeId],
+    reason: "attachment-delete-regression-smoke"
+  }
+});
+assertDeleteMessagesResponse(deleteAttachmentMessage, "POST /v1/rooms/{roomId}/messages/delete attachment message");
+const attachmentTombstoneView = await api(`/v1/rooms/${group.room.roomId}/messages?after=${groupMessage.message.serverSequence - 1}&limit=5`, {
+  headers: userHeaders
+});
+assertMessagesResponse(attachmentTombstoneView, "GET /v1/rooms/{roomId}/messages attachment tombstone");
+const attachmentTombstone = attachmentTombstoneView.messages.find((message) => message.envelopeId === groupMessage.message.envelopeId);
+if (
+  !attachmentTombstone ||
+  attachmentTombstone.deletedForEveryone.deleted !== true ||
+  attachmentTombstone.ciphertext !== "deleted-for-everyone"
+) {
+  throw new Error("delete-for-everyone did not tombstone attachment message content");
+}
+const referencedAttachmentDeleteAfterTombstone = await expectFailure(`/v1/attachments/${attachment.attachment.attachmentId}`, {
+  method: "DELETE",
+  headers: ownerHeaders
+}, 409);
+assertApiErrorShape(referencedAttachmentDeleteAfterTombstone, "DELETE /v1/attachments/{attachmentId} referenced after tombstone");
+if (referencedAttachmentDeleteAfterTombstone.error !== "attachment_already_referenced") {
+  throw new Error(`referenced attachment delete after tombstone used unexpected error ${referencedAttachmentDeleteAfterTombstone.error}`);
+}
+const downloadedAfterTombstone = await api(`/v1/attachments/${attachment.attachment.attachmentId}/blob`, {
+  headers: userHeaders
+});
+if (downloadedAfterTombstone !== "encrypted-smoke-blob") {
+  throw new Error("referenced attachment blob disappeared after message tombstone");
+}
+
+const unreferencedAttachmentBody = new TextEncoder().encode("unreferenced-smoke-blob");
+const unreferencedAttachment = await api(`/v1/rooms/${group.room.roomId}/attachments`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    expectedBytes: 128,
+    contentCategory: "file",
+    originalFilename: "unreferenced-smoke.bin",
+    declaredMimeType: "application/octet-stream",
+    mediaKind: "file"
+  }
+});
+assertAttachmentResponse(unreferencedAttachment, "POST /v1/rooms/{roomId}/attachments unreferenced delete");
+await api(`/v1/attachments/${unreferencedAttachment.attachment.attachmentId}/blob`, {
+  method: "PUT",
+  headers: ownerHeaders,
+  body: unreferencedAttachmentBody
+});
+const completedUnreferencedAttachment = await api(`/v1/attachments/${unreferencedAttachment.attachment.attachmentId}/complete`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { ciphertextBytes: unreferencedAttachmentBody.byteLength }
+});
+assertAttachmentResponse(completedUnreferencedAttachment, "POST /v1/attachments/{attachmentId}/complete unreferenced delete");
+const deletedUnreferencedAttachment = await api(`/v1/attachments/${unreferencedAttachment.attachment.attachmentId}`, {
+  method: "DELETE",
+  headers: ownerHeaders
+});
+if (deletedUnreferencedAttachment.ok !== true) {
+  throw new Error("unreferenced attachment delete did not return ok");
+}
+const deletedUnreferencedBlob = await expectFailure(`/v1/attachments/${unreferencedAttachment.attachment.attachmentId}/blob`, {
+  headers: ownerHeaders
+}, 404);
+assertApiErrorShape(deletedUnreferencedBlob, "GET /v1/attachments/{attachmentId}/blob deleted unreferenced");
 
 const tooManyAttachmentIds = Array.from({ length: 11 }, (_, index) => `att_smoke_${suffix}_${index}`);
 const tooManyAttachments = await expectFailure(`/v1/rooms/${group.room.roomId}/messages`, {

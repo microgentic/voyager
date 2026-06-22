@@ -483,6 +483,7 @@ export async function deleteAttachment(
       "Attachment deletion requires uploader or room admin",
     );
   }
+  assertAttachmentDeletable(attachment);
   await Promise.all(
     uniqueObjectKeys(attachment).map((objectKey) =>
       env.ATTACHMENTS_BUCKET.delete(objectKey),
@@ -493,6 +494,23 @@ export async function deleteAttachment(
   )
     .bind(attachmentId)
     .run();
+}
+
+function assertAttachmentDeletable(attachment: AttachmentRow): void {
+  if (attachment.state === "referenced") {
+    throw new HttpError(
+      409,
+      "attachment_already_referenced",
+      "Referenced attachments cannot be deleted directly",
+    );
+  }
+  if (attachment.state !== "allocated" && attachment.state !== "uploaded") {
+    throw new HttpError(
+      409,
+      "attachment_not_deletable",
+      "Attachment is not deletable in its current state",
+    );
+  }
 }
 
 export async function getAttachment(

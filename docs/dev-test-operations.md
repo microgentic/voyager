@@ -149,11 +149,13 @@ https://voyager-api-dev.microgentic-voyager.workers.dev
 
 The smoke logs in with the disposable seeded accounts, verifies
 `/v1/app/bootstrap`, proves session tokens cannot directly open `/v1/realtime`,
-mints a short-lived realtime token, sends a direct message in an existing
-Ada/Grace room when available, waits for the exact matching `room.message`, then
-verifies idempotent retry, Conversation DO timing headers, and HTTP recovery
-reads. It acknowledges the smoke message, archives only a fallback room it had
-to create, and revokes the temporary smoke devices when possible.
+mints a short-lived realtime token, exercises attachment upload/download/delete
+and a basic audio call lifecycle in an existing Ada/Grace room when available,
+sends a direct message, waits for the exact matching `room.message`, then verifies
+idempotent retry, Conversation DO timing headers, and HTTP recovery reads. It
+acknowledges the smoke message, archives only a fallback room it had to create,
+leaves any smoke call, deletes any unreferenced smoke attachment, and revokes the
+temporary smoke devices when possible.
 
 Manual run:
 

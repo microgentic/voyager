@@ -403,7 +403,7 @@ Realtime session responses may include:
 | `GET` | `/v1/attachments/{attachmentId}/blob` | binary payload |
 | `GET` | `/v1/attachments/{attachmentId}/blob?variant=preview\|thumbnail\|original` | binary payload |
 | `POST` | `/v1/attachments/{attachmentId}/complete` | `{ attachment }` |
-| `DELETE` | `/v1/attachments/{attachmentId}` | `{ ok: true }` |
+| `DELETE` | `/v1/attachments/{attachmentId}` | `{ ok: true }` for pre-reference cleanup, `409 attachment_already_referenced` once referenced |
 
 Attachment bytes are opaque private blobs from the backend perspective. R2 stores the objects; D1 stores lifecycle state, media metadata, and variant references. `GET /blob` and `PUT /blob` without a query parameter default to the `original` variant for backward compatibility. `expectedBytes` is the total byte budget for all uploaded variants combined, not a per-variant limit.
 
@@ -448,6 +448,8 @@ Attachment metadata is additive and client-supplied:
 The backend does not generate thumbnails or inspect image plaintext in `/v1`; optimized variants are produced by the client and uploaded as separate authenticated R2 objects. Buckets remain private, downloads remain bearer-authenticated, and `Cache-Control` is `no-store`. Worker-mediated upload streams request bodies to R2 when `Content-Length` is available; direct-to-R2 multipart upload and signed media URLs remain deferred until the leakage, revocation, and CORS contract is explicitly designed.
 
 An attachment is not complete or referenceable from a message until its `original` variant has been uploaded. The `original` variant is the primary blob for that attachment; it may be an optimized client-generated primary image rather than the source camera file. Preview and thumbnail uploads alone do not make an attachment sendable.
+
+Generic attachment delete is a pre-reference cleanup path only. It may delete allocated attachments or uploaded attachments that have not been referenced by a message. Once an attachment has been referenced, its private R2 objects are immutable from the generic attachment API perspective and `DELETE /v1/attachments/{attachmentId}` returns `409 attachment_already_referenced`. Delete-for-everyone remains a message tombstone operation: it hides/tombstones the message presentation, but it does not physically delete shared referenced blobs.
 
 Attachment allocation is limited by account policy bytes per attachment, max attachments per message, max image dimensions, daily expected bytes per account and room, total uploaded variant bytes, and by a per-device pending allocation cap. Maintenance cleanup expires old attachment rows, abandoned allocated rows, and uploaded-but-unreferenced rows while deleting known private R2 variant objects.
 

@@ -1,7 +1,7 @@
 # Remote Post-Deploy Smoke
 
 Status: active dev release verification
-Date: 2026-06-20
+Date: 2026-06-22
 Related docs:
 
 - `docs/api-contract.md`
@@ -42,6 +42,11 @@ Worker and seeded disposable test accounts.
 - Long-lived session tokens cannot authenticate `GET /v1/realtime` directly.
 - `POST /v1/realtime/token` returns a valid short-lived socket token.
 - `GET /v1/realtime` opens with that socket token and emits `ready`.
+- Attachment allocation, original/thumbnail upload, completion, authenticated
+  downloads, and unreferenced cleanup work against the deployed R2 binding.
+- Basic audio call lifecycle works at the deployed Worker level: create, optional
+  configured-false Realtime session response, receiver join, mute/unmute, both
+  participants leave, and final ended call fetch.
 - Sending a direct message includes Conversation DO timing diagnostics and emits
   a matching `room.message` event.
 - Retrying that send with the same idempotency key returns the same
@@ -51,9 +56,9 @@ Worker and seeded disposable test accounts.
 
 The smoke prefers an existing seeded Ada/Grace direct room so each run does not
 create another room. If no active direct room exists, it creates a fallback room
-and archives it during cleanup. The smoke also acknowledges the sent message as
-stored and revokes temporary `probe` devices at the end of a successful or
-failed run when possible.
+and archives it during cleanup. The smoke also acknowledges the sent message,
+deletes any unreferenced smoke attachment, leaves any smoke call, and revokes
+temporary `probe` devices at the end of a successful or failed run when possible.
 
 ## Manual Run
 
