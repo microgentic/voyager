@@ -5,6 +5,9 @@ import type {
 	CallRealtimeConfig,
 	CallRealtimeSessionDescription,
 	CallRealtimeTrack,
+	CallRealtimeTrackInput,
+	CallRealtimeTrackKind,
+	CallType,
 	RealtimeCallEvent,
 	Room
 } from '$lib/api/types';
@@ -19,8 +22,33 @@ export interface RemoteAudioStream {
 	stream: MediaStream;
 }
 
+export interface RemoteVideoStream {
+	id: string;
+	stream: MediaStream;
+	kind: 'video' | 'screen';
+	displayName?: string | null;
+}
+
+type CameraFacingMode = 'user' | 'environment';
+
 const LIVE_CALL_STATUSES = new Set(['ringing', 'active']);
 const INCOMING_PARTICIPANT_STATUSES = new Set(['invited', 'ringing', 'joining']);
+const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+	echoCancellation: true,
+	noiseSuppression: true,
+	autoGainControl: true
+};
+const VIDEO_SEND_ENCODINGS: RTCRtpEncodingParameters[] = [
+	{ rid: 'f', scaleResolutionDownBy: 1, maxBitrate: 1_500_000 },
+	{ rid: 'h', scaleResolutionDownBy: 2, maxBitrate: 700_000 },
+	{ rid: 'q', scaleResolutionDownBy: 4, maxBitrate: 250_000 }
+];
+const VIDEO_SIMULCAST_POLICY = {
+	desktopPreferredRid: 'h',
+	mobilePreferredRid: 'q',
+	priorityOrdering: 'asciibetical',
+	ridNotAvailable: 'asciibetical'
+} as const;
 
 class CallsStore {
 	activeCall = $state<Call | null>(null);
@@ -29,9 +57,16 @@ class CallsStore {
 	mediaState = $state<CallMediaState>('idle');
 	muted = $state(false);
 	startingRoomId = $state<string | null>(null);
+	startingCallType = $state<CallType | null>(null);
 	busyCallId = $state<string | null>(null);
 	lastError = $state<string | null>(null);
 	remoteStreams = $state<RemoteAudioStream[]>([]);
+	remoteVideoStreams = $state<RemoteVideoStream[]>([]);
+	localVideoStream = $state<MediaStream | null>(null);
+	cameraEnabled = $state(false);
+	switchingCamera = $state(false);
+	cameraFacingMode = $state<CameraFacingMode>('user');
+	videoQualityPolicy = VIDEO_SIMULCAST_POLICY;
 
 	readonly connectedParticipants = $derived(
 		this.activeCall?.participants.filter((participant) => participant.status === 'connected') ?? []
@@ -44,12 +79,21 @@ class CallsStore {
 	private localStream: MediaStream | null = null;
 	private sessionId: string | null = null;
 	private mediaCallId: string | null = null;
-	private publishedMid: string | null = null;
+	private publishedMids = new Set<string>();
 	private subscribedTracks = new Set<string>();
+	private pendingRemoteVideoTracks: CallRealtimeTrack[] = [];
+	private videoSender: RTCRtpSender | null = null;
 	private subscribing = false;
 
 	constructor() {
 		auth.onSignOut(() => this.reset());
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', () => {
+				if (document.hidden && this.activeCall?.callType === 'video' && this.cameraEnabled) {
+					void this.setCameraEnabled(false, { notifyOnError: false });
+				}
+			});
+		}
 	}
 
 	canStart(room: Room): boolean {
@@ -63,15 +107,25 @@ class CallsStore {
 	}
 
 	async startAudioCall(room: Room): Promise<void> {
+		await this.startCall(room, 'audio');
+	}
+
+	async startVideoCall(room: Room): Promise<void> {
+		await this.startCall(room, 'video');
+	}
+
+	private async startCall(room: Room, callType: CallType): Promise<void> {
 		if (!this.canStart(room)) return;
 		this.startingRoomId = room.roomId;
+		this.startingCallType = callType;
 		this.lastError = null;
 		this.mediaState = 'connecting';
 		try {
-			const call = await api.createCall(room.roomId, { callType: 'audio' });
+			const call = await api.createCall(room.roomId, { callType });
 			this.activeCall = call;
 			this.activeRoom = room;
 			this.muted = false;
+			this.cameraEnabled = false;
 			const connected = await this.connectMedia(call);
 			if (!connected) {
 				await this.leaveCallQuietly(call.callId);
@@ -79,10 +133,11 @@ class CallsStore {
 			}
 		} catch (error) {
 			this.mediaState = 'error';
-			this.lastError = displayError(error, 'Could not start the call.');
+			this.lastError = displayError(error, `Could not start the ${callType} call.`);
 			toasts.error(this.lastError);
 		} finally {
 			this.startingRoomId = null;
+			this.startingCallType = null;
 		}
 	}
 
@@ -100,6 +155,7 @@ class CallsStore {
 			this.activeCall = joined;
 			this.activeRoom = rooms.get(joined.roomId) ?? this.activeRoom;
 			this.muted = false;
+			this.cameraEnabled = false;
 			const connected = await this.connectMedia(joined);
 			if (!connected) {
 				await this.leaveCallQuietly(joined.callId);
@@ -153,6 +209,28 @@ class CallsStore {
 		} catch (error) {
 			this.setLocalMuted(!nextMuted);
 			toasts.error(displayError(error, 'Could not update mute.'));
+		}
+	}
+
+	async toggleCamera(): Promise<void> {
+		if (this.activeCall?.callType !== 'video' || this.mediaState !== 'active') return;
+		await this.setCameraEnabled(!this.cameraEnabled);
+	}
+
+	async switchCamera(): Promise<void> {
+		if (this.activeCall?.callType !== 'video' || this.mediaState !== 'active' || this.switchingCamera) return;
+		const previous = this.cameraFacingMode;
+		const next: CameraFacingMode = previous === 'user' ? 'environment' : 'user';
+		this.cameraFacingMode = next;
+		if (!this.cameraEnabled) return;
+		this.switchingCamera = true;
+		try {
+			await this.replaceCameraTrack(next);
+		} catch (error) {
+			this.cameraFacingMode = previous;
+			toasts.error(displayError(error, 'Could not switch camera.'));
+		} finally {
+			this.switchingCamera = false;
 		}
 	}
 
@@ -238,7 +316,7 @@ class CallsStore {
 	private async connectMedia(call: Call): Promise<boolean> {
 		if (!hasMediaSupport()) {
 			this.mediaState = 'unavailable';
-			this.lastError = 'Audio calls are not available in this browser.';
+			this.lastError = 'Calls are not available in this browser.';
 			toasts.error(this.lastError);
 			return false;
 		}
@@ -251,43 +329,65 @@ class CallsStore {
 				return false;
 			}
 
-			const peer = new RTCPeerConnection({ iceServers: sessionConfig.iceServers as RTCIceServer[] });
+			const peer = new RTCPeerConnection({
+				iceServers: sessionConfig.iceServers as RTCIceServer[]
+			});
 			this.peer = peer;
 			this.sessionId = sessionConfig.session.sessionId;
 			this.mediaCallId = call.callId;
+			this.publishedMids = new Set();
 			this.subscribedTracks = new Set();
+			this.pendingRemoteVideoTracks = [];
 			this.remoteStreams = [];
+			this.remoteVideoStreams = [];
+			this.localVideoStream = null;
+			this.cameraEnabled = false;
 			this.wirePeer(peer);
 
 			this.localStream = await navigator.mediaDevices.getUserMedia({
-				audio: {
-					echoCancellation: true,
-					noiseSuppression: true,
-					autoGainControl: true
-				},
-				video: false
+				audio: AUDIO_CONSTRAINTS,
+				video: call.callType === 'video' ? videoConstraints(this.cameraFacingMode) : false
 			});
 			const audioTrack = this.localStream.getAudioTracks()[0];
 			if (!audioTrack) throw new Error('Microphone did not provide an audio track.');
-			const transceiver = peer.addTransceiver(audioTrack, {
+			const publishTracks: CallRealtimeTrackInput[] = [];
+			const publishMids: Array<string | null> = [];
+			const audioTransceiver = peer.addTransceiver(audioTrack, {
 				direction: 'sendonly',
 				streams: [this.localStream]
 			});
+			publishMids.push(audioTransceiver.mid);
+			publishTracks.push({
+				location: 'local',
+				trackName: localTrackName(call, 'audio'),
+				kind: 'audio',
+				mid: audioTransceiver.mid
+			});
+
+			if (call.callType === 'video') {
+				const videoTrack = this.localStream.getVideoTracks()[0];
+				if (!videoTrack) throw new Error('Camera did not provide a video track.');
+				const videoTransceiver = addCameraTransceiver(peer, videoTrack, this.localStream);
+				this.videoSender = videoTransceiver.sender;
+				publishMids.push(videoTransceiver.mid);
+				publishTracks.push({
+					location: 'local',
+					trackName: localTrackName(call, 'video'),
+					kind: 'video',
+					mid: videoTransceiver.mid
+				});
+				this.cameraEnabled = true;
+				this.updateLocalVideoStream();
+			}
+
 			const offer = await createOffer(peer);
 			const trackConfig = await api.getCallRealtimeTrackConfig(call.callId, {
 				sessionId: this.sessionId,
 				sessionDescription: offer,
-				tracks: [
-					{
-						location: 'local',
-						trackName: localTrackName(call),
-						kind: 'audio',
-						mid: transceiver.mid
-					}
-				]
+				tracks: publishTracks
 			});
 			await this.applyProviderDescription(trackConfig);
-			this.publishedMid = trackConfig.tracks?.find((track) => track.location === 'local')?.mid ?? transceiver.mid;
+			this.publishedMids = publishedTrackMids(trackConfig, publishMids);
 			this.mediaState = 'active';
 			await this.subscribeAvailableTracks([
 				...(sessionConfig.availableTracks ?? sessionConfig.tracks ?? []),
@@ -297,7 +397,7 @@ class CallsStore {
 		} catch (error) {
 			await this.closeMedia({ notifyProvider: false });
 			this.mediaState = 'error';
-			this.lastError = displayError(error, 'Could not connect microphone audio.');
+			this.lastError = displayError(error, 'Could not connect call media.');
 			toasts.error(this.lastError);
 			return false;
 		}
@@ -307,11 +407,28 @@ class CallsStore {
 		peer.ontrack = (event) => {
 			const stream = event.streams[0] ?? new MediaStream([event.track]);
 			const id = event.track.id || event.transceiver.mid || cryptoId('remote');
-			if (!this.remoteStreams.some((candidate) => candidate.id === id)) {
+			if (event.track.kind === 'video') {
+				const metadata = this.pendingRemoteVideoTracks.shift();
+				if (!this.remoteVideoStreams.some((candidate) => candidate.id === id)) {
+					this.remoteVideoStreams = [
+						...this.remoteVideoStreams,
+						{
+							id,
+							stream,
+							kind: metadata?.kind === 'screen' ? 'screen' : 'video',
+							displayName: metadata?.displayName
+						}
+					];
+				}
+			} else if (!this.remoteStreams.some((candidate) => candidate.id === id)) {
 				this.remoteStreams = [...this.remoteStreams, { id, stream }];
 			}
 			event.track.onended = () => {
-				this.remoteStreams = this.remoteStreams.filter((candidate) => candidate.id !== id);
+				if (event.track.kind === 'video') {
+					this.remoteVideoStreams = this.remoteVideoStreams.filter((candidate) => candidate.id !== id);
+				} else {
+					this.remoteStreams = this.remoteStreams.filter((candidate) => candidate.id !== id);
+				}
 			};
 		};
 		peer.onconnectionstatechange = () => {
@@ -337,7 +454,7 @@ class CallsStore {
 		if (this.subscribing || !this.activeCall || !this.sessionId || !this.peer) return;
 		const remoteTracks = tracks.filter(
 			(track) =>
-				track.kind === 'audio' &&
+				canSubscribeTrackKind(track.kind, this.activeCall?.callType ?? 'audio') &&
 				track.location === 'remote' &&
 				!!track.sessionId &&
 				!!track.trackName &&
@@ -347,8 +464,11 @@ class CallsStore {
 		this.subscribing = true;
 		try {
 			for (const track of remoteTracks) {
-				this.peer.addTransceiver('audio', { direction: 'recvonly' });
+				this.peer.addTransceiver(receiverKind(track.kind), {
+					direction: 'recvonly'
+				});
 				this.subscribedTracks.add(remoteTrackKey(track));
+				if (isVideoTrackKind(track.kind)) this.pendingRemoteVideoTracks.push(track);
 			}
 			const offer = await createOffer(this.peer);
 			const config = await api.getCallRealtimeTrackConfig(this.activeCall.callId, {
@@ -358,12 +478,16 @@ class CallsStore {
 					location: 'remote',
 					sessionId: track.sessionId,
 					trackName: track.trackName,
-					kind: 'audio'
+					kind: track.kind,
+					simulcast: isVideoTrackKind(track.kind) ? remoteVideoSimulcastPolicy() : undefined
 				}))
 			});
 			await this.applyProviderDescription(config);
 		} catch {
 			for (const track of remoteTracks) this.subscribedTracks.delete(remoteTrackKey(track));
+			this.pendingRemoteVideoTracks = this.pendingRemoteVideoTracks.filter(
+				(candidate) => !remoteTracks.some((track) => remoteTrackKey(track) === remoteTrackKey(candidate))
+			);
 		} finally {
 			this.subscribing = false;
 		}
@@ -388,17 +512,76 @@ class CallsStore {
 		}
 	}
 
+	private async setCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
+		if (!this.peer || !this.localStream || !this.videoSender) return;
+		const notifyOnError = options.notifyOnError ?? true;
+		if (!enabled) {
+			const currentTrack = this.localStream.getVideoTracks()[0];
+			await this.videoSender.replaceTrack(null);
+			if (currentTrack) {
+				currentTrack.stop();
+				this.localStream.removeTrack(currentTrack);
+			}
+			this.cameraEnabled = false;
+			this.updateLocalVideoStream();
+			return;
+		}
+		try {
+			await this.replaceCameraTrack(this.cameraFacingMode);
+			this.cameraEnabled = true;
+		} catch (error) {
+			this.cameraEnabled = false;
+			this.updateLocalVideoStream();
+			if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
+		}
+	}
+
+	private async replaceCameraTrack(facingMode: CameraFacingMode): Promise<void> {
+		if (!this.localStream || !this.videoSender) return;
+		const cameraStream = await navigator.mediaDevices.getUserMedia({
+			audio: false,
+			video: videoConstraints(facingMode)
+		});
+		const nextTrack = cameraStream.getVideoTracks()[0];
+		if (!nextTrack) {
+			for (const track of cameraStream.getTracks()) track.stop();
+			throw new Error('Camera did not provide a video track.');
+		}
+		const previousTrack = this.localStream.getVideoTracks()[0];
+		try {
+			await this.videoSender.replaceTrack(nextTrack);
+		} catch (error) {
+			nextTrack.stop();
+			throw error;
+		}
+		if (previousTrack) {
+			previousTrack.stop();
+			this.localStream.removeTrack(previousTrack);
+		}
+		this.localStream.addTrack(nextTrack);
+		this.cameraEnabled = true;
+		this.updateLocalVideoStream();
+	}
+
+	private updateLocalVideoStream(): void {
+		const videoTracks = this.localStream?.getVideoTracks().filter((track) => track.readyState === 'live') ?? [];
+		this.localVideoStream = videoTracks.length ? new MediaStream(videoTracks) : null;
+		if (!videoTracks.length) this.cameraEnabled = false;
+	}
+
 	private async closeMedia(options: { notifyProvider?: boolean } = {}): Promise<void> {
 		const notifyProvider = options.notifyProvider ?? true;
 		const callId = this.mediaCallId;
 		const sessionId = this.sessionId;
-		const mid = this.publishedMid;
-		if (notifyProvider && callId && sessionId && mid) {
-			await api.closeCallRealtimeTracks(callId, {
-				sessionId,
-				tracks: [{ mid }],
-				force: true
-			}).catch(() => undefined);
+		const mids = [...this.publishedMids];
+		if (notifyProvider && callId && sessionId && mids.length) {
+			await api
+				.closeCallRealtimeTracks(callId, {
+					sessionId,
+					tracks: mids.map((mid) => ({ mid })),
+					force: true
+				})
+				.catch(() => undefined);
 		}
 		for (const track of this.localStream?.getTracks() ?? []) track.stop();
 		this.localStream = null;
@@ -406,9 +589,14 @@ class CallsStore {
 		this.peer = null;
 		this.sessionId = null;
 		this.mediaCallId = null;
-		this.publishedMid = null;
+		this.publishedMids = new Set();
 		this.subscribedTracks = new Set();
+		this.pendingRemoteVideoTracks = [];
+		this.videoSender = null;
 		this.remoteStreams = [];
+		this.remoteVideoStreams = [];
+		this.localVideoStream = null;
+		this.cameraEnabled = false;
 	}
 
 	private async leaveCallQuietly(callId: string): Promise<void> {
@@ -425,6 +613,8 @@ class CallsStore {
 		this.activeRoom = null;
 		this.mediaState = 'idle';
 		this.muted = false;
+		this.cameraEnabled = false;
+		this.switchingCamera = false;
 	}
 
 	private removeIncoming(callId: string): void {
@@ -441,8 +631,7 @@ class CallsStore {
 		const deviceId = auth.device?.deviceId;
 		return call.participants.find(
 			(participant) =>
-				participant.principalId === principalId &&
-				(participant.deviceId === null || participant.deviceId === deviceId)
+				participant.principalId === principalId && (participant.deviceId === null || participant.deviceId === deviceId)
 		);
 	}
 
@@ -454,8 +643,13 @@ class CallsStore {
 		this.mediaState = 'idle';
 		this.muted = false;
 		this.startingRoomId = null;
+		this.startingCallType = null;
 		this.busyCallId = null;
 		this.lastError = null;
+		this.remoteVideoStreams = [];
+		this.localVideoStream = null;
+		this.cameraEnabled = false;
+		this.switchingCamera = false;
 	}
 }
 
@@ -502,12 +696,77 @@ function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
 	});
 }
 
-function localTrackName(call: Call): string {
-	return `${auth.device?.deviceId ?? 'device'}-${call.callId}-audio`;
+function addCameraTransceiver(
+	peer: RTCPeerConnection,
+	track: MediaStreamTrack,
+	stream: MediaStream
+): RTCRtpTransceiver {
+	try {
+		return peer.addTransceiver(track, {
+			direction: 'sendonly',
+			streams: [stream],
+			sendEncodings: VIDEO_SEND_ENCODINGS
+		});
+	} catch {
+		return peer.addTransceiver(track, {
+			direction: 'sendonly',
+			streams: [stream]
+		});
+	}
+}
+
+function videoConstraints(facingMode: CameraFacingMode): MediaTrackConstraints {
+	return {
+		width: { ideal: 1280 },
+		height: { ideal: 720 },
+		frameRate: { ideal: 24, max: 30 },
+		facingMode: { ideal: facingMode }
+	};
+}
+
+function localTrackName(call: Call, kind: 'audio' | 'video'): string {
+	const suffix = kind === 'video' ? 'camera' : kind;
+	return `${auth.device?.deviceId ?? 'device'}-${call.callId}-${suffix}`;
+}
+
+function publishedTrackMids(config: CallRealtimeConfig, fallbackMids: Array<string | null>): Set<string> {
+	const mids = new Set<string>();
+	for (const track of config.tracks ?? []) {
+		if (track.location === 'local' && track.mid) mids.add(track.mid);
+	}
+	for (const mid of fallbackMids) {
+		if (mid) mids.add(mid);
+	}
+	return mids;
 }
 
 function remoteTrackKey(track: CallRealtimeTrack): string {
-	return `${track.sessionId}:${track.trackName}`;
+	return `${track.kind}:${track.sessionId}:${track.trackName}`;
+}
+
+function canSubscribeTrackKind(kind: CallRealtimeTrackKind, callType: CallType): boolean {
+	if (kind === 'audio') return true;
+	return callType === 'video' && isVideoTrackKind(kind);
+}
+
+function isVideoTrackKind(kind: CallRealtimeTrackKind): kind is 'video' | 'screen' {
+	return kind === 'video' || kind === 'screen';
+}
+
+function receiverKind(kind: CallRealtimeTrackKind): 'audio' | 'video' {
+	return isVideoTrackKind(kind) ? 'video' : 'audio';
+}
+
+function remoteVideoSimulcastPolicy(): NonNullable<CallRealtimeTrackInput['simulcast']> {
+	const preferredRid =
+		typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+			? VIDEO_SIMULCAST_POLICY.mobilePreferredRid
+			: VIDEO_SIMULCAST_POLICY.desktopPreferredRid;
+	return {
+		preferredRid,
+		priorityOrdering: VIDEO_SIMULCAST_POLICY.priorityOrdering,
+		ridNotAvailable: VIDEO_SIMULCAST_POLICY.ridNotAvailable
+	};
 }
 
 function cryptoId(prefix: string): string {

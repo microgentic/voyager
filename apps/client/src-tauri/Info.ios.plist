@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voyager uses the microphone for audio calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Voyager uses the camera for video calls.</string>
 </dict>
 </plist>

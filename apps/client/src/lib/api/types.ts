@@ -475,6 +475,11 @@ export interface CallRealtimeSessionDescription {
 
 export type CallRealtimeTrackLocation = 'local' | 'remote';
 export type CallRealtimeTrackKind = 'audio' | 'video' | 'screen' | 'data';
+export interface CallRealtimeSimulcastPolicy {
+	preferredRid?: string;
+	priorityOrdering?: 'none' | 'asciibetical';
+	ridNotAvailable?: 'none' | 'asciibetical';
+}
 
 export interface CallRealtimeSession {
 	sessionId: string;
@@ -490,6 +495,7 @@ export interface CallRealtimeTrack {
 	trackName: string;
 	kind: CallRealtimeTrackKind;
 	mid?: string | null;
+	simulcast?: CallRealtimeSimulcastPolicy;
 	principalId?: string;
 	deviceId?: string;
 	displayName?: string | null;
@@ -508,6 +514,7 @@ export interface CallRealtimeTrackInput {
 	kind?: CallRealtimeTrackKind;
 	mid?: string | null;
 	bidirectionalMediaStream?: boolean;
+	simulcast?: CallRealtimeSimulcastPolicy;
 }
 
 export interface CallRealtimeTracksInput {
