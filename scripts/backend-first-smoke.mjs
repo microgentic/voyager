@@ -6,9 +6,11 @@ import {
   assertAttachmentResponse,
   assertAuthResult,
   assertBootstrapResponse,
+  assertCallRealtimeStatusResponse,
   assertCallRealtimeConfigResponse,
   assertCallResponse,
   assertCallsResponse,
+  assertCallUsageReportResponse,
   assertDeleteMessagesResponse,
   assertEndpointCatalog,
   assertKeyPackageResponse,
@@ -645,6 +647,12 @@ const direct = await api("/v1/rooms/direct", {
 });
 assertRoomResponse(direct, "POST /v1/rooms/direct");
 
+const callRealtimeStatus = await api("/v1/admin/calls/realtime-status", { headers: ownerHeaders });
+assertCallRealtimeStatusResponse(callRealtimeStatus, "GET /v1/admin/calls/realtime-status");
+if (callRealtimeStatus.realtime.mock !== realtimeMockEnabled) {
+  throw new Error("call realtime status did not reflect mock mode");
+}
+
 await expectFailure("/v1/rooms/direct", {
   method: "POST",
   headers: ownerHeaders,
@@ -897,6 +905,36 @@ assertCallResponse(explicitlyUnmutedCall, "POST /v1/calls/{callId}/unmute");
 const explicitlyUnmutedParticipant = explicitlyUnmutedCall.call.participants.find((participant) => participant.principalId === accepted.principal.principalId);
 if (!explicitlyUnmutedParticipant || explicitlyUnmutedParticipant.mutedAt !== null) {
   throw new Error("explicit unmute did not clear mutedAt");
+}
+
+const callUsageReport = await api(`/v1/calls/${createdCall.call.callId}/usage-report`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    sessionId: mockAudioSessionId ?? `unconfigured-smoke-${suffix}`,
+    durationMs: 42_000,
+    bytesSentEstimate: 12_345,
+    bytesReceivedEstimate: 67_890,
+    tracks: [
+      { kind: "audio", direction: "send", durationMs: 42_000, qualityLayer: "standard" },
+      { kind: "audio", direction: "receive", durationMs: 40_000 }
+    ],
+    network: {
+      candidateType: realtimeMockEnabled ? "host" : "relay",
+      relayLikely: !realtimeMockEnabled,
+      roundTripTimeMs: 12,
+      packetsLost: 0
+    }
+  }
+});
+assertCallUsageReportResponse(callUsageReport, "POST /v1/calls/{callId}/usage-report");
+if (
+  callUsageReport.usageReport.callId !== createdCall.call.callId ||
+  callUsageReport.usageReport.durationMs !== 42_000 ||
+  callUsageReport.usageReport.bytesSentEstimate !== 12_345 ||
+  callUsageReport.usageReport.bytesReceivedEstimate !== 67_890
+) {
+  throw new Error("call usage report did not echo expected aggregate fields");
 }
 
 const calleeLeftCall = await api(`/v1/calls/${createdCall.call.callId}/leave`, {
@@ -2725,6 +2763,9 @@ await api(`/v1/sidebar-collections/${collection.collection.collectionId}/items`,
 
 const usage = await api("/v1/admin/usage", { headers: ownerHeaders });
 assertAdminUsageResponse(usage, "GET /v1/admin/usage");
+if (usage.usage.callMedia.usageReports < 1 || usage.usage.callMedia.bytesSentEstimate < 12_345) {
+  throw new Error("admin usage did not include submitted call usage reports");
+}
 if (!realtimeMockEnabled && usage.usage.callMedia.failedMediaEvents < 4) {
   throw new Error("admin usage did not record unconfigured call media failures");
 }

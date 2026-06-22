@@ -8,6 +8,8 @@ Date: 2026-06-22
 - Screen sharing uses the browser/WebView `navigator.mediaDevices.getDisplayMedia()` API only when the platform exposes it.
 - Screen share is published as a separate `screen` Realtime track and is stopped independently from the camera track.
 - Call media remains WebRTC-only. The backend stores session and track metadata but never stores camera, microphone, or screen media.
+- Call teardown reports aggregate WebRTC usage metadata for operations and cost diagnostics; it does not submit media content or SDP.
+- Environment flags can disable calls, audio calls, video calls, screen sharing, or realtime media before provider work is attempted.
 - Browser fullscreen may be blocked by browser policy or user gesture rules. The in-app expanded video surface remains the fallback.
 - Mobile browsers and WebViews may omit screen capture support. Mobile QA should focus on rotation, camera switch, background behavior, and teardown indicators.
 
@@ -24,9 +26,11 @@ Date: 2026-06-22
 - Simulate a poor network or briefly disable connectivity. Confirm the connection status changes and recovers when media reconnects.
 - End the call while camera and screen share are active. Confirm OS camera/microphone/screen indicators turn off and no local preview remains.
 - Rejoin or start a new call after teardown. Confirm microphone, camera, and screen prompts still work and no stale previous stream is shown.
+- Open Settings -> About -> Advanced during and after a call. Confirm call diagnostics show peer/ICE state, byte estimates, candidate/relay status, and last usage report state.
 
 ## Automated Backend Coverage
 
 - Normal local backend smoke keeps validating the configured-false Cloudflare Realtime path.
-- `CLOUDFLARE_REALTIME_MOCK=1 npm run smoke:backend:local` validates configured-success session, duplicate session, local track upsert, duplicate track upsert, renegotiation, close, duplicate close, audio-call rejection of video tracks, and video-call audio/video/screen metadata.
+- `CLOUDFLARE_REALTIME_MOCK=1 npm run smoke:backend:local` validates configured-success session, duplicate session, local track upsert, duplicate track upsert, renegotiation, close, duplicate close, audio-call rejection of video tracks, video-call audio/video/screen metadata, realtime status, usage-report metadata, and admin usage rollups.
+- `REALTIME_SMOKE_MEDIA=1 npm run smoke:backend:remote` opts in to live provider session/track/close checks after Cloudflare Realtime credentials are configured.
 - The mock smoke is not a substitute for real browser/device QA with Cloudflare Realtime credentials; it proves backend coordination and contract behavior only.

@@ -184,6 +184,7 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/renegotiate` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/tracks/close` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/usage-report` | `{ usageReport }` |
 | `GET` | `/v1/rooms/{roomId}/messages` | `{ messages }` |
 | `POST` | `/v1/rooms/{roomId}/messages` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/delete` | `{ deleted: { scope, envelopeIds } }` |
@@ -313,6 +314,7 @@ Provider HTTP negotiation can happen outside the Durable Object, but durable D1 
 | `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/renegotiate` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/tracks/close` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/usage-report` | `{ usageReport }` |
 
 `POST /v1/rooms/{roomId}/calls` accepts:
 
@@ -353,7 +355,7 @@ Call responses expose durable metadata only:
 }
 ```
 
-Only active room members may create, read, or join calls. Archived rooms reject new calls. A room may have one live call (`ringing` or `active`) at a time. Realtime media endpoints require a connected call participant. If Cloudflare Realtime credentials are absent, they return the same additive shape with `configured: false`, `session: null`, empty track arrays, and STUN/TURN capability data suitable for local/dev handling.
+Only active room members may create, read, or join calls. Archived rooms reject new calls. A room may have one live call (`ringing` or `active`) at a time. Environment feature flags can disable all calls, audio calls, video calls, screen sharing, or realtime media and return `feature_disabled` without falling through to provider work. Realtime media endpoints require a connected call participant. If Cloudflare Realtime credentials are absent, they return the same additive shape with `configured: false`, `session: null`, empty track arrays, feature flags, and STUN/TURN capability data suitable for local/dev handling.
 
 `PATCH /v1/calls/{callId}/participants/me` accepts any non-empty combination of:
 
@@ -612,6 +614,7 @@ These routes are intentionally not ordinary product UI surface:
 | `DELETE` | `/v1/admin/accounts/{accountId}/roles/{roleName}` | revoke admin role |
 | `GET` | `/v1/admin/policies` | list policies |
 | `GET` | `/v1/admin/usage` | usage summary |
+| `GET` | `/v1/admin/calls/realtime-status` | Cloudflare Realtime configuration and feature-flag status |
 | `GET` | `/v1/admin/audit-events` | audit event list |
 | `GET` | `/v1/admin/rooms` | admin room list |
 | `POST` | `/v1/admin/devices/test-cleanup` | stale test-device cleanup |
@@ -635,12 +638,22 @@ Admin hierarchy is part of the security contract: only platform owners may admin
       "totalCalls": 4,
       "activeCalls": 1,
       "totalDurationMs": 32000,
+      "averageDurationMs": 16000,
       "participantRows": 8,
       "maxParticipants": 2,
       "realtimeTracks": 3,
       "failedMediaEvents": 1,
+      "failedProviderRequests": 0,
       "tracksByKind": { "audio": 2, "video": 1 },
       "tracksByQualityLayer": { "h": 1 },
+      "usageReports": 1,
+      "reportedDurationMs": 15000,
+      "reportedAudioDurationMs": 15000,
+      "reportedVideoDurationMs": 0,
+      "reportedScreenDurationMs": 0,
+      "bytesSentEstimate": 2048,
+      "bytesReceivedEstimate": 4096,
+      "relayLikelyReports": 0,
       "turnConfigured": false,
       "estimatedSfuTurnEgressBytes": null,
       "estimatedSfuTurnEgressStatus": "unavailable_provider_metric"
@@ -649,7 +662,38 @@ Admin hierarchy is part of the security contract: only platform owners may admin
 }
 ```
 
-`callMedia` is an operations surface derived from durable call/session/track metadata and failure events. Provider egress/TURN bytes are reported as unavailable until Cloudflare exposes or the app records a trustworthy byte counter. Local configured-success smoke may use `CLOUDFLARE_REALTIME_MOCK=1`; production configuration still depends on Cloudflare Realtime secrets.
+`callMedia` is an operations surface derived from durable call/session/track metadata, failure events, and metadata-only client usage reports. Client reports provide aggregate byte and duration estimates; provider egress/TURN bytes remain marked unavailable unless a trustworthy provider-specific byte source is supplied. Local configured-success smoke may use `CLOUDFLARE_REALTIME_MOCK=1`; production configuration still depends on Cloudflare Realtime secrets.
+
+`GET /v1/admin/calls/realtime-status` requires `quota_operator`, `security_admin`, or `auditor` and never returns secrets:
+
+```json
+{
+  "realtime": {
+    "provider": "cloudflare_realtime",
+    "configured": true,
+    "status": "configured",
+    "mock": false,
+    "apiBase": "https://rtc.live.cloudflare.com/v1",
+    "turnConfigured": false,
+    "features": {
+      "callsEnabled": true,
+      "audioCallsEnabled": true,
+      "videoCallsEnabled": true,
+      "screenShareEnabled": true,
+      "realtimeMediaEnabled": true
+    },
+    "credentialState": {
+      "appIdConfigured": true,
+      "appSecretConfigured": true,
+      "turnCredentialsConfigured": false
+    },
+    "lastProviderCheckStatus": "configured",
+    "estimatedSfuTurnEgressStatus": "unavailable_provider_metric"
+  }
+}
+```
+
+`POST /v1/calls/{callId}/usage-report` records only aggregate WebRTC metadata for the authenticated participant's current device. The request may include `sessionId`, `durationMs`, aggregate byte estimates, track kind/direction durations, candidate type, relay hint, RTT, packet loss, and optional provider byte metadata. It does not accept or store media payloads or SDP.
 
 ## Examples
 

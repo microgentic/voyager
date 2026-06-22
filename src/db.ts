@@ -1472,12 +1472,15 @@ async function getCallMediaUsage(env: Env): Promise<Record<string, unknown>> {
     failedParticipants,
     maxParticipants,
     totalDurationMs,
+    averageDurationMs,
     realtimeSessions,
     activeRealtimeSessions,
     realtimeTracks,
     failedMediaEvents,
+    failedProviderRequests,
     tracksByKind,
     tracksByQualityLayer,
+    usageReportTotals,
   ] = await Promise.all([
     count(env, "calls"),
     count(env, "calls", "status IN ('ringing', 'active')"),
@@ -1505,10 +1508,22 @@ async function getCallMediaUsage(env: Env): Promise<Record<string, unknown>> {
        FROM calls`,
       { round: true },
     ),
+    scalarNumber(
+      env,
+      `SELECT COALESCE(AVG(
+         CASE
+           WHEN started_at IS NULL THEN NULL
+           ELSE (julianday(COALESCE(ended_at, CURRENT_TIMESTAMP)) - julianday(started_at)) * 86400000
+         END
+       ), 0) AS value
+       FROM calls`,
+      { round: true },
+    ),
     count(env, "call_realtime_sessions"),
     count(env, "call_realtime_sessions", "status = 'active'"),
     count(env, "call_realtime_tracks"),
     count(env, "call_events", "event_type = 'call.media.join_failed'"),
+    count(env, "call_events", "event_type = 'call.media.join_failed' AND COALESCE(payload_json, '') NOT LIKE '%cloudflare_realtime_not_configured%'"),
     groupedCounts(
       env,
       `SELECT kind AS name, COUNT(*) AS count
@@ -1521,6 +1536,7 @@ async function getCallMediaUsage(env: Env): Promise<Record<string, unknown>> {
        FROM call_realtime_tracks
        GROUP BY COALESCE(quality_layer, 'unspecified')`,
     ),
+    getCallUsageReportTotals(env),
   ]);
   return {
     totalCalls,
@@ -1531,15 +1547,72 @@ async function getCallMediaUsage(env: Env): Promise<Record<string, unknown>> {
     failedParticipants,
     maxParticipants,
     totalDurationMs,
+    averageDurationMs,
     realtimeSessions,
     activeRealtimeSessions,
     realtimeTracks,
     failedMediaEvents,
+    failedProviderRequests,
     tracksByKind,
     tracksByQualityLayer,
+    usageReports: usageReportTotals.reports,
+    reportedDurationMs: usageReportTotals.durationMs,
+    reportedAudioDurationMs: usageReportTotals.audioDurationMs,
+    reportedVideoDurationMs: usageReportTotals.videoDurationMs,
+    reportedScreenDurationMs: usageReportTotals.screenDurationMs,
+    bytesSentEstimate: usageReportTotals.bytesSentEstimate,
+    bytesReceivedEstimate: usageReportTotals.bytesReceivedEstimate,
+    relayLikelyReports: usageReportTotals.relayLikelyReports,
     turnConfigured: Boolean(env.CLOUDFLARE_REALTIME_TURN_USERNAME && env.CLOUDFLARE_REALTIME_TURN_CREDENTIAL),
-    estimatedSfuTurnEgressBytes: null,
-    estimatedSfuTurnEgressStatus: "unavailable_provider_metric",
+    estimatedSfuTurnEgressBytes: usageReportTotals.providerEgressBytes || null,
+    estimatedSfuTurnEgressStatus: usageReportTotals.providerEgressBytes > 0 ? "reported_by_client_metadata" : "unavailable_provider_metric",
+  };
+}
+
+async function getCallUsageReportTotals(env: Env): Promise<{
+  reports: number;
+  durationMs: number;
+  audioDurationMs: number;
+  videoDurationMs: number;
+  screenDurationMs: number;
+  bytesSentEstimate: number;
+  bytesReceivedEstimate: number;
+  relayLikelyReports: number;
+  providerEgressBytes: number;
+}> {
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT
+       COUNT(*) AS reports,
+       COALESCE(SUM(duration_ms), 0) AS durationMs,
+       COALESCE(SUM(audio_duration_ms), 0) AS audioDurationMs,
+       COALESCE(SUM(video_duration_ms), 0) AS videoDurationMs,
+       COALESCE(SUM(screen_duration_ms), 0) AS screenDurationMs,
+       COALESCE(SUM(bytes_sent_estimate), 0) AS bytesSentEstimate,
+       COALESCE(SUM(bytes_received_estimate), 0) AS bytesReceivedEstimate,
+       COALESCE(SUM(CASE WHEN relay_likely = 1 THEN 1 ELSE 0 END), 0) AS relayLikelyReports,
+       COALESCE(SUM(provider_egress_bytes), 0) AS providerEgressBytes
+     FROM call_usage_reports`,
+  ).first<{
+    reports: number;
+    durationMs: number;
+    audioDurationMs: number;
+    videoDurationMs: number;
+    screenDurationMs: number;
+    bytesSentEstimate: number;
+    bytesReceivedEstimate: number;
+    relayLikelyReports: number;
+    providerEgressBytes: number;
+  }>();
+  return {
+    reports: Number(row?.reports ?? 0),
+    durationMs: Number(row?.durationMs ?? 0),
+    audioDurationMs: Number(row?.audioDurationMs ?? 0),
+    videoDurationMs: Number(row?.videoDurationMs ?? 0),
+    screenDurationMs: Number(row?.screenDurationMs ?? 0),
+    bytesSentEstimate: Number(row?.bytesSentEstimate ?? 0),
+    bytesReceivedEstimate: Number(row?.bytesReceivedEstimate ?? 0),
+    relayLikelyReports: Number(row?.relayLikelyReports ?? 0),
+    providerEgressBytes: Number(row?.providerEgressBytes ?? 0),
   };
 }
 

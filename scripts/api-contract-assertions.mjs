@@ -40,6 +40,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/calls/{callId}/realtime/tracks", stability: "future-sensitive" },
   { method: "POST", path: "/v1/calls/{callId}/realtime/renegotiate", stability: "future-sensitive" },
   { method: "POST", path: "/v1/calls/{callId}/realtime/tracks/close", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/usage-report", stability: "future-sensitive" },
   { method: "GET", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/delete", stability: "stable/current" },
@@ -93,6 +94,7 @@ export const endpointStabilityCatalog = [
   { method: "DELETE", path: "/v1/admin/accounts/{accountId}/roles/{roleName}", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/policies", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/usage", stability: "admin/dev-only" },
+  { method: "GET", path: "/v1/admin/calls/realtime-status", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/audit-events", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/rooms", stability: "admin/dev-only" },
   { method: "POST", path: "/v1/admin/devices/test-cleanup", stability: "admin/dev-only" },
@@ -164,6 +166,7 @@ export function assertCallRealtimeConfigResponse(payload, context) {
   const realtime = object(value.realtime, `${context}.realtime`);
   literal(realtime.provider, "cloudflare_realtime", `${context}.realtime.provider`);
   boolean(realtime.configured, `${context}.realtime.configured`);
+  if ("features" in realtime) assertCallFeatureFlags(realtime.features, `${context}.realtime.features`);
   string(realtime.callId, `${context}.realtime.callId`);
   enumValue(realtime.callType, ["audio", "video"], `${context}.realtime.callType`);
   enumValue(realtime.status, ["ringing", "active", "ended", "missed", "declined", "failed"], `${context}.realtime.status`);
@@ -178,6 +181,56 @@ export function assertCallRealtimeConfigResponse(payload, context) {
   if ("requiresImmediateRenegotiation" in realtime) {
     boolean(realtime.requiresImmediateRenegotiation, `${context}.realtime.requiresImmediateRenegotiation`);
   }
+}
+
+export function assertCallUsageReportResponse(payload, context) {
+  const value = success(payload, context);
+  const report = object(value.usageReport, `${context}.usageReport`);
+  string(report.usageReportId, `${context}.usageReport.usageReportId`);
+  string(report.callId, `${context}.usageReport.callId`);
+  literal(report.provider, "cloudflare_realtime", `${context}.usageReport.provider`);
+  nullableString(report.providerSessionId, `${context}.usageReport.providerSessionId`);
+  [
+    "durationMs",
+    "audioDurationMs",
+    "videoDurationMs",
+    "screenDurationMs",
+    "bytesSentEstimate",
+    "bytesReceivedEstimate"
+  ].forEach((key) => number(report[key], `${context}.usageReport.${key}`));
+  boolean(report.relayLikely, `${context}.usageReport.relayLikely`);
+  nullableString(report.candidateType, `${context}.usageReport.candidateType`);
+  string(report.createdAt, `${context}.usageReport.createdAt`);
+}
+
+export function assertCallRealtimeStatusResponse(payload, context) {
+  const value = success(payload, context);
+  const realtime = object(value.realtime, `${context}.realtime`);
+  literal(realtime.provider, "cloudflare_realtime", `${context}.realtime.provider`);
+  boolean(realtime.configured, `${context}.realtime.configured`);
+  enumValue(realtime.status, ["configured", "not_configured", "disabled"], `${context}.realtime.status`);
+  boolean(realtime.mock, `${context}.realtime.mock`);
+  string(realtime.apiBase, `${context}.realtime.apiBase`);
+  boolean(realtime.turnConfigured, `${context}.realtime.turnConfigured`);
+  assertCallFeatureFlags(realtime.features, `${context}.realtime.features`);
+  const credentialState = object(realtime.credentialState, `${context}.realtime.credentialState`);
+  boolean(credentialState.appIdConfigured, `${context}.realtime.credentialState.appIdConfigured`);
+  boolean(credentialState.appSecretConfigured, `${context}.realtime.credentialState.appSecretConfigured`);
+  boolean(credentialState.turnCredentialsConfigured, `${context}.realtime.credentialState.turnCredentialsConfigured`);
+  string(realtime.lastProviderCheckAt, `${context}.realtime.lastProviderCheckAt`);
+  enumValue(realtime.lastProviderCheckStatus, ["configured", "not_configured", "disabled"], `${context}.realtime.lastProviderCheckStatus`);
+  string(realtime.estimatedSfuTurnEgressStatus, `${context}.realtime.estimatedSfuTurnEgressStatus`);
+}
+
+function assertCallFeatureFlags(payload, context) {
+  const features = object(payload, context);
+  [
+    "callsEnabled",
+    "audioCallsEnabled",
+    "videoCallsEnabled",
+    "screenShareEnabled",
+    "realtimeMediaEnabled"
+  ].forEach((key) => boolean(features[key], `${context}.${key}`));
 }
 
 export function assertPaginatedRoomsResponse(payload, context) {
@@ -355,10 +408,20 @@ export function assertAdminUsageResponse(payload, context) {
     "failedParticipants",
     "maxParticipants",
     "totalDurationMs",
+    "averageDurationMs",
     "realtimeSessions",
     "activeRealtimeSessions",
     "realtimeTracks",
-    "failedMediaEvents"
+    "failedMediaEvents",
+    "failedProviderRequests",
+    "usageReports",
+    "reportedDurationMs",
+    "reportedAudioDurationMs",
+    "reportedVideoDurationMs",
+    "reportedScreenDurationMs",
+    "bytesSentEstimate",
+    "bytesReceivedEstimate",
+    "relayLikelyReports"
   ].forEach((key) => number(callMedia[key], `${context}.usage.callMedia.${key}`));
   assertNumericMap(callMedia.tracksByKind, `${context}.usage.callMedia.tracksByKind`);
   assertNumericMap(callMedia.tracksByQualityLayer, `${context}.usage.callMedia.tracksByQualityLayer`);

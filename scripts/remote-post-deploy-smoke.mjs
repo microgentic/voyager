@@ -4,6 +4,7 @@ import {
   assertBootstrapResponse,
   assertCallRealtimeConfigResponse,
   assertCallResponse,
+  assertCallUsageReportResponse,
   assertMessageResponse,
   assertMessagesResponse,
   assertRealtimeRoomMessageEvent,
@@ -18,6 +19,7 @@ const RECEIVER_EMAIL = process.env.REMOTE_SMOKE_RECEIVER_EMAIL ?? "grace@example
 const PASSWORD = process.env.REMOTE_SMOKE_PASSWORD ?? "voyager-demo-pass";
 const KEEP_DEVICES = process.env.REMOTE_SMOKE_KEEP_DEVICES === "1";
 const TIMEOUT_MS = Number(process.env.REMOTE_SMOKE_TIMEOUT_MS ?? 20_000);
+const REALTIME_SMOKE_MEDIA = process.env.REALTIME_SMOKE_MEDIA === "1";
 const REALTIME_PROTOCOL = "voyager.realtime.v1";
 
 const base = BASE_URL.replace(/\/+$/, "");
@@ -85,6 +87,13 @@ function assertServerTiming(header, metrics, context) {
       throw new Error(`${context} missing server timing metric ${metric}: ${header}`);
     }
   }
+}
+
+function mockSessionDescription(label) {
+  return {
+    type: "offer",
+    sdp: `v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=${label}\r\nt=0 0\r\n`
+  };
 }
 
 async function login(email, label) {
@@ -390,22 +399,58 @@ async function runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders) 
 
   const realtimeSession = await apiRaw(`/v1/calls/${callId}/realtime/session`, {
     method: "POST",
-    headers: ownerHeaders
+    headers: ownerHeaders,
+    json: REALTIME_SMOKE_MEDIA ? { sessionDescription: mockSessionDescription(`${runId}-session`) } : undefined
   });
+  let providerSessionId = null;
   if (realtimeSession.response.ok && realtimeSession.payload) {
     assertCallRealtimeConfigResponse(realtimeSession.payload, "POST /v1/calls/{callId}/realtime/session remote smoke");
     if (realtimeSession.payload.realtime.configured === false) {
+      if (REALTIME_SMOKE_MEDIA) {
+        throw new Error("REALTIME_SMOKE_MEDIA=1 requires Cloudflare Realtime to be configured");
+      }
       const message = String(realtimeSession.payload.realtime.message ?? "");
       if (!message.includes("Cloudflare Realtime is not configured")) {
         throw new Error("remote unconfigured realtime session returned unexpected message");
       }
     } else {
-      console.warn("Remote smoke found Cloudflare Realtime configured; PR 3 opt-in media smoke covers live provider assertions.");
+      providerSessionId = realtimeSession.payload.realtime.session?.sessionId ?? null;
+      if (!REALTIME_SMOKE_MEDIA) {
+        console.warn("Remote smoke found Cloudflare Realtime configured; set REALTIME_SMOKE_MEDIA=1 for opt-in provider media assertions.");
+      }
     }
   } else if (realtimeSession.payload?.error === "realtime_provider_error") {
-    console.warn("Remote smoke skipped live provider assertion after configured provider error; PR 3 will add opt-in media smoke.");
+    if (REALTIME_SMOKE_MEDIA) {
+      throw new Error(`REALTIME_SMOKE_MEDIA=1 provider session failed: ${JSON.stringify(realtimeSession.payload)}`);
+    }
+    console.warn("Remote smoke skipped live provider assertion after configured provider error.");
   } else {
     throw new Error(`POST /v1/calls/${callId}/realtime/session -> ${realtimeSession.response.status} ${JSON.stringify(realtimeSession.payload)}`);
+  }
+
+  if (REALTIME_SMOKE_MEDIA) {
+    if (!providerSessionId) {
+      throw new Error("REALTIME_SMOKE_MEDIA=1 did not receive a provider session id");
+    }
+    const tracks = await api(`/v1/calls/${callId}/realtime/tracks`, {
+      method: "POST",
+      headers: ownerHeaders,
+      json: {
+        sessionId: providerSessionId,
+        sessionDescription: mockSessionDescription(`${runId}-tracks`),
+        tracks: [{ location: "local", trackName: `${runId}-audio`, kind: "audio", mid: "audio0" }]
+      }
+    });
+    assertCallRealtimeConfigResponse(tracks, "POST /v1/calls/{callId}/realtime/tracks remote media smoke");
+    if (!tracks.realtime.tracks?.some((track) => track.trackName === `${runId}-audio`)) {
+      throw new Error("remote media smoke did not publish the expected audio track");
+    }
+    const closedTracks = await api(`/v1/calls/${callId}/realtime/tracks/close`, {
+      method: "POST",
+      headers: ownerHeaders,
+      json: { sessionId: providerSessionId, tracks: [{ mid: "audio0" }], force: true }
+    });
+    assertCallRealtimeConfigResponse(closedTracks, "POST /v1/calls/{callId}/realtime/tracks/close remote media smoke");
   }
 
   const joined = await api(`/v1/calls/${callId}/join`, {
@@ -432,6 +477,25 @@ async function runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders) 
     headers: receiverHeaders
   });
   assertCallResponse(unmuted, "POST /v1/calls/{callId}/unmute remote smoke");
+
+  const usageReport = await api(`/v1/calls/${callId}/usage-report`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: providerSessionId ?? `${runId}-unconfigured-session`,
+      durationMs: 15_000,
+      bytesSentEstimate: 2_048,
+      bytesReceivedEstimate: 4_096,
+      tracks: [{ kind: "audio", direction: "send", durationMs: 15_000 }],
+      network: {
+        candidateType: providerSessionId ? "host" : "relay",
+        relayLikely: !providerSessionId,
+        roundTripTimeMs: 15,
+        packetsLost: 0
+      }
+    }
+  });
+  assertCallUsageReportResponse(usageReport, "POST /v1/calls/{callId}/usage-report remote smoke");
 
   const receiverLeft = await api(`/v1/calls/${callId}/leave`, {
     method: "POST",

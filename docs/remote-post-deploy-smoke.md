@@ -47,6 +47,10 @@ Worker and seeded disposable test accounts.
 - Basic audio call lifecycle works at the deployed Worker level: create, optional
   configured-false Realtime session response, receiver join, mute/unmute, both
   participants leave, and final ended call fetch.
+- The call usage-report endpoint accepts aggregate metadata during the smoke call.
+- When `REALTIME_SMOKE_MEDIA=1` is set, the smoke requires Cloudflare Realtime to
+  be configured and also exercises provider session, track publish, and track
+  close endpoints.
 - Sending a direct message includes Conversation DO timing diagnostics and emits
   a matching `room.message` event.
 - Retrying that send with the same idempotency key returns the same
@@ -86,6 +90,18 @@ REMOTE_SMOKE_KEEP_DEVICES=1 \
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
 npm run smoke:backend:remote
 ```
+
+To opt in to the live Cloudflare Realtime media path after credentials and release
+flags are configured:
+
+```bash
+REALTIME_SMOKE_MEDIA=1 \
+BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
+npm run smoke:backend:remote
+```
+
+The opt-in media mode is expected to fail fast if the environment returns
+`configured: false` or if the provider rejects session/track negotiation.
 
 Default WebSocket wait timeout is 20 seconds. Override it only when diagnosing
 slow CI or network behavior:

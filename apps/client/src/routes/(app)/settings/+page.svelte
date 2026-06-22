@@ -7,7 +7,7 @@
 	} from '@lucide/svelte';
 	import type { Device, Session } from '$lib/api/types';
 	import { api, isApiError } from '$lib/api';
-	import { auth, ui, toasts, realtime, sync } from '$lib/stores';
+	import { auth, ui, toasts, realtime, sync, calls } from '$lib/stores';
 	import { APP_VERSION, getApiBase, setApiBase, defaultApiBase } from '$lib/config';
 	import { isTauri } from '$lib/platform';
 	import { messageCodec } from '$lib/protocol/codec';
@@ -125,7 +125,14 @@
 	function diagnosticDuration(value: number | null) {
 		return value === null ? '—' : `${value}ms`;
 	}
-</script>
+
+	function diagnosticBytes(value: number) {
+		if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)} GB`;
+		if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)} MB`;
+		if (value >= 1_000) return `${(value / 1_000).toFixed(1)} KB`;
+		return `${value} B`;
+	}
+	</script>
 
 <svelte:head><title>Settings · Voyager</title></svelte:head>
 
@@ -277,9 +284,9 @@
 								</div>
 							</Field>
 						{/if}
-						<div class="rounded-xl border border-border bg-surface-2 p-3">
-							<div class="mb-3 flex items-center justify-between gap-3">
-								<div class="flex items-center gap-2">
+							<div class="rounded-xl border border-border bg-surface-2 p-3">
+								<div class="mb-3 flex items-center justify-between gap-3">
+									<div class="flex items-center gap-2">
 									<Radio class="h-4 w-4 text-muted" />
 									<span class="text-sm font-medium text-foreground">Realtime diagnostics</span>
 								</div>
@@ -323,10 +330,67 @@
 								<div class="mt-3 flex items-start gap-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">
 									<Activity class="mt-0.5 h-3.5 w-3.5 shrink-0" />
 									<span>{realtime.lastError}</span>
+									</div>
+								{/if}
+							</div>
+							<div class="rounded-xl border border-border bg-surface-2 p-3">
+								<div class="mb-3 flex items-center justify-between gap-3">
+									<div class="flex items-center gap-2">
+										<Activity class="h-4 w-4 text-muted" />
+										<span class="text-sm font-medium text-foreground">Call diagnostics</span>
+									</div>
+									<Badge tone={calls.diagnostics.active ? 'success' : 'neutral'}>{calls.mediaState}</Badge>
 								</div>
-							{/if}
-						</div>
-					{/if}
+								<div class="grid gap-2 text-xs text-muted sm:grid-cols-2">
+									<div class="flex justify-between gap-3">
+										<span>Sampled</span>
+										<span class="font-medium text-foreground">{calls.diagnostics.sampledAt ? formatRelativeShort(calls.diagnostics.sampledAt) : 'never'}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>Duration</span>
+										<span class="font-medium text-foreground">{diagnosticDuration(calls.diagnostics.durationMs)}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>Peer</span>
+										<span class="font-medium text-foreground">{calls.diagnostics.peerConnectionState}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>ICE</span>
+										<span class="font-medium text-foreground">{calls.diagnostics.iceConnectionState}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>Sent</span>
+										<span class="font-medium text-foreground">{diagnosticBytes(calls.diagnostics.bytesSentEstimate)}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>Received</span>
+										<span class="font-medium text-foreground">{diagnosticBytes(calls.diagnostics.bytesReceivedEstimate)}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>Candidate</span>
+										<span class="font-medium text-foreground">{calls.diagnostics.candidateType ?? '—'}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>Relay</span>
+										<span class="font-medium text-foreground">{calls.diagnostics.relayLikely ? 'likely' : 'no'}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>Usage report</span>
+										<span class="font-medium text-foreground">{calls.diagnostics.lastUsageReportAt ? formatRelativeShort(calls.diagnostics.lastUsageReportAt) : '—'}</span>
+									</div>
+									<div class="flex justify-between gap-3">
+										<span>RTT</span>
+										<span class="font-medium text-foreground">{diagnosticDuration(calls.diagnostics.roundTripTimeMs)}</span>
+									</div>
+								</div>
+								{#if calls.diagnostics.lastUsageReportError}
+									<div class="mt-3 flex items-start gap-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">
+										<Activity class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+										<span>{calls.diagnostics.lastUsageReportError}</span>
+									</div>
+								{/if}
+							</div>
+						{/if}
 					<p class="text-xs text-faint">Voyager · v{APP_VERSION}</p>
 				</div>
 			</section>

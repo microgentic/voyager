@@ -11,11 +11,13 @@ import type {
 	BootstrapStatus,
 	Call,
 	CallRealtimeCloseTracksInput,
-	CallRealtimeConfig,
-	CallRealtimeRenegotiateInput,
-	CallRealtimeSessionInput,
-	CallRealtimeTracksInput,
-	CreateCallInput,
+		CallRealtimeConfig,
+		CallRealtimeRenegotiateInput,
+		CallRealtimeSessionInput,
+		CallRealtimeTracksInput,
+		CallUsageReport,
+		CallUsageReportInput,
+		CreateCallInput,
 	DeleteMessagesResult,
 	DeliveryReceipt,
 	Device,
@@ -521,6 +523,15 @@ export class VoyagerClient {
 			{ json: input as unknown as Json }
 		);
 		return res.realtime;
+	}
+
+	async reportCallUsage(callId: string, input: CallUsageReportInput): Promise<CallUsageReport> {
+		const res = await this.request<{ usageReport: CallUsageReport }>(
+			'POST',
+			`/v1/calls/${encodeURIComponent(callId)}/usage-report`,
+			{ json: input as unknown as Json }
+		);
+		return res.usageReport;
 	}
 
 	// --- Messages & sync -----------------------------------------------------
