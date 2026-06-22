@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_TENANT_ID = "tenant_voyager_default";
 
 function assert(condition, message) {
@@ -73,12 +74,13 @@ const tenantBackfilledTables = [
 ];
 
 for (const table of tenantBackfilledTables) {
+  const tableBody = tableSchemaBody(sqliteOutput, table);
   assert(
-    sqliteOutput.includes(`CREATE TABLE ${table}`),
+    tableBody !== null,
     `${table} should exist after applying all Voyager migrations`,
   );
   assert(
-    new RegExp(`CREATE TABLE ${table} [\\s\\S]*tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}'`).test(sqliteOutput),
+    tableBody.includes(`tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}'`),
     `${table} should have default Voyager tenant_id`,
   );
 }
@@ -152,3 +154,9 @@ console.log(
     checkedTables: tenantBackfilledTables.length,
   }),
 );
+
+function tableSchemaBody(schema, table) {
+  const escapedTable = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = schema.match(new RegExp(`CREATE TABLE ${escapedTable} \\(([\\s\\S]*?)\\n\\)`));
+  return match?.[1] ?? null;
+}
