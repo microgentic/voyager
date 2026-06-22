@@ -1,7 +1,8 @@
 import { randomId } from "../../crypto";
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { JsonObject, RoomRow } from "../internal-types";
+import type { RoomRow } from "../rooms/types";
+import type { JsonObject } from "../shared/types";
 import {
   messageSelectBindValues,
   messageSelectColumns,
@@ -11,7 +12,7 @@ import {
   requireRoomMembership,
   roomSelectColumns,
 } from "../rooms";
-import { publicMessage } from "../serializers";
+import { publicMessage } from "./serializers";
 import { nextCursor, pageParams } from "../utils";
 
 interface ThreadStateRow {

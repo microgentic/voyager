@@ -13,7 +13,7 @@ import {
   listRooms,
 } from "../rooms";
 import { capitalize, mutationTimingHeaders, readTimingHeaders } from "../utils";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleRoomRoutes(context: BackendRouteContext): Promise<RouteResult> {

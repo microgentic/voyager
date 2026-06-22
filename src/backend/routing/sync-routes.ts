@@ -1,7 +1,7 @@
 import { json, requireMethod } from "../../http";
 import { syncAccount } from "../sync";
 import { readTimingHeaders } from "../utils";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleSyncRoutes(context: BackendRouteContext): Promise<RouteResult> {

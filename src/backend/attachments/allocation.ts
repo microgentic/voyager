@@ -1,10 +1,7 @@
 import { randomId } from "../../crypto";
 import { stringField } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import {
-  DEFAULT_ATTACHMENT_DAYS,
-  type JsonObject,
-} from "../internal-types";
+import type { JsonObject } from "../shared/types";
 import { getPolicy, requireRoomMembership } from "../rooms";
 import {
   numberField,
@@ -12,9 +9,10 @@ import {
   optionalNumberField,
   sqliteTimestamp,
 } from "../utils";
-import { publicAttachment } from "../serializers";
+import { publicAttachment } from "./serializers";
 import {
   DEFAULT_MAX_IMAGE_DIMENSION,
+  DEFAULT_ATTACHMENT_DAYS,
   MAX_FILENAME_LENGTH,
   MAX_MIME_LENGTH,
   MAX_VARIANT_MANIFEST_BYTES,

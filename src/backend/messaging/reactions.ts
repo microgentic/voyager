@@ -1,7 +1,7 @@
 import { randomId } from "../../crypto";
 import { HttpError, stringField } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
 import { touchRoomVersionStatement } from "./helpers";
 import { requireActiveMessageInteraction } from "./reads";
 import { notifyMessageSync } from "./realtime";

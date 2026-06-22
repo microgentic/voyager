@@ -1,0 +1,2 @@
+export const MAX_KEY_PACKAGE_BYTES = 16_384;
+export const DEFAULT_KEY_PACKAGE_DAYS = 30;

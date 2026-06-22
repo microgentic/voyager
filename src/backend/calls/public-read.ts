@@ -1,8 +1,9 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { CallParticipantRow, CallRow, JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
+import type { CallParticipantRow, CallRow } from "./types";
 import { requireRoomMembership } from "../rooms";
-import { publicCall } from "../serializers";
+import { publicCall } from "./serializers";
 import { nextCursor, pageParams } from "../utils";
 
 export async function listRoomCalls(

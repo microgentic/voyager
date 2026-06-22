@@ -1,7 +1,8 @@
 import { randomId } from "../../crypto";
 import { HttpError, optionalObject, stringField } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { CallRealtimeSessionRow, JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
+import type { CallRealtimeSessionRow } from "./types";
 import { requireRoomMembership } from "../rooms";
 import { insertCallEvent } from "./events";
 import { getCall } from "./public-read";

@@ -4,8 +4,10 @@ import type { AuthContext, DeviceRow, Env, PrincipalRow } from "../types";
 import {
   DEFAULT_KEY_PACKAGE_DAYS,
   MAX_KEY_PACKAGE_BYTES,
+} from "./identity/types";
+import {
   type JsonObject,
-} from "./internal-types";
+} from "./shared/types";
 import { getActivePrincipal } from "./rooms";
 import {
   nextCursor,
@@ -15,7 +17,7 @@ import {
   runCounted,
   sqliteTimestamp,
 } from "./utils";
-import { publicDevice, publicKeyPackage, publicPrincipal } from "./serializers";
+import { publicDevice, publicKeyPackage, publicPrincipal } from "./shared/serializers";
 
 export async function listPrincipals(env: Env): Promise<unknown[]> {
   const result = await env.CONTROL_DB.prepare(

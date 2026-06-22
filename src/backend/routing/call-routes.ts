@@ -16,7 +16,7 @@ import {
   renegotiateRealtimeSession,
 } from "../calls";
 import { capitalize, readTimingHeaders } from "../utils";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
 
 export async function handleCallRoutes(context: BackendRouteContext): Promise<RouteResult> {

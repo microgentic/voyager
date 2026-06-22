@@ -1,7 +1,8 @@
 import { randomId } from "../../crypto";
 import { HttpError, stringField } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import { MAX_MESSAGE_BYTES, type JsonObject } from "../internal-types";
+import type { JsonObject } from "../shared/types";
+import { MAX_MESSAGE_BYTES } from "./types";
 import { getSendRoomContext } from "../rooms";
 import { byteLength, sqliteTimestamp, stringArrayField } from "../utils";
 import {

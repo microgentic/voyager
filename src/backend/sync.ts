@@ -1,10 +1,11 @@
 import { publicAccount } from "../http";
 import type { AuthContext, Env } from "../types";
-import type { AppBootstrapResult, JsonObject } from "./internal-types";
+import type { AppBootstrapResult, JsonObject } from "./shared/types";
 import { messageSelectBindValues, messageSelectColumns } from "./messages";
+import { publicMessage } from "./messaging/serializers";
 import { listRooms } from "./rooms";
 import { durationSince, numberParam } from "./utils";
-import { publicDevice, publicMessage, publicPrincipal } from "./serializers";
+import { publicDevice, publicPrincipal } from "./shared/serializers";
 
 export async function syncAccount(
   env: Env,

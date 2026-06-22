@@ -1,5 +1,5 @@
 import type { AuthContext, Env } from "../../types";
-import type { RouteResult } from "../internal-types";
+import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext, BackendRouteHandler } from "./types";
 import { handleAdminRoutes } from "./admin-routes";
 import { handleAgentRoutes } from "./agent-routes";

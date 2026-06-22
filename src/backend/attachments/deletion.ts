@@ -1,6 +1,6 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { AttachmentRow } from "../internal-types";
+import type { AttachmentRow } from "./types";
 import { requireRoomMembership } from "../rooms";
 import { runCounted } from "../utils";
 import { getAttachment } from "./ownership";

@@ -1,6 +1,6 @@
 import { HttpError } from "../../http";
 import type { AuthContext, Env } from "../../types";
-import type { ForwardSource } from "../internal-types";
+import type { ForwardSource } from "./types";
 import { requireRoomMembership } from "../rooms";
 
 // Forward provenance is server-asserted: only the dedicated /forward route may
