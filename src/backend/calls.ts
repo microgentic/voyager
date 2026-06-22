@@ -25,6 +25,11 @@ const CONNECTABLE_STATUSES: CallStatus[] = ["ringing", "active"];
 const REALTIME_PROVIDER = "cloudflare_realtime" as const;
 const DEFAULT_REALTIME_API_BASE = "https://rtc.live.cloudflare.com/v1";
 
+export type CallMediaMutationRunner = (
+  operation: string,
+  body?: Record<string, unknown>,
+) => Promise<JsonObject | undefined>;
+
 export async function createCall(
   env: Env,
   auth: AuthContext,
@@ -425,14 +430,12 @@ export async function getRealtimeSessionConfig(
   auth: AuthContext,
   callId: string,
   body: Record<string, unknown> = {},
+  runMediaMutation?: CallMediaMutationRunner,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
   const participant = await requireConnectedParticipant(env, auth, callId);
-  await updateParticipantMediaState(env, participant.call_participant_id, {
-    heartbeat: true,
-  });
   const config = realtimeConfig(env);
   if (!config.configured) {
     return recordRealtimeUnavailable(
@@ -442,7 +445,27 @@ export async function getRealtimeSessionConfig(
       participant,
       config,
       "session",
+      runMediaMutation,
     );
+  }
+
+  const existingSession = await activeRealtimeSessionForParticipant(
+    env,
+    callId,
+    participant.call_participant_id,
+  );
+  if (existingSession) {
+    const availableTracks = await availableRealtimeTracks(
+      env,
+      callId,
+      existingSession.provider_session_id,
+    );
+    return realtimeResponse(call, config, {
+      session: publicRealtimeSession(existingSession),
+      tracks: availableTracks,
+      availableTracks,
+      message: "Realtime session ready",
+    });
   }
 
   const payload = await realtimeProviderRequest(
@@ -460,9 +483,21 @@ export async function getRealtimeSessionConfig(
         sessionDescription: parseOptionalSessionDescription(body),
       },
     },
+    runMediaMutation,
   );
   const providerSessionId = stringPayload(payload, "sessionId", "realtime_session_missing");
-  const session = await upsertRealtimeSession(env, auth, participant, providerSessionId);
+  await commitCallMediaMutation(
+    env,
+    auth,
+    call,
+    "call.media.session.upsert",
+    { providerSessionId },
+    runMediaMutation,
+    async () => {
+      await upsertRealtimeSession(env, auth, participant, providerSessionId);
+    },
+  );
+  const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(call, config, {
@@ -481,14 +516,12 @@ export async function getRealtimeTrackConfig(
   auth: AuthContext,
   callId: string,
   body: Record<string, unknown> = {},
+  runMediaMutation?: CallMediaMutationRunner,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
   const participant = await requireConnectedParticipant(env, auth, callId);
-  await updateParticipantMediaState(env, participant.call_participant_id, {
-    heartbeat: true,
-  });
   const config = realtimeConfig(env);
   if (!config.configured) {
     return recordRealtimeUnavailable(
@@ -498,6 +531,7 @@ export async function getRealtimeTrackConfig(
       participant,
       config,
       "tracks",
+      runMediaMutation,
     );
   }
 
@@ -539,9 +573,23 @@ export async function getRealtimeTrackConfig(
         autoDiscover: body.autoDiscover === true,
       },
     },
+    runMediaMutation,
   );
   const tracks = tracksFromPayload(payload, requestedTracks);
-  await upsertRealtimeTracks(env, auth, session, tracks);
+  await commitCallMediaMutation(
+    env,
+    auth,
+    call,
+    "call.media.tracks.upsert",
+    {
+      providerSessionId,
+      tracks,
+    },
+    runMediaMutation,
+    async () => {
+      await upsertRealtimeTracks(env, auth, session, tracks);
+    },
+  );
   if (tracks.some((track) => track.location === "local")) {
     await emitCallEvent(env, call.room_id, {
       type: "call.updated",
@@ -567,14 +615,12 @@ export async function renegotiateRealtimeSession(
   auth: AuthContext,
   callId: string,
   body: Record<string, unknown> = {},
+  runMediaMutation?: CallMediaMutationRunner,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   assertConnectableCall(call);
   const participant = await requireConnectedParticipant(env, auth, callId);
-  await updateParticipantMediaState(env, participant.call_participant_id, {
-    heartbeat: true,
-  });
   const config = realtimeConfig(env);
   if (!config.configured) {
     return recordRealtimeUnavailable(
@@ -584,6 +630,7 @@ export async function renegotiateRealtimeSession(
       participant,
       config,
       "renegotiate",
+      runMediaMutation,
     );
   }
 
@@ -600,6 +647,18 @@ export async function renegotiateRealtimeSession(
     {
       method: "PUT",
       body: { sessionDescription: parseRequiredSessionDescription(body) },
+    },
+    runMediaMutation,
+  );
+  await commitCallMediaMutation(
+    env,
+    auth,
+    call,
+    "call.media.renegotiate.record",
+    { providerSessionId },
+    runMediaMutation,
+    async () => {
+      await recordRealtimeRenegotiated(env, auth, call, participant, providerSessionId);
     },
   );
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
@@ -618,13 +677,11 @@ export async function closeRealtimeTracks(
   auth: AuthContext,
   callId: string,
   body: Record<string, unknown> = {},
+  runMediaMutation?: CallMediaMutationRunner,
 ): Promise<JsonObject> {
   const call = await getCall(env, callId);
   await requireRoomMembership(env, auth, call.room_id);
   const participant = await requireConnectedParticipant(env, auth, callId);
-  await updateParticipantMediaState(env, participant.call_participant_id, {
-    heartbeat: true,
-  });
   const config = realtimeConfig(env);
   if (!config.configured) {
     return recordRealtimeUnavailable(
@@ -634,6 +691,7 @@ export async function closeRealtimeTracks(
       participant,
       config,
       "tracks.close",
+      runMediaMutation,
     );
   }
 
@@ -656,8 +714,22 @@ export async function closeRealtimeTracks(
         force: body.force === true,
       },
     },
+    runMediaMutation,
   );
-  await markRealtimeTracksClosed(env, session, tracks);
+  await commitCallMediaMutation(
+    env,
+    auth,
+    call,
+    "call.media.tracks.close",
+    {
+      providerSessionId,
+      tracks,
+    },
+    runMediaMutation,
+    async () => {
+      await markRealtimeTracksClosed(env, session, tracks);
+    },
+  );
   const availableTracks = await availableRealtimeTracks(env, callId, providerSessionId);
 
   return realtimeResponse(call, config, {
@@ -1209,6 +1281,7 @@ async function openInviteCount(env: Env, callId: string): Promise<number> {
 
 interface RealtimeConfig {
   configured: boolean;
+  mock: boolean;
   appId?: string;
   appSecret?: string;
   apiBase: string;
@@ -1241,6 +1314,7 @@ interface CloseRealtimeTrackInput {
 }
 
 function realtimeConfig(env: Env): RealtimeConfig {
+  const mock = env.CLOUDFLARE_REALTIME_MOCK === "1";
   const appId = trimmedEnv(env.CLOUDFLARE_REALTIME_APP_ID);
   const appSecret = trimmedEnv(env.CLOUDFLARE_REALTIME_APP_SECRET);
   const apiBase = trimmedEnv(env.CLOUDFLARE_REALTIME_API_BASE) ?? DEFAULT_REALTIME_API_BASE;
@@ -1260,7 +1334,8 @@ function realtimeConfig(env: Env): RealtimeConfig {
   }
 
   return {
-    configured: Boolean(appId && appSecret),
+    configured: mock || Boolean(appId && appSecret),
+    mock,
     appId,
     appSecret,
     apiBase: apiBase.replace(/\/+$/, ""),
@@ -1271,6 +1346,18 @@ function realtimeConfig(env: Env): RealtimeConfig {
 function trimmedEnv(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function configuredMs(
+  raw: string | undefined,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
 }
 
 function realtimeUnavailable(call: CallRow, config: RealtimeConfig): JsonObject {
@@ -1289,16 +1376,52 @@ async function recordRealtimeUnavailable(
   participant: CallParticipantRow,
   config: RealtimeConfig,
   endpoint: string,
+  runMediaMutation?: CallMediaMutationRunner,
 ): Promise<JsonObject> {
-  await insertCallEvent(env, auth, call.call_id, "call.media.join_failed", {
-    roomId: call.room_id,
-    callParticipantId: participant.call_participant_id,
-    deviceId: auth.device.device_id,
-    provider: REALTIME_PROVIDER,
-    endpoint,
-    reason: "cloudflare_realtime_not_configured",
-  });
+  await commitCallMediaMutation(
+    env,
+    auth,
+    call,
+    "call.media.unavailable.record",
+    { endpoint, reason: "cloudflare_realtime_not_configured" },
+    runMediaMutation,
+    async () => {
+      await recordRealtimeMediaFailure(
+        env,
+        auth,
+        call,
+        participant,
+        endpoint,
+        "cloudflare_realtime_not_configured",
+      );
+    },
+  );
   return realtimeUnavailable(call, config);
+}
+
+async function commitCallMediaMutation(
+  env: Env,
+  auth: AuthContext,
+  call: CallRow,
+  operation: string,
+  body: Record<string, unknown>,
+  runMediaMutation: CallMediaMutationRunner | undefined,
+  fallback: () => Promise<void>,
+): Promise<void> {
+  if (runMediaMutation) {
+    await runMediaMutation(operation, body);
+    return;
+  }
+  await fallback();
+  await reconcileCallLifecycleForCoordinator(env, call.call_id, {
+    ringTimeoutMs: configuredMs(env.CALL_RING_TIMEOUT_MS, 5_000, 10 * 60_000, 60_000),
+    participantLivenessTimeoutMs: configuredMs(
+      env.CALL_PARTICIPANT_LIVENESS_TIMEOUT_MS,
+      30_000,
+      30 * 60_000,
+      120_000,
+    ),
+  });
 }
 
 async function realtimeProviderRequest(
@@ -1310,20 +1433,65 @@ async function realtimeProviderRequest(
   config: RealtimeConfig,
   path: string,
   options: RealtimeApiRequestOptions,
+  runMediaMutation?: CallMediaMutationRunner,
 ): Promise<Record<string, unknown>> {
   try {
     return await realtimeApiRequest(env, config, path, options);
   } catch (error) {
-    await insertCallEvent(env, auth, call.call_id, "call.media.join_failed", {
-      roomId: call.room_id,
-      callParticipantId: participant.call_participant_id,
-      deviceId: auth.device.device_id,
-      provider: REALTIME_PROVIDER,
-      endpoint,
-      reason: error instanceof HttpError ? error.code : "realtime_provider_error",
-    });
+    const reason = error instanceof HttpError ? error.code : "realtime_provider_error";
+    await commitCallMediaMutation(
+      env,
+      auth,
+      call,
+      "call.media.provider_failure.record",
+      { endpoint, reason },
+      runMediaMutation,
+      async () => {
+        await recordRealtimeMediaFailure(env, auth, call, participant, endpoint, reason);
+      },
+    );
     throw error;
   }
+}
+
+async function recordRealtimeMediaFailure(
+  env: Env,
+  auth: AuthContext,
+  call: CallRow,
+  participant: CallParticipantRow,
+  endpoint: string,
+  reason: string,
+): Promise<void> {
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    heartbeat: true,
+  });
+  await insertCallEvent(env, auth, call.call_id, "call.media.join_failed", {
+    roomId: call.room_id,
+    callParticipantId: participant.call_participant_id,
+    deviceId: auth.device.device_id,
+    provider: REALTIME_PROVIDER,
+    endpoint,
+    reason,
+  });
+}
+
+async function recordRealtimeRenegotiated(
+  env: Env,
+  auth: AuthContext,
+  call: CallRow,
+  participant: CallParticipantRow,
+  providerSessionId: string,
+): Promise<void> {
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    heartbeat: true,
+  });
+  await insertCallEvent(env, auth, call.call_id, "call.media.renegotiated", {
+    roomId: call.room_id,
+    callParticipantId: participant.call_participant_id,
+    deviceId: auth.device.device_id,
+    provider: REALTIME_PROVIDER,
+    providerSessionId,
+  });
 }
 
 function realtimeResponse(
@@ -1348,6 +1516,9 @@ async function realtimeApiRequest(
   path: string,
   options: RealtimeApiRequestOptions,
 ): Promise<Record<string, unknown>> {
+  if (config.mock) {
+    return mockRealtimeApiRequest(path, options);
+  }
   if (!config.appId || !config.appSecret) {
     throw new HttpError(
       503,
@@ -1397,6 +1568,105 @@ async function realtimeApiRequest(
     });
   }
   return objectPayload;
+}
+
+function mockRealtimeApiRequest(
+  path: string,
+  options: RealtimeApiRequestOptions,
+): Record<string, unknown> {
+  if (options.method === "POST" && path === "/sessions/new") {
+    const correlationId = options.query?.correlationId ?? "session";
+    return {
+      sessionId: `mock_${stableToken(correlationId)}`,
+      sessionDescription: mockSessionDescription(options.body?.sessionDescription),
+    };
+  }
+
+  const tracksNewMatch = /^\/sessions\/([^/]+)\/tracks\/new$/.exec(path);
+  if (options.method === "POST" && tracksNewMatch) {
+    const providerSessionId = decodeURIComponent(tracksNewMatch[1]);
+    const tracks = Array.isArray(options.body?.tracks)
+      ? options.body.tracks.map((track, index) =>
+          mockTrackPayload(track, providerSessionId, index),
+        )
+      : [];
+    return {
+      tracks,
+      sessionDescription: mockSessionDescription(options.body?.sessionDescription),
+      requiresImmediateRenegotiation: tracks.some((track) => track.location === "remote"),
+    };
+  }
+
+  const renegotiateMatch = /^\/sessions\/([^/]+)\/renegotiate$/.exec(path);
+  if (options.method === "PUT" && renegotiateMatch) {
+    return {
+      sessionId: decodeURIComponent(renegotiateMatch[1]),
+      sessionDescription: mockSessionDescription(options.body?.sessionDescription),
+    };
+  }
+
+  const closeMatch = /^\/sessions\/([^/]+)\/tracks\/close$/.exec(path);
+  if (options.method === "PUT" && closeMatch) {
+    return {
+      sessionId: decodeURIComponent(closeMatch[1]),
+      tracks: Array.isArray(options.body?.tracks) ? options.body.tracks : [],
+      closed: true,
+      sessionDescription: mockSessionDescription(options.body?.sessionDescription),
+    };
+  }
+
+  throw new HttpError(404, "realtime_mock_route_not_found", "Realtime mock route not found");
+}
+
+function mockTrackPayload(
+  rawTrack: unknown,
+  providerSessionId: string,
+  index: number,
+): JsonObject {
+  const track =
+    rawTrack && typeof rawTrack === "object" && !Array.isArray(rawTrack)
+      ? (rawTrack as Record<string, unknown>)
+      : {};
+  const location = providerString(track.location) === "remote" ? "remote" : "local";
+  const kind = providerKind(track.kind) ?? "audio";
+  const trackName =
+    providerString(track.trackName) ?? `mock_${stableToken(`${providerSessionId}:${index}`)}`;
+  return {
+    location,
+    sessionId:
+      location === "remote"
+        ? providerString(track.sessionId) ?? providerSessionId
+        : providerSessionId,
+    trackName,
+    kind,
+    mid: providerString(track.mid) ?? `${location}-${index}`,
+    bidirectionalMediaStream:
+      typeof track.bidirectionalMediaStream === "boolean"
+        ? track.bidirectionalMediaStream
+        : undefined,
+    simulcast: providerObject(track.simulcast),
+  };
+}
+
+function mockSessionDescription(value: unknown): RealtimeSessionDescription {
+  const requested =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const requestedType = providerString(requested.type);
+  return {
+    type: requestedType === "offer" ? "answer" : "offer",
+    sdp: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Voyager mock realtime\r\nt=0 0\r\n",
+  };
+}
+
+function stableToken(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function stripUndefined(value: unknown): unknown {
@@ -1701,6 +1971,170 @@ async function requireOwnedRealtimeSession(
     );
   }
   return session;
+}
+
+async function activeRealtimeSessionForParticipant(
+  env: Env,
+  callId: string,
+  callParticipantId: string,
+): Promise<CallRealtimeSessionRow | null> {
+  return env.CONTROL_DB.prepare(
+    `SELECT *
+     FROM call_realtime_sessions
+     WHERE call_id = ?
+       AND call_participant_id = ?
+       AND provider = ?
+       AND status = 'active'
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+  )
+    .bind(callId, callParticipantId, REALTIME_PROVIDER)
+    .first<CallRealtimeSessionRow>();
+}
+
+export async function commitRealtimeSessionUpsertForCoordinator(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const providerSessionId = stringField(body, "providerSessionId", {
+    required: true,
+    max: 160,
+  })!;
+  const { call, participant } = await requireConnectedMediaCommitContext(
+    env,
+    auth,
+    callId,
+  );
+  const session = await upsertRealtimeSession(env, auth, participant, providerSessionId);
+  await updateParticipantMediaState(env, participant.call_participant_id, {
+    heartbeat: true,
+  });
+  return {
+    callId: call.call_id,
+    session: publicRealtimeSession(session),
+  };
+}
+
+export async function commitRealtimeTracksUpsertForCoordinator(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const providerSessionId = stringField(body, "providerSessionId", {
+    required: true,
+    max: 160,
+  })!;
+  const { call } = await requireConnectedMediaCommitContext(env, auth, callId);
+  const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
+  const tracks = parseRealtimeTracks({ tracks: body.tracks }, call);
+  await upsertRealtimeTracks(env, auth, session, tracks);
+  return {
+    callId: call.call_id,
+    trackCount: tracks.length,
+  };
+}
+
+export async function commitRealtimeTracksCloseForCoordinator(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const providerSessionId = stringField(body, "providerSessionId", {
+    required: true,
+    max: 160,
+  })!;
+  const { call } = await requireConnectedMediaCommitContext(env, auth, callId);
+  const session = await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
+  const tracks = parseCloseRealtimeTracks({ tracks: body.tracks });
+  await markRealtimeTracksClosed(env, session, tracks);
+  return {
+    callId: call.call_id,
+    closedTrackCount: tracks.length,
+  };
+}
+
+export async function commitRealtimeUnavailableForCoordinator(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const endpoint = stringField(body, "endpoint", { required: true, max: 80 })!;
+  const reason =
+    stringField(body, "reason", { max: 120 }) ??
+    "cloudflare_realtime_not_configured";
+  const { call, participant } = await requireConnectedMediaCommitContext(
+    env,
+    auth,
+    callId,
+  );
+  await recordRealtimeMediaFailure(env, auth, call, participant, endpoint, reason);
+  return {
+    callId: call.call_id,
+    endpoint,
+    reason,
+  };
+}
+
+export async function commitRealtimeProviderFailureForCoordinator(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const endpoint = stringField(body, "endpoint", { required: true, max: 80 })!;
+  const reason =
+    stringField(body, "reason", { max: 120 }) ?? "realtime_provider_error";
+  const { call, participant } = await requireConnectedMediaCommitContext(
+    env,
+    auth,
+    callId,
+  );
+  await recordRealtimeMediaFailure(env, auth, call, participant, endpoint, reason);
+  return {
+    callId: call.call_id,
+    endpoint,
+    reason,
+  };
+}
+
+export async function commitRealtimeRenegotiateRecordForCoordinator(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+  body: Record<string, unknown>,
+): Promise<JsonObject> {
+  const providerSessionId = stringField(body, "providerSessionId", {
+    required: true,
+    max: 160,
+  })!;
+  const { call, participant } = await requireConnectedMediaCommitContext(
+    env,
+    auth,
+    callId,
+  );
+  await requireOwnedRealtimeSession(env, auth, callId, providerSessionId);
+  await recordRealtimeRenegotiated(env, auth, call, participant, providerSessionId);
+  return {
+    callId: call.call_id,
+    providerSessionId,
+  };
+}
+
+async function requireConnectedMediaCommitContext(
+  env: Env,
+  auth: AuthContext,
+  callId: string,
+): Promise<{ call: CallRow; participant: CallParticipantRow }> {
+  const call = await getCall(env, callId);
+  await requireRoomMembership(env, auth, call.room_id);
+  assertConnectableCall(call);
+  const participant = await requireConnectedParticipant(env, auth, callId);
+  return { call, participant };
 }
 
 async function upsertRealtimeTracks(

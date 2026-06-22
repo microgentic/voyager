@@ -754,13 +754,19 @@ export async function handleBackendFirstRoutes(
   );
   if (callRealtimeRenegotiateMatch) {
     requireMethod(request, "POST");
+    const callId = callRealtimeRenegotiateMatch[1];
     return json({
       ok: true,
       realtime: await renegotiateRealtimeSession(
         env,
         auth,
-        callRealtimeRenegotiateMatch[1],
+        callId,
         await readOptionalJsonObject(request),
+        (operation, body) =>
+          runCallMutationThroughCallCoordinator(env, auth, callId, requestId, {
+            operation,
+            body,
+          }).then((mutation) => mutation.result),
       ),
     });
   }
@@ -771,13 +777,19 @@ export async function handleBackendFirstRoutes(
   );
   if (callRealtimeCloseTracksMatch) {
     requireMethod(request, "POST");
+    const callId = callRealtimeCloseTracksMatch[1];
     return json({
       ok: true,
       realtime: await closeRealtimeTracks(
         env,
         auth,
-        callRealtimeCloseTracksMatch[1],
+        callId,
         await readOptionalJsonObject(request),
+        (operation, body) =>
+          runCallMutationThroughCallCoordinator(env, auth, callId, requestId, {
+            operation,
+            body,
+          }).then((mutation) => mutation.result),
       ),
     });
   }
@@ -788,11 +800,17 @@ export async function handleBackendFirstRoutes(
   );
   if (callRealtimeMatch) {
     requireMethod(request, "POST");
+    const callId = callRealtimeMatch[1];
     const body = await readOptionalJsonObject(request);
+    const runMediaMutation = (operation: string, mutationBody?: Record<string, unknown>) =>
+      runCallMutationThroughCallCoordinator(env, auth, callId, requestId, {
+        operation,
+        body: mutationBody,
+      }).then((mutation) => mutation.result);
     const realtime =
       callRealtimeMatch[2] === "session"
-        ? await getRealtimeSessionConfig(env, auth, callRealtimeMatch[1], body)
-        : await getRealtimeTrackConfig(env, auth, callRealtimeMatch[1], body);
+        ? await getRealtimeSessionConfig(env, auth, callId, body, runMediaMutation)
+        : await getRealtimeTrackConfig(env, auth, callId, body, runMediaMutation);
     return json({ ok: true, realtime });
   }
 

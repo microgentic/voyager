@@ -499,6 +499,7 @@ export interface CallRealtimeTrack {
 	trackName: string;
 	kind: CallRealtimeTrackKind;
 	mid?: string | null;
+	qualityLayer?: string | null;
 	simulcast?: CallRealtimeSimulcastPolicy;
 	principalId?: string;
 	deviceId?: string;

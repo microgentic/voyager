@@ -40,6 +40,7 @@ const baseUrl = process.env.BASE_URL ?? "http://localhost:8787";
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
+const realtimeMockEnabled = process.env.CLOUDFLARE_REALTIME_MOCK === "1";
 
 async function api(path, options = {}) {
   const { response, payload } = await apiRaw(path, options);
@@ -175,6 +176,13 @@ async function openRealtimeCallWatcher(token, expectedRoomId, expectedType, time
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function mockSessionDescription(label) {
+  return {
+    type: "offer",
+    sdp: `v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=${label}\r\nt=0 0\r\n`
+  };
 }
 
 async function expectRealtimeConnectFailure(token, timeoutMs = 5_000) {
@@ -705,37 +713,124 @@ if (fetchedCall.call.callId !== createdCall.call.callId) {
   throw new Error("call fetch returned the wrong call");
 }
 
-const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertCallRealtimeConfigResponse(realtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session");
-if (realtimeSessionConfig.realtime.configured !== false) {
-  throw new Error("unconfigured realtime session config must not claim media is configured");
-}
-const realtimeTrackConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertCallRealtimeConfigResponse(realtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks");
-if (!Array.isArray(realtimeTrackConfig.realtime.tracks) || realtimeTrackConfig.realtime.tracks.length !== 0) {
-  throw new Error("unconfigured realtime track config must not expose media tracks");
-}
-const realtimeRenegotiateConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/renegotiate`, {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertCallRealtimeConfigResponse(realtimeRenegotiateConfig, "POST /v1/calls/{callId}/realtime/renegotiate");
-if (realtimeRenegotiateConfig.realtime.configured !== false) {
-  throw new Error("unconfigured realtime renegotiate config must not claim media is configured");
-}
-const realtimeCloseTracksConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks/close`, {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertCallRealtimeConfigResponse(realtimeCloseTracksConfig, "POST /v1/calls/{callId}/realtime/tracks/close");
-if (realtimeCloseTracksConfig.realtime.configured !== false) {
-  throw new Error("unconfigured realtime close-tracks config must not claim media is configured");
+let mockAudioSessionId = null;
+if (realtimeMockEnabled) {
+  const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { sessionDescription: mockSessionDescription("audio-session") }
+  });
+  assertCallRealtimeConfigResponse(realtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session mock");
+  if (realtimeSessionConfig.realtime.configured !== true || !realtimeSessionConfig.realtime.session?.sessionId) {
+    throw new Error("mock realtime session did not return configured session data");
+  }
+  mockAudioSessionId = realtimeSessionConfig.realtime.session.sessionId;
+  const duplicateRealtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { sessionDescription: mockSessionDescription("audio-session-duplicate") }
+  });
+  assertCallRealtimeConfigResponse(duplicateRealtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session duplicate mock");
+  if (duplicateRealtimeSessionConfig.realtime.session?.sessionId !== mockAudioSessionId) {
+    throw new Error("duplicate mock realtime session did not return the existing active session");
+  }
+  const realtimeTrackConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: mockAudioSessionId,
+      sessionDescription: mockSessionDescription("audio-track"),
+      tracks: [{ location: "local", trackName: `audio-${suffix}`, kind: "audio", mid: "audio0" }]
+    }
+  });
+  assertCallRealtimeConfigResponse(realtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks mock");
+  const audioTrack = realtimeTrackConfig.realtime.tracks?.find((track) => track.trackName === `audio-${suffix}`);
+  if (!audioTrack || audioTrack.kind !== "audio" || audioTrack.location !== "local") {
+    throw new Error("mock realtime audio track was not persisted in the response");
+  }
+  const duplicateRealtimeTrackConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: mockAudioSessionId,
+      sessionDescription: mockSessionDescription("audio-track-duplicate"),
+      tracks: [{ location: "local", trackName: `audio-${suffix}`, kind: "audio", mid: "audio0" }]
+    }
+  });
+  assertCallRealtimeConfigResponse(duplicateRealtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks duplicate mock");
+  if (
+    duplicateRealtimeTrackConfig.realtime.tracks?.filter((track) => track.trackName === `audio-${suffix}`).length !== 1
+  ) {
+    throw new Error("duplicate mock audio track publication did not collapse to one track response");
+  }
+  await expectFailure(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: mockAudioSessionId,
+      tracks: [{ location: "local", trackName: `audio-video-${suffix}`, kind: "video", mid: "video0" }]
+    }
+  }, 400);
+  const realtimeRenegotiateConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/renegotiate`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: mockAudioSessionId,
+      sessionDescription: mockSessionDescription("audio-renegotiate")
+    }
+  });
+  assertCallRealtimeConfigResponse(realtimeRenegotiateConfig, "POST /v1/calls/{callId}/realtime/renegotiate mock");
+  if (realtimeRenegotiateConfig.realtime.configured !== true || !realtimeRenegotiateConfig.realtime.sessionDescription) {
+    throw new Error("mock realtime renegotiate did not return provider session description");
+  }
+  const realtimeCloseTracksConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks/close`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { sessionId: mockAudioSessionId, tracks: [{ mid: "audio0" }], force: true }
+  });
+  assertCallRealtimeConfigResponse(realtimeCloseTracksConfig, "POST /v1/calls/{callId}/realtime/tracks/close mock");
+  const duplicateRealtimeCloseTracksConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks/close`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { sessionId: mockAudioSessionId, tracks: [{ mid: "audio0" }], force: true }
+  });
+  assertCallRealtimeConfigResponse(
+    duplicateRealtimeCloseTracksConfig,
+    "POST /v1/calls/{callId}/realtime/tracks/close duplicate mock"
+  );
+} else {
+  const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallRealtimeConfigResponse(realtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session");
+  if (realtimeSessionConfig.realtime.configured !== false) {
+    throw new Error("unconfigured realtime session config must not claim media is configured");
+  }
+  const realtimeTrackConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallRealtimeConfigResponse(realtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks");
+  if (!Array.isArray(realtimeTrackConfig.realtime.tracks) || realtimeTrackConfig.realtime.tracks.length !== 0) {
+    throw new Error("unconfigured realtime track config must not expose media tracks");
+  }
+  const realtimeRenegotiateConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/renegotiate`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallRealtimeConfigResponse(realtimeRenegotiateConfig, "POST /v1/calls/{callId}/realtime/renegotiate");
+  if (realtimeRenegotiateConfig.realtime.configured !== false) {
+    throw new Error("unconfigured realtime renegotiate config must not claim media is configured");
+  }
+  const realtimeCloseTracksConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks/close`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallRealtimeConfigResponse(realtimeCloseTracksConfig, "POST /v1/calls/{callId}/realtime/tracks/close");
+  if (realtimeCloseTracksConfig.realtime.configured !== false) {
+    throw new Error("unconfigured realtime close-tracks config must not claim media is configured");
+  }
 }
 
 await expectFailure(`/v1/rooms/${direct.room.roomId}/calls`, {
@@ -827,6 +922,24 @@ const endedHistoryCall = endedHistory.calls.find((call) => call.callId === creat
 if (!endedHistoryCall || endedHistoryCall.status !== "ended" || endedHistoryCall.endedReason !== "all_left") {
   throw new Error("room call history did not include the ended call state");
 }
+if (mockAudioSessionId) {
+  await expectFailure(`/v1/calls/${createdCall.call.callId}/realtime/renegotiate`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: mockAudioSessionId,
+      sessionDescription: mockSessionDescription("audio-renegotiate-after-end")
+    }
+  }, 409);
+  await expectFailure(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: mockAudioSessionId,
+      tracks: [{ location: "local", trackName: `audio-after-end-${suffix}`, kind: "audio", mid: "audio-after-end" }]
+    }
+  }, 409);
+}
 
 const videoCall = await api(`/v1/rooms/${direct.room.roomId}/calls`, {
   method: "POST",
@@ -841,28 +954,97 @@ await expectFailure(`/v1/calls/${videoCall.call.callId}`, {
   headers: inviteeHeaders
 }, 403);
 
-const videoRealtimeSessionConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/session`, {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertCallRealtimeConfigResponse(videoRealtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session video");
-if (
-  videoRealtimeSessionConfig.realtime.configured !== false ||
-  videoRealtimeSessionConfig.realtime.callType !== "video"
-) {
-  throw new Error("unconfigured video realtime session config returned the wrong shape");
-}
-const videoRealtimeTrackConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/tracks`, {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertCallRealtimeConfigResponse(videoRealtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks video");
-if (
-  videoRealtimeTrackConfig.realtime.configured !== false ||
-  !Array.isArray(videoRealtimeTrackConfig.realtime.tracks) ||
-  videoRealtimeTrackConfig.realtime.tracks.length !== 0
-) {
-  throw new Error("unconfigured video realtime track config must not expose media tracks");
+if (realtimeMockEnabled) {
+  const videoRealtimeSessionConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/session`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { sessionDescription: mockSessionDescription("video-session") }
+  });
+  assertCallRealtimeConfigResponse(videoRealtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session video mock");
+  const videoSessionId = videoRealtimeSessionConfig.realtime.session?.sessionId;
+  if (videoRealtimeSessionConfig.realtime.configured !== true || !videoSessionId) {
+    throw new Error("mock video realtime session config returned the wrong shape");
+  }
+  const videoRealtimeTrackConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: videoSessionId,
+      sessionDescription: mockSessionDescription("video-tracks"),
+      tracks: [
+        { location: "local", trackName: `video-audio-${suffix}`, kind: "audio", mid: "video-audio0" },
+        {
+          location: "local",
+          trackName: `video-camera-${suffix}`,
+          kind: "video",
+          mid: "video-camera0",
+          simulcast: { preferredRid: "h", priorityOrdering: "asciibetical", ridNotAvailable: "asciibetical" }
+        },
+        {
+          location: "local",
+          trackName: `video-screen-${suffix}`,
+          kind: "screen",
+          mid: "video-screen0",
+          simulcast: { preferredRid: "q", priorityOrdering: "asciibetical", ridNotAvailable: "asciibetical" }
+        }
+      ]
+    }
+  });
+  assertCallRealtimeConfigResponse(videoRealtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks video mock");
+  const videoTrackKinds = new Set((videoRealtimeTrackConfig.realtime.tracks ?? []).map((track) => track.kind));
+  if (!videoTrackKinds.has("audio") || !videoTrackKinds.has("video") || !videoTrackKinds.has("screen")) {
+    throw new Error("mock video realtime track config did not include audio, video, and screen tracks");
+  }
+  const videoOwnerMedia = await api(`/v1/calls/${videoCall.call.callId}`, { headers: ownerHeaders });
+  assertCallResponse(videoOwnerMedia, "GET /v1/calls/{callId} video owner media after mock tracks");
+  const videoOwnerParticipant = videoOwnerMedia.call.participants.find(
+    (participant) => participant.principalId === owner.principal.principalId
+  );
+  if (!videoOwnerParticipant?.audioEnabled || !videoOwnerParticipant.videoEnabled || !videoOwnerParticipant.screenEnabled) {
+    throw new Error("mock video track upsert did not enable owner audio/video/screen state");
+  }
+  const videoCloseScreenConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/tracks/close`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { sessionId: videoSessionId, tracks: [{ mid: "video-screen0" }], force: true }
+  });
+  assertCallRealtimeConfigResponse(videoCloseScreenConfig, "POST /v1/calls/{callId}/realtime/tracks/close screen mock");
+  const videoOwnerMediaAfterScreenClose = await api(`/v1/calls/${videoCall.call.callId}`, { headers: ownerHeaders });
+  assertCallResponse(videoOwnerMediaAfterScreenClose, "GET /v1/calls/{callId} video owner media after screen close");
+  const videoOwnerAfterScreenClose = videoOwnerMediaAfterScreenClose.call.participants.find(
+    (participant) => participant.principalId === owner.principal.principalId
+  );
+  if (
+    !videoOwnerAfterScreenClose?.audioEnabled ||
+    !videoOwnerAfterScreenClose.videoEnabled ||
+    videoOwnerAfterScreenClose.screenEnabled
+  ) {
+    throw new Error("mock video screen close did not preserve audio/video and clear screen state");
+  }
+} else {
+  const videoRealtimeSessionConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/session`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallRealtimeConfigResponse(videoRealtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session video");
+  if (
+    videoRealtimeSessionConfig.realtime.configured !== false ||
+    videoRealtimeSessionConfig.realtime.callType !== "video"
+  ) {
+    throw new Error("unconfigured video realtime session config returned the wrong shape");
+  }
+  const videoRealtimeTrackConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallRealtimeConfigResponse(videoRealtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks video");
+  if (
+    videoRealtimeTrackConfig.realtime.configured !== false ||
+    !Array.isArray(videoRealtimeTrackConfig.realtime.tracks) ||
+    videoRealtimeTrackConfig.realtime.tracks.length !== 0
+  ) {
+    throw new Error("unconfigured video realtime track config must not expose media tracks");
+  }
 }
 
 const joinedVideoCall = await api(`/v1/calls/${videoCall.call.callId}/join`, {
@@ -2543,8 +2725,19 @@ await api(`/v1/sidebar-collections/${collection.collection.collectionId}/items`,
 
 const usage = await api("/v1/admin/usage", { headers: ownerHeaders });
 assertAdminUsageResponse(usage, "GET /v1/admin/usage");
-if (usage.usage.callMedia.failedMediaEvents < 4) {
+if (!realtimeMockEnabled && usage.usage.callMedia.failedMediaEvents < 4) {
   throw new Error("admin usage did not record unconfigured call media failures");
+}
+if (realtimeMockEnabled) {
+  if (usage.usage.callMedia.realtimeSessions < 2) {
+    throw new Error("admin usage did not record mock realtime sessions");
+  }
+  if (usage.usage.callMedia.realtimeTracks < 3) {
+    throw new Error("admin usage did not record mock realtime tracks");
+  }
+  if ((usage.usage.callMedia.tracksByKind.audio ?? 0) < 1 || (usage.usage.callMedia.tracksByKind.video ?? 0) < 1) {
+    throw new Error("admin usage did not record mock audio/video track kinds");
+  }
 }
 if (usage.usage.attachmentBytes.allocatedExpectedBytesLast24h <= 0) {
   throw new Error("admin usage did not include attachment allocation bytes");

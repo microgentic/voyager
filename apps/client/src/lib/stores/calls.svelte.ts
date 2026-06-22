@@ -185,6 +185,7 @@ class CallsStore {
 	private mediaHeartbeat: ReturnType<typeof setInterval> | null = null;
 	private remoteAudioElements = new Set<HTMLMediaElement>();
 	private prejoinPreviewRequestId = 0;
+	private mediaAttemptId = 0;
 
 	constructor() {
 		this.loadDevicePreferences();
@@ -785,7 +786,11 @@ class CallsStore {
 						this.activeCall = call;
 						this.activeRoom = room;
 						this.muted = !!participant.mutedAt;
-						void this.connectMedia(call);
+						const connected = await this.connectMedia(call);
+						if (!connected && this.activeCall?.callId === call.callId) {
+							await this.leaveCallQuietly(call.callId);
+							this.clearActiveCall();
+						}
 						return;
 					}
 					if (participant && INCOMING_PARTICIPANT_STATUSES.has(participant.status)) {
@@ -866,8 +871,10 @@ class CallsStore {
 			toasts.error(this.lastError);
 			return false;
 		}
+		const attemptId = ++this.mediaAttemptId;
 		try {
 			const sessionConfig = await api.getCallRealtimeSessionConfig(call.callId);
+			if (!this.isCurrentMediaAttempt(attemptId, call.callId)) return false;
 			if (!sessionConfig.configured || !sessionConfig.session?.sessionId) {
 				this.mediaState = 'unavailable';
 				this.lastError = sessionConfig.message;
@@ -906,6 +913,10 @@ class CallsStore {
 						? videoConstraints(this.cameraFacingMode, this.activeVideoInputId || undefined)
 						: false
 			});
+			if (!this.isCurrentMediaAttempt(attemptId, call.callId)) {
+				await this.closeMedia({ notifyProvider: false });
+				return false;
+			}
 			const audioTrack = this.localStream.getAudioTracks()[0];
 			if (!audioTrack) throw new Error('Microphone did not provide an audio track.');
 			const publishTracks: CallRealtimeTrackInput[] = [];
@@ -940,11 +951,19 @@ class CallsStore {
 			}
 
 			const offer = await createOffer(peer);
+			if (!this.isCurrentMediaAttempt(attemptId, call.callId)) {
+				await this.closeMedia({ notifyProvider: false });
+				return false;
+			}
 			const trackConfig = await api.getCallRealtimeTrackConfig(call.callId, {
 				sessionId: this.sessionId,
 				sessionDescription: offer,
 				tracks: publishTracks
 			});
+			if (!this.isCurrentMediaAttempt(attemptId, call.callId)) {
+				await this.closeMedia({ notifyProvider: false });
+				return false;
+			}
 			this.publishedMids = publishedTrackMids(trackConfig, publishMids);
 			await this.applyProviderDescription(trackConfig);
 			this.mediaState = 'active';
@@ -1302,6 +1321,7 @@ class CallsStore {
 	}
 
 	private async closeMedia(options: { notifyProvider?: boolean } = {}): Promise<void> {
+		this.mediaAttemptId += 1;
 		this.stopMediaHeartbeat();
 		const notifyProvider = options.notifyProvider ?? true;
 		const callId = this.mediaCallId;
@@ -1342,6 +1362,10 @@ class CallsStore {
 		this.callDevicePanelOpen = false;
 		this.peerConnectionState = 'closed';
 		this.iceConnectionState = 'closed';
+	}
+
+	private isCurrentMediaAttempt(attemptId: number, callId: string): boolean {
+		return this.mediaAttemptId === attemptId && this.activeCall?.callId === callId;
 	}
 
 	private async leaveCallQuietly(callId: string): Promise<void> {

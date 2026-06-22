@@ -24,3 +24,9 @@ Date: 2026-06-22
 - Simulate a poor network or briefly disable connectivity. Confirm the connection status changes and recovers when media reconnects.
 - End the call while camera and screen share are active. Confirm OS camera/microphone/screen indicators turn off and no local preview remains.
 - Rejoin or start a new call after teardown. Confirm microphone, camera, and screen prompts still work and no stale previous stream is shown.
+
+## Automated Backend Coverage
+
+- Normal local backend smoke keeps validating the configured-false Cloudflare Realtime path.
+- `CLOUDFLARE_REALTIME_MOCK=1 npm run smoke:backend:local` validates configured-success session, duplicate session, local track upsert, duplicate track upsert, renegotiation, close, duplicate close, audio-call rejection of video tracks, and video-call audio/video/screen metadata.
+- The mock smoke is not a substitute for real browser/device QA with Cloudflare Realtime credentials; it proves backend coordination and contract behavior only.
