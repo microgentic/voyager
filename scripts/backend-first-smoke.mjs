@@ -975,11 +975,31 @@ assertCallResponse(joinedRevocationGuardCall, "POST /v1/calls/{callId}/join revo
 if (joinedRevocationGuardCall.call.status !== "active") {
   throw new Error("revocation guard call did not activate before revoking the joined device");
 }
+const revocationRealtimeToken = await api("/v1/realtime/token", {
+  method: "POST",
+  headers: ownerHeaders
+});
+assertRealtimeTokenResponse(revocationRealtimeToken, "POST /v1/realtime/token revocation watcher");
+const revocationLeftWatcher = await openRealtimeCallWatcher(
+  revocationRealtimeToken.realtimeToken,
+  direct.room.roomId,
+  "call.left"
+);
 await api(`/v1/devices/${revokedCallLogin.device.deviceId}/revoke`, {
   method: "POST",
   headers: revokedCallHeaders,
   json: { reason: "call_join_revocation_smoke" }
 });
+const revocationLeftEvent = await revocationLeftWatcher.wait;
+assertRealtimeCallEvent(revocationLeftEvent, "GET /v1/realtime call.left after device revocation", "call.left");
+if (
+  revocationLeftEvent.callId !== revocationGuardCall.call.callId ||
+  revocationLeftEvent.principalId !== accepted.principal.principalId ||
+  revocationLeftEvent.deviceId !== revokedCallLogin.device.deviceId ||
+  revocationLeftEvent.reason !== "device_revoked"
+) {
+  throw new Error("joined-device revocation did not emit a call.left event for the revoked participant");
+}
 await expectFailure(`/v1/calls/${revocationGuardCall.call.callId}`, {
   headers: revokedCallHeaders
 }, 401);
