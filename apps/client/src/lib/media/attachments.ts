@@ -44,6 +44,7 @@ const STATIC_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'im
 
 export interface AttachmentUploadOptions {
 	includeSourceOriginal?: boolean;
+	durationMs?: number | null;
 }
 
 export function mediaKindForFile(file: File): AttachmentMediaKind {
@@ -62,7 +63,7 @@ export async function buildAttachmentUploadPlan(
 		const image = await imagePlan(file, options).catch(() => null);
 		if (image) return image;
 	}
-	return filePlan(file);
+	return filePlan(file, options);
 }
 
 export function attachmentRefFromUpload(attachment: Attachment, plan: AttachmentUploadPlan): AttachmentRef {
@@ -143,10 +144,11 @@ async function imagePlan(file: File, options: AttachmentUploadOptions): Promise<
 	}
 }
 
-async function filePlan(file: File): Promise<AttachmentUploadPlan> {
+async function filePlan(file: File, options: AttachmentUploadOptions = {}): Promise<AttachmentUploadPlan> {
 	const mimeType = file.type || 'application/octet-stream';
 	const mediaKind = mediaKindForFile(file);
 	const metadata = await mediaMetadataForFile(file, mediaKind);
+	const durationMs = options.durationMs ?? metadata.durationMs;
 	const original: AttachmentVariantUpload = {
 		variant: 'original',
 		blob: file,
@@ -163,7 +165,7 @@ async function filePlan(file: File): Promise<AttachmentUploadPlan> {
 		declaredMimeType: mimeType,
 		width: metadata.width,
 		height: metadata.height,
-		durationMs: metadata.durationMs,
+		durationMs,
 		expectedBytes: Math.max(1, file.size),
 		variants: [original],
 		variantManifest: manifestFor(file, [original]),

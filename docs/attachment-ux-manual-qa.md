@@ -34,8 +34,24 @@ Use this checklist with the automated check suite for attachment UX changes.
   - Download retrieves the original file.
 - Send an audio file.
   - Card identifies it as audio and shows duration when available.
-  - Clicking opens a controls-based audio viewer.
+  - Bubble renders inline authenticated audio controls.
   - Download retrieves the original file.
+
+## Voice Notes
+
+- Press and hold the composer microphone button.
+  - Microphone permission is requested if needed.
+  - Recording state shows a timer and animated level/progress bars.
+  - Releasing the button stages a voice note as an audio attachment with duration metadata.
+- While recording, use the cancel control.
+  - Local tracks stop immediately.
+  - No attachment allocation remains in the composer.
+- Send a voice note.
+  - The message bubble renders inline audio playback controls.
+  - The voice note can be downloaded as the original private audio blob.
+  - Thread replies and forwarded messages preserve the same audio attachment behavior.
+- Deny microphone permission.
+  - Composer shows a visible error and does not create an attachment.
 
 ## Lifecycle And Cross-Surface Behavior
 

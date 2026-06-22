@@ -56,6 +56,7 @@
 	const thumbnailVariant = $derived(selectVariant(attachment, ['thumbnail', 'preview', 'original']));
 	const viewerVariant = $derived(selectVariant(activeAttachment, ['preview', 'original', 'thumbnail']));
 	const originalVariant = $derived(selectVariant(activeAttachment, ['original', 'preview', 'thumbnail']));
+	const audioVariant = $derived(selectVariant(attachment, ['original', 'preview', 'thumbnail']));
 	const posterVariant = $derived(selectOptionalVariant(activeAttachment, ['thumbnail', 'preview']));
 	const displayBytes = $derived(bytesFor(attachment));
 	const activeDisplayBytes = $derived(bytesFor(activeAttachment));
@@ -64,9 +65,12 @@
 	const duration = $derived(formatDuration(attachment.durationMs));
 	const activeDuration = $derived(formatDuration(activeAttachment.durationMs));
 	const thumbnailUrl = $derived(thumbnailVariant ? urls[cacheKey(attachment, thumbnailVariant)] : null);
+	const audioUrl = $derived(audioVariant ? urls[cacheKey(attachment, audioVariant)] : null);
 	const viewerUrl = $derived(viewerVariant ? urls[cacheKey(activeAttachment, viewerVariant)] : null);
 	const posterUrl = $derived(posterVariant ? urls[cacheKey(activeAttachment, posterVariant)] : null);
 	const thumbnailFailed = $derived(thumbnailVariant ? failed[cacheKey(attachment, thumbnailVariant)] : false);
+	const audioFailed = $derived(audioVariant ? failed[cacheKey(attachment, audioVariant)] : false);
+	const audioLoading = $derived(audioVariant ? loading[cacheKey(attachment, audioVariant)] : false);
 	const viewerFailed = $derived(viewerVariant ? failed[cacheKey(activeAttachment, viewerVariant)] : false);
 	const galleryCount = $derived(gallery.length);
 	const showGalleryControls = $derived(activeIsImage && galleryCount > 1);
@@ -204,6 +208,10 @@
 		if (viewerOpen && activeIsVideo && posterVariant) void ensureBlob(activeAttachment, posterVariant);
 	});
 
+	$effect(() => {
+		if (isAudio && audioVariant) void ensureBlob(attachment, audioVariant);
+	});
+
 	onDestroy(() => {
 		destroyed = true;
 		revokeUrls();
@@ -313,6 +321,51 @@
 				{formatBytes(displayBytes)}
 			</span>
 		</button>
+	</div>
+{:else if isAudio}
+	<div
+		class={cn(
+			'flex max-w-full flex-col gap-2 rounded-xl border p-2.5 text-left',
+			mine ? 'border-white/20 bg-white/10' : 'border-border bg-surface-2'
+		)}
+	>
+		<div class="flex min-w-0 items-center gap-3">
+			<span
+				class={cn(
+					'relative grid h-10 w-10 shrink-0 place-items-center rounded-lg',
+					mine ? 'bg-white/15 text-white' : 'bg-primary-soft text-primary'
+				)}
+			>
+				<Music class="h-5 w-5" />
+			</span>
+			<span class="min-w-0 flex-1">
+				<span class="block max-w-[14rem] truncate text-sm font-medium">{attachment.name}</span>
+				<span class={cn('block text-xs', mine ? 'text-white/70' : 'text-faint')}>
+					{cardMeta}{audioLoading ? ' · loading…' : audioFailed ? ' · unavailable' : ''}
+				</span>
+			</span>
+			<button
+				type="button"
+				onclick={downloadOriginal}
+				class={cn(
+					'grid h-8 w-8 shrink-0 place-items-center rounded-lg transition',
+					mine ? 'text-white/80 hover:bg-white/10' : 'text-muted hover:bg-surface-3'
+				)}
+				aria-label={`Download ${attachment.name}`}
+				title="Download audio"
+			>
+				<Download class="h-4 w-4" />
+			</button>
+		</div>
+		{#if audioUrl}
+			<audio src={audioUrl} controls preload="metadata" class="h-9 w-full max-w-[20rem]"></audio>
+		{:else}
+			<div class="h-1.5 overflow-hidden rounded-full bg-border">
+				<div
+					class={cn('h-full rounded-full', audioFailed ? 'w-full bg-danger' : 'w-1/3 animate-pulse bg-primary')}
+				></div>
+			</div>
+		{/if}
 	</div>
 {:else}
 	<button
