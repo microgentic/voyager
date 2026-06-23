@@ -120,13 +120,31 @@ export interface MessagingCoreSession {
 	scopes?: string[];
 }
 
-export interface MessagingCoreBootstrapProxyResult {
+export interface MessagingCoreProxyMetadata {
+	route: string;
+	upstreamStatus: number;
+}
+
+export interface MessagingCoreProxyResult {
 	messagingCore: MessagingCoreSession;
+	proxied: MessagingCoreProxyMetadata;
+}
+
+export interface MessagingCoreBootstrapProxyResult extends MessagingCoreProxyResult {
 	bootstrap: Record<string, unknown>;
-	proxied: {
-		route: '/bootstrap';
-		upstreamStatus: number;
-	};
+}
+
+export interface MessagingCoreRoomsProxyResult extends MessagingCoreProxyResult {
+	rooms: Record<string, unknown>[];
+}
+
+export interface MessagingCoreRoomProxyResult extends MessagingCoreProxyResult {
+	room: Record<string, unknown>;
+	members: Record<string, unknown>[];
+}
+
+export interface MessagingCoreMessagesProxyResult extends MessagingCoreProxyResult {
+	messages: Record<string, unknown>[];
 }
 
 export type RoomType = 'direct' | 'group' | 'channel';

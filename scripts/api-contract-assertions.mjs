@@ -59,6 +59,9 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
   { method: "POST", path: "/v1/messaging-core/session", stability: "future-sensitive" },
   { method: "GET", path: "/v1/messaging-core/bootstrap", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/messaging-core/rooms", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/messaging-core/rooms/{roomId}", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/messaging-core/rooms/{roomId}/messages", stability: "future-sensitive" },
   { method: "POST", path: "/v1/rooms/{roomId}/invitations", stability: "stable/current" },
   { method: "GET", path: "/v1/room-invitations", stability: "stable/current" },
   { method: "POST", path: "/v1/room-invitations/{roomInvitationId}/accept", stability: "stable/current" },
@@ -148,6 +151,39 @@ export function assertMessagingCoreBootstrapProxyResponse(payload, context) {
   const proxied = object(value.proxied, `${context}.proxied`);
   literal(proxied.route, "/bootstrap", `${context}.proxied.route`);
   number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
+}
+
+export function assertMessagingCoreRoomsProxyResponse(payload, context) {
+  const value = assertMessagingCoreProxyBase(payload, context, "/rooms");
+  array(value.rooms, `${context}.rooms`);
+}
+
+export function assertMessagingCoreRoomProxyResponse(payload, context) {
+  const value = success(payload, context);
+  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
+  object(value.room, `${context}.room`);
+  array(value.members, `${context}.members`);
+  const proxied = object(value.proxied, `${context}.proxied`);
+  string(proxied.route, `${context}.proxied.route`);
+  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
+}
+
+export function assertMessagingCoreMessagesProxyResponse(payload, context) {
+  const value = success(payload, context);
+  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
+  array(value.messages, `${context}.messages`);
+  const proxied = object(value.proxied, `${context}.proxied`);
+  string(proxied.route, `${context}.proxied.route`);
+  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
+}
+
+function assertMessagingCoreProxyBase(payload, context, route) {
+  const value = success(payload, context);
+  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
+  const proxied = object(value.proxied, `${context}.proxied`);
+  literal(proxied.route, route, `${context}.proxied.route`);
+  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
+  return value;
 }
 
 export function assertBootstrapResponse(payload, context) {

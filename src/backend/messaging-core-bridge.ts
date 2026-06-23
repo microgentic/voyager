@@ -132,6 +132,36 @@ export async function fetchMessagingCoreBootstrapProxy(
   };
 }
 
+export async function fetchMessagingCoreReadProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+  path: string,
+  query?: URLSearchParams,
+): Promise<JsonObject> {
+  const config = resolveBridgeConfig(env);
+  const base = messagingCoreBridgeStatus(env);
+  if (config.mode === "off" || !bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_proxy_unconfigured",
+      "Messaging Core proxy is not configured.",
+      { reason: bridgeStatusReason(config) },
+    );
+  }
+
+  const { session, token } = await createConfiguredMessagingCoreSession(env, config, base, identity);
+  const route = appendQuery(path, query);
+  const upstream = await getPublicCoreJson(config, token, route);
+  return {
+    messagingCore: session,
+    ...upstream.payload,
+    proxied: {
+      route,
+      upstreamStatus: upstream.status,
+    },
+  };
+}
+
 async function createConfiguredMessagingCoreSession(
   env: Env,
   config: BridgeConfig,
@@ -363,6 +393,11 @@ function messagingCoreUrl(config: BridgeConfig, path: string): string {
   }
   const base = config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`;
   return new URL(path.replace(/^\/+/, ""), base).toString();
+}
+
+function appendQuery(path: string, query?: URLSearchParams): string {
+  const serialized = query?.toString();
+  return serialized ? `${path}?${serialized}` : path;
 }
 
 async function mintScopedMessagingToken(

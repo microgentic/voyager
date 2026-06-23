@@ -31,7 +31,7 @@ import {
   updateAccountPolicy
 } from "./db";
 import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
-import { createMessagingCoreSessionPayload, fetchMessagingCoreBootstrapProxy } from "./backend/messaging-core-bridge";
+import { createMessagingCoreSessionPayload, fetchMessagingCoreBootstrapProxy, fetchMessagingCoreReadProxy } from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
@@ -243,12 +243,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "POST");
     return json({
       ok: true,
-      messagingCore: await createMessagingCoreSessionPayload(env, {
-        account: auth.account,
-        principal: auth.principal,
-        device: auth.device,
-        roles: auth.roles
-      })
+      messagingCore: await createMessagingCoreSessionPayload(env, messagingCoreIdentity(auth))
     });
   }
 
@@ -256,12 +251,42 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "GET");
     return json({
       ok: true,
-      ...(await fetchMessagingCoreBootstrapProxy(env, {
-        account: auth.account,
-        principal: auth.principal,
-        device: auth.device,
-        roles: auth.roles
-      }))
+      ...(await fetchMessagingCoreBootstrapProxy(env, messagingCoreIdentity(auth)))
+    });
+  }
+
+  if (url.pathname === "/v1/messaging-core/rooms") {
+    requireMethod(request, "GET");
+    return json({
+      ok: true,
+      ...(await fetchMessagingCoreReadProxy(env, messagingCoreIdentity(auth), "/rooms"))
+    });
+  }
+
+  const messagingCoreRoomMessagesMatch = routeParams(/^\/v1\/messaging-core\/rooms\/([^/]+)\/messages$/, url.pathname);
+  if (messagingCoreRoomMessagesMatch) {
+    requireMethod(request, "GET");
+    return json({
+      ok: true,
+      ...(await fetchMessagingCoreReadProxy(
+        env,
+        messagingCoreIdentity(auth),
+        `/rooms/${encodeURIComponent(messagingCoreRoomMessagesMatch[1])}/messages`,
+        proxyQuery(url, ["after", "limit"])
+      ))
+    });
+  }
+
+  const messagingCoreRoomMatch = routeParams(/^\/v1\/messaging-core\/rooms\/([^/]+)$/, url.pathname);
+  if (messagingCoreRoomMatch) {
+    requireMethod(request, "GET");
+    return json({
+      ok: true,
+      ...(await fetchMessagingCoreReadProxy(
+        env,
+        messagingCoreIdentity(auth),
+        `/rooms/${encodeURIComponent(messagingCoreRoomMatch[1])}`
+      ))
     });
   }
 
@@ -726,6 +751,24 @@ function readTimingHeaders(routeName: string, authMs: number, startedAt: number)
 
 function durationSince(startedAt: number): number {
   return Math.round((performance.now() - startedAt) * 100) / 100;
+}
+
+function messagingCoreIdentity(auth: AuthContext) {
+  return {
+    account: auth.account,
+    principal: auth.principal,
+    device: auth.device,
+    roles: auth.roles
+  };
+}
+
+function proxyQuery(url: URL, allowedKeys: string[]): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const key of allowedKeys) {
+    const value = url.searchParams.get(key);
+    if (value !== null) params.set(key, value);
+  }
+  return params;
 }
 
 async function getRealtimeAuthContext(env: Env, request: Request): Promise<AuthContext> {
