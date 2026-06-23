@@ -416,6 +416,8 @@ export function assertMessagingCoreSession(value, context) {
     boolean(identitySync.attempted, `${context}.identitySync.attempted`);
     boolean(identitySync.ok, `${context}.identitySync.ok`);
     nullableString(identitySync.reason, `${context}.identitySync.reason`);
+    if ("failedStep" in identitySync) nullableString(identitySync.failedStep, `${context}.identitySync.failedStep`);
+    if ("tenantSynced" in identitySync) boolean(identitySync.tenantSynced, `${context}.identitySync.tenantSynced`);
     boolean(identitySync.accountSynced, `${context}.identitySync.accountSynced`);
     boolean(identitySync.principalSynced, `${context}.identitySync.principalSynced`);
     boolean(identitySync.deviceSynced, `${context}.identitySync.deviceSynced`);

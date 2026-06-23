@@ -11,7 +11,16 @@
     "AUDIO_CALLS_ENABLED": "1",
     "VIDEO_CALLS_ENABLED": "1",
     "SCREEN_SHARE_ENABLED": "1",
-    "CALLS_REALTIME_MEDIA_ENABLED": "1"
+    "CALLS_REALTIME_MEDIA_ENABLED": "1",
+    "VOYAGER_MESSAGING_CORE_MODE": "shadow",
+    "VOYAGER_MESSAGING_CORE_TIMEOUT_MS": "5000",
+    "MESSAGING_CORE_BASE_URL": "https://voyager-messaging-worker.microgentic-voyager.workers.dev",
+    "MESSAGING_CORE_TENANT_ID": "tenant_voyager_default",
+    "MESSAGING_CORE_APP_ID": "voyager",
+    "MESSAGING_CORE_TOKEN_ISSUER": "voyager",
+    "MESSAGING_CORE_TOKEN_AUDIENCE": "messaging-core",
+    "MESSAGING_CORE_INTERNAL_SERVICE_ISSUER": "voyager",
+    "MESSAGING_CORE_INTERNAL_SERVICE_AUDIENCE": "messaging-core-internal"
   },
   "durable_objects": {
     "bindings": [
@@ -54,6 +63,12 @@
     {
       "binding": "ATTACHMENTS_BUCKET",
       "bucket_name": "voyager-dev-attachments"
+    }
+  ],
+  "services": [
+    {
+      "binding": "MESSAGING_CORE_SERVICE",
+      "service": "voyager-messaging-worker"
     }
   ],
   "observability": {
