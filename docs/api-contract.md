@@ -137,6 +137,7 @@ Bootstrap response:
 | `GET` | `/v1/messaging-core/rooms` | `{ messagingCore, rooms, proxied }` |
 | `GET` | `/v1/messaging-core/rooms/{roomId}` | `{ messagingCore, room, members, proxied }` |
 | `GET` | `/v1/messaging-core/rooms/{roomId}/messages` | `{ messagingCore, messages, proxied }` |
+| `POST` | `/v1/admin/messaging-core/backfill-readonly` | `{ tenantId, limits, snapshot, core }` |
 | `GET` | `/v1/sessions` | `{ sessions }` |
 | `DELETE` | `/v1/sessions/{sessionId}` | `{ ok: true }` |
 | `GET` | `/v1/devices` | `{ devices }` |
@@ -149,6 +150,8 @@ Login accepts `email`, `password`, and an optional `device` object. Existing-dev
 
 The `GET /v1/messaging-core/*` proxy routes are read-only cutover validation routes. They authenticate the caller with the Voyager session, mint/sync a Messaging Core session, call the matching product-neutral Core route, and return Core's payload plus proxy metadata. Current proxy coverage includes Core `/bootstrap`, `/rooms`, `/rooms/{roomId}`, and `/rooms/{roomId}/messages`. These routes do not switch normal Voyager room, message, attachment, realtime, or call traffic to Core.
 
+`POST /v1/admin/messaging-core/backfill-readonly` is a platform-owner-only cutover utility. It reads current Voyager policies, accounts, principals, devices, rooms, memberships, and top-level room messages, then calls Messaging Core's internal Voyager readonly import route with the configured internal service token. It is idempotent and exists to populate Core dev/shadow deployments for parity smoke coverage; it is not the normal post-cutover write path and does not import attachments, reactions, pins, or thread replies in this focused slice. Optional JSON fields are `roomLimit`, `messageLimit`, and `dryRun`.
+
 For a configured Voyager API and Messaging Core service, the optional parity smoke verifies that Voyager can mint a Messaging Core token, that Core accepts it for `/me`, `/bootstrap`, `/rooms`, and related read paths, and that the Voyager read-only proxies match direct Core identity and room/message reads:
 
 ```bash
@@ -158,6 +161,17 @@ npm run smoke:messaging-core-parity
 ```
 
 Alternatively set `VOYAGER_LOGIN_EMAIL` and `VOYAGER_LOGIN_PASSWORD` instead of `VOYAGER_SESSION_TOKEN`.
+
+Populate a configured Core dev/shadow deployment before parity smoke with:
+
+```bash
+BASE_URL="https://voyager-api.example" \
+ADMIN_EMAIL="ada@example.com" \
+ADMIN_PASSWORD="voyager-demo-pass" \
+npm run messaging-core:backfill-readonly
+```
+
+After this backfill, `npm run smoke:messaging-core-parity` requires Core `/rooms` to return at least one room and exercises `/rooms/{roomId}` plus `/rooms/{roomId}/messages`.
 
 ### Principals And Key Packages
 
@@ -641,6 +655,7 @@ These routes are intentionally not ordinary product UI surface:
 | `GET` | `/v1/admin/audit-events` | audit event list |
 | `GET` | `/v1/admin/rooms` | admin room list |
 | `POST` | `/v1/admin/devices/test-cleanup` | stale test-device cleanup |
+| `POST` | `/v1/admin/messaging-core/backfill-readonly` | Messaging Core readonly parity backfill |
 | `GET` | `/v1/admin/maintenance/runs` | maintenance history |
 | `POST` | `/v1/admin/maintenance/cleanup` | explicit cleanup run |
 

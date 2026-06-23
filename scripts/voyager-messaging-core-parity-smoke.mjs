@@ -79,6 +79,9 @@ assertEqual(voyagerProxyRooms.rooms.length, coreRooms.rooms.length, "Voyager pro
 let proxiedRoomDetail = false;
 let proxiedMessages = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
+if (!firstRoomId) {
+  throw new Error("Core /rooms returned no rooms; run npm run messaging-core:backfill-readonly before parity smoke.");
+}
 if (firstRoomId) {
   const encodedRoomId = encodeURIComponent(firstRoomId);
   const coreRoom = await coreApi(coreBaseUrl, `/rooms/${encodedRoomId}`, messagingCore.token);
