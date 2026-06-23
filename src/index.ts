@@ -780,10 +780,6 @@ async function messagingCoreMessageCutoverRoute(
   body?: Record<string, unknown>;
   responseField?: string;
 } | null> {
-  if (request.method === "GET" && url.pathname === "/v1/threads") {
-    return { method: "GET", path: "/threads", query: proxyQuery(url, ["limit", "cursor", "roomId"]) };
-  }
-
   const messagesMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages$/, url.pathname);
   if (messagesMatch) {
     const roomPath = `/rooms/${messagesMatch[1]}/messages`;

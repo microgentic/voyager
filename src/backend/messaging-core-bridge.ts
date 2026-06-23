@@ -225,7 +225,7 @@ export async function fetchMessagingCoreReadProxy(
 
 export function messagingCoreMessageCutoverEnabled(env: Env): boolean {
   const config = resolveBridgeConfig(env);
-  return config.messageCutoverEnabled && bridgeCanMintClientToken(config);
+  return config.messageCutoverEnabled;
 }
 
 export async function fetchMessagingCoreMessageCutoverProxy(
@@ -257,7 +257,7 @@ export async function fetchMessagingCoreMessageCutoverProxy(
   }
 
   const route = appendQuery(path, options.query);
-  const upstream = await publicCoreJson(config, token, method, route, options.body);
+  const upstream = await publicCoreJson(config, token, method, route, options.body, { preserveClientErrors: true });
   const payload = options.responseField && !(options.responseField in upstream.payload)
     ? { [options.responseField]: upstream.payload }
     : upstream.payload;
@@ -513,6 +513,7 @@ async function publicCoreJson(
   method: PublicCoreMethod,
   path: string,
   body?: Record<string, unknown>,
+  options: { preserveClientErrors?: boolean } = {},
 ): Promise<{ status: number; payload: JsonObject }> {
   const headers = new Headers({ authorization: `Bearer ${token}` });
   const init: RequestInit = {
@@ -528,6 +529,15 @@ async function publicCoreJson(
   const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
   const payload = await parseJsonObjectResponse(response);
   if (!response.ok) {
+    if (options.preserveClientErrors && response.status >= 400 && response.status < 500) {
+      const upstreamError = coreError(payload);
+      throw new HttpError(
+        response.status,
+        upstreamError.code,
+        upstreamError.message,
+        { upstreamStatus: response.status },
+      );
+    }
     throw new HttpError(
       502,
       "messaging_core_proxy_failed",
@@ -536,6 +546,19 @@ async function publicCoreJson(
     );
   }
   return { status: response.status, payload };
+}
+
+function coreError(payload: JsonObject): { code: string; message: string } {
+  const error = payload.error;
+  if (error && typeof error === "object" && !Array.isArray(error)) {
+    const code = stringValue((error as Record<string, unknown>).code);
+    const message = stringValue((error as Record<string, unknown>).message);
+    if (code && message) return { code, message };
+  }
+  return {
+    code: stringValue(payload.error) ?? "messaging_core_proxy_failed",
+    message: stringValue(payload.message) ?? "Messaging Core proxy request failed.",
+  };
 }
 
 async function buildVoyagerReadonlySnapshot(
