@@ -130,23 +130,6 @@ export interface MessagingCoreProxyResult {
 	proxied: MessagingCoreProxyMetadata;
 }
 
-export interface MessagingCoreBootstrapProxyResult extends MessagingCoreProxyResult {
-	bootstrap: Record<string, unknown>;
-}
-
-export interface MessagingCoreRoomsProxyResult extends MessagingCoreProxyResult {
-	rooms: Record<string, unknown>[];
-}
-
-export interface MessagingCoreRoomProxyResult extends MessagingCoreProxyResult {
-	room: Record<string, unknown>;
-	members: Record<string, unknown>[];
-}
-
-export interface MessagingCoreMessagesProxyResult extends MessagingCoreProxyResult {
-	messages: Record<string, unknown>[];
-}
-
 export interface MessagingCoreRealtimeToken {
 	realtimeTokenId?: string;
 	realtimeToken: string;

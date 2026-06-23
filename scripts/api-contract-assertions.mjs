@@ -57,13 +57,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
-  { method: "POST", path: "/v1/messaging-core/session", stability: "future-sensitive" },
-  { method: "GET", path: "/v1/messaging-core/bootstrap", stability: "future-sensitive" },
-  { method: "GET", path: "/v1/messaging-core/sync", stability: "future-sensitive" },
   { method: "POST", path: "/v1/messaging-core/realtime/token", stability: "future-sensitive" },
-  { method: "GET", path: "/v1/messaging-core/rooms", stability: "future-sensitive" },
-  { method: "GET", path: "/v1/messaging-core/rooms/{roomId}", stability: "future-sensitive" },
-  { method: "GET", path: "/v1/messaging-core/rooms/{roomId}/messages", stability: "future-sensitive" },
   { method: "POST", path: "/v1/rooms/{roomId}/invitations", stability: "stable/current" },
   { method: "GET", path: "/v1/room-invitations", stability: "stable/current" },
   { method: "POST", path: "/v1/room-invitations/{roomInvitationId}/accept", stability: "stable/current" },
@@ -105,7 +99,6 @@ export const endpointStabilityCatalog = [
   { method: "GET", path: "/v1/admin/audit-events", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/rooms", stability: "admin/dev-only" },
   { method: "POST", path: "/v1/admin/devices/test-cleanup", stability: "admin/dev-only" },
-  { method: "POST", path: "/v1/admin/messaging-core/backfill-readonly", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/agent-requests", stability: "admin/dev-only" },
   { method: "PATCH", path: "/v1/admin/agent-requests/{requestId}", stability: "admin/dev-only" },
   { method: "POST", path: "/v1/admin/agents", stability: "future-sensitive" },
@@ -180,15 +173,8 @@ const TEMPORARY_CALL_FALLBACK_BOUNDARY_ROUTES = [
   ["POST", "/v1/calls/{callId}/usage-report"]
 ];
 
-const READY_FOR_REMOVAL_BOUNDARY_ROUTES = [
-  ["POST", "/v1/messaging-core/session"],
-  ["GET", "/v1/messaging-core/bootstrap"],
-  ["GET", "/v1/messaging-core/sync"],
-  ["POST", "/v1/messaging-core/realtime/token"],
-  ["GET", "/v1/messaging-core/rooms"],
-  ["GET", "/v1/messaging-core/rooms/{roomId}"],
-  ["GET", "/v1/messaging-core/rooms/{roomId}/messages"],
-  ["POST", "/v1/admin/messaging-core/backfill-readonly"]
+const ACTIVE_CORE_FACADE_BOUNDARY_ROUTES = [
+  ["POST", "/v1/messaging-core/realtime/token"]
 ];
 
 export const messagingCoreBoundaryCatalog = [
@@ -204,10 +190,10 @@ export const messagingCoreBoundaryCatalog = [
     boundary: "temporary-call-fallback",
     diagnostics: "messagingCoreCutover",
   })),
-  ...READY_FOR_REMOVAL_BOUNDARY_ROUTES.map(([method, path]) => ({
+  ...ACTIVE_CORE_FACADE_BOUNDARY_ROUTES.map(([method, path]) => ({
     method,
     path,
-    boundary: "ready-for-removal",
+    boundary: "active-core-facade",
     diagnostics: "proxy-metadata",
   })),
 ];
@@ -227,65 +213,6 @@ export function assertAuthResult(payload, context) {
   assertDevice(value.device, `${context}.device`);
   string(value.sessionToken, `${context}.sessionToken`);
   if ("messagingCore" in value) assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
-}
-
-export function assertMessagingCoreSessionResponse(payload, context) {
-  const value = success(payload, context);
-  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
-}
-
-export function assertMessagingCoreBootstrapProxyResponse(payload, context) {
-  const value = success(payload, context);
-  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
-  const bootstrap = object(value.bootstrap, `${context}.bootstrap`);
-  string(bootstrap.app, `${context}.bootstrap.app`);
-  string(bootstrap.tenantId, `${context}.bootstrap.tenantId`);
-  object(bootstrap.account, `${context}.bootstrap.account`);
-  object(bootstrap.principal, `${context}.bootstrap.principal`);
-  if (bootstrap.device !== null) object(bootstrap.device, `${context}.bootstrap.device`);
-  array(bootstrap.roles, `${context}.bootstrap.roles`).forEach((role, index) => string(role, `${context}.bootstrap.roles[${index}]`));
-  array(bootstrap.scopes, `${context}.bootstrap.scopes`).forEach((scope, index) => string(scope, `${context}.bootstrap.scopes[${index}]`));
-  array(bootstrap.rooms, `${context}.bootstrap.rooms`);
-  nullableString(bootstrap.roomsNextCursor, `${context}.bootstrap.roomsNextCursor`);
-  array(bootstrap.pendingMessages, `${context}.bootstrap.pendingMessages`);
-  string(bootstrap.serverTime, `${context}.bootstrap.serverTime`);
-  string(bootstrap.requestId, `${context}.bootstrap.requestId`);
-  const proxied = object(value.proxied, `${context}.proxied`);
-  literal(proxied.route, "/bootstrap", `${context}.proxied.route`);
-  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
-}
-
-export function assertMessagingCoreRoomsProxyResponse(payload, context) {
-  const value = assertMessagingCoreProxyBase(payload, context, "/rooms");
-  array(value.rooms, `${context}.rooms`);
-}
-
-export function assertMessagingCoreRoomProxyResponse(payload, context) {
-  const value = success(payload, context);
-  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
-  object(value.room, `${context}.room`);
-  array(value.members, `${context}.members`);
-  const proxied = object(value.proxied, `${context}.proxied`);
-  string(proxied.route, `${context}.proxied.route`);
-  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
-}
-
-export function assertMessagingCoreMessagesProxyResponse(payload, context) {
-  const value = success(payload, context);
-  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
-  array(value.messages, `${context}.messages`);
-  const proxied = object(value.proxied, `${context}.proxied`);
-  string(proxied.route, `${context}.proxied.route`);
-  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
-}
-
-function assertMessagingCoreProxyBase(payload, context, route) {
-  const value = success(payload, context);
-  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
-  const proxied = object(value.proxied, `${context}.proxied`);
-  literal(proxied.route, route, `${context}.proxied.route`);
-  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
-  return value;
 }
 
 export function assertBootstrapResponse(payload, context) {
@@ -670,7 +597,7 @@ export function assertMessagingCoreBoundaryCatalog() {
     string(entry.path, "messagingCoreBoundary.path");
     enumValue(
       entry.boundary,
-      ["temporary-fallback", "temporary-call-fallback", "ready-for-removal"],
+      ["temporary-fallback", "temporary-call-fallback", "active-core-facade"],
       `messagingCoreBoundary(${entry.method} ${entry.path}).boundary`,
     );
     enumValue(
@@ -715,8 +642,7 @@ function isCoreOwnedVoyagerRoute(endpoint) {
     path.startsWith("/v1/room-invitations") ||
     path.startsWith("/v1/attachments") ||
     path.startsWith("/v1/calls") ||
-    path.startsWith("/v1/messaging-core") ||
-    path === "/v1/admin/messaging-core/backfill-readonly"
+    path.startsWith("/v1/messaging-core")
   );
 }
 

@@ -35,9 +35,7 @@ import {
   createMessagingCoreSessionPayload,
   fetchMessagingCoreAttachmentDownloadCutoverProxy,
   fetchMessagingCoreAttachmentUploadCutoverProxy,
-  fetchMessagingCoreBootstrapProxy,
   fetchMessagingCoreMessageCutoverProxy,
-  fetchMessagingCoreReadProxy,
   fetchMessagingCoreRealtimeTokenProxy,
   fetchMessagingCoreRoomCutoverProxy,
   fetchMessagingCoreSyncCutoverProxy,
@@ -262,30 +260,6 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     });
   }
 
-  if (url.pathname === "/v1/messaging-core/session") {
-    requireMethod(request, "POST");
-    return json({
-      ok: true,
-      messagingCore: await createMessagingCoreSessionPayload(env, messagingCoreIdentity(auth))
-    });
-  }
-
-  if (url.pathname === "/v1/messaging-core/bootstrap") {
-    requireMethod(request, "GET");
-    return json({
-      ok: true,
-      ...(await fetchMessagingCoreBootstrapProxy(env, messagingCoreIdentity(auth)))
-    });
-  }
-
-  if (url.pathname === "/v1/messaging-core/sync") {
-    requireMethod(request, "GET");
-    return json({
-      ok: true,
-      ...(await fetchMessagingCoreReadProxy(env, messagingCoreIdentity(auth), "/sync", proxyQuery(url, ["limit"]))),
-    });
-  }
-
   if (url.pathname === "/v1/messaging-core/realtime/token") {
     requireMethod(request, "POST");
     await checkRateLimit(env, {
@@ -297,41 +271,6 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return json({
       ok: true,
       ...(await fetchMessagingCoreRealtimeTokenProxy(env, messagingCoreIdentity(auth))),
-    });
-  }
-
-  if (url.pathname === "/v1/messaging-core/rooms") {
-    requireMethod(request, "GET");
-    return json({
-      ok: true,
-      ...(await fetchMessagingCoreReadProxy(env, messagingCoreIdentity(auth), "/rooms"))
-    });
-  }
-
-  const messagingCoreRoomMessagesMatch = routeParams(/^\/v1\/messaging-core\/rooms\/([^/]+)\/messages$/, url.pathname);
-  if (messagingCoreRoomMessagesMatch) {
-    requireMethod(request, "GET");
-    return json({
-      ok: true,
-      ...(await fetchMessagingCoreReadProxy(
-        env,
-        messagingCoreIdentity(auth),
-        `/rooms/${encodeURIComponent(messagingCoreRoomMessagesMatch[1])}/messages`,
-        proxyQuery(url, ["after", "limit"])
-      ))
-    });
-  }
-
-  const messagingCoreRoomMatch = routeParams(/^\/v1\/messaging-core\/rooms\/([^/]+)$/, url.pathname);
-  if (messagingCoreRoomMatch) {
-    requireMethod(request, "GET");
-    return json({
-      ok: true,
-      ...(await fetchMessagingCoreReadProxy(
-        env,
-        messagingCoreIdentity(auth),
-        `/rooms/${encodeURIComponent(messagingCoreRoomMatch[1])}`
-      ))
     });
   }
 

@@ -38,15 +38,23 @@ const authResult = sessionToken
     });
 const voyagerToken = sessionToken || authResult.sessionToken;
 
-const bridge = await voyagerApi("/v1/messaging-core/session", {
-  method: "POST",
+const appBootstrap = await voyagerApi("/v1/app/bootstrap?limit=20", {
   token: voyagerToken,
 });
+if (!appBootstrap.ok || !appBootstrap.bootstrap) {
+  throw new Error(`Voyager /v1/app/bootstrap did not return a bootstrap payload: ${JSON.stringify(appBootstrap)}`);
+}
+const voyagerMe = await voyagerApi("/v1/me", {
+  token: voyagerToken,
+});
+if (!voyagerMe.ok || !voyagerMe.messagingCore) {
+  throw new Error(`Voyager /v1/me did not return a Messaging Core session payload: ${JSON.stringify(voyagerMe)}`);
+}
 
-const messagingCore = bridge.messagingCore;
+const messagingCore = voyagerMe.messagingCore;
 assertObject(messagingCore, "messagingCore");
 if (!messagingCore.configured || !messagingCore.token || !messagingCore.baseUrl) {
-  throw new Error(`Voyager Messaging Core bridge is not configured: ${JSON.stringify(messagingCore)}`);
+  throw new Error(`Voyager Messaging Core bootstrap session is not configured: ${JSON.stringify(messagingCore)}`);
 }
 
 const claims = decodeJwtPayload(messagingCore.token);
@@ -63,33 +71,12 @@ if (!coreBootstrap.ok || !coreBootstrap.bootstrap) {
 }
 assertEqual(coreBootstrap.bootstrap.tenantId, claims.tenantId, "Core /bootstrap tenantId");
 assertEqual(coreBootstrap.bootstrap.account?.accountId, claims.accountId, "Core /bootstrap accountId");
-
-const voyagerProxyBootstrap = await voyagerApi("/v1/messaging-core/bootstrap", {
-  token: voyagerToken,
-});
-if (!voyagerProxyBootstrap.ok || !voyagerProxyBootstrap.bootstrap || !voyagerProxyBootstrap.messagingCore) {
-  throw new Error(`Voyager proxy /v1/messaging-core/bootstrap did not return bootstrap payload: ${JSON.stringify(voyagerProxyBootstrap)}`);
-}
-assertEqual(voyagerProxyBootstrap.proxied?.route, "/bootstrap", "Voyager proxy bootstrap route");
-assertEqual(voyagerProxyBootstrap.proxied?.upstreamStatus, 200, "Voyager proxy bootstrap upstream status");
-assertEqual(voyagerProxyBootstrap.bootstrap.tenantId, coreBootstrap.bootstrap.tenantId, "Voyager proxy bootstrap tenantId");
-assertEqual(voyagerProxyBootstrap.bootstrap.account?.accountId, coreBootstrap.bootstrap.account?.accountId, "Voyager proxy bootstrap accountId");
-assertEqual(voyagerProxyBootstrap.bootstrap.principal?.principalId, coreBootstrap.bootstrap.principal?.principalId, "Voyager proxy bootstrap principalId");
-assertEqual(voyagerProxyBootstrap.bootstrap.device?.deviceId, coreBootstrap.bootstrap.device?.deviceId, "Voyager proxy bootstrap deviceId");
+assertEqual(appBootstrap.bootstrap.account?.accountId, coreBootstrap.bootstrap.account?.accountId, "Voyager app bootstrap accountId");
+assertEqual(voyagerMe.messagingCore.tenantId, coreBootstrap.bootstrap.tenantId, "Voyager /v1/me Messaging Core tenantId");
 
 const coreSync = await coreApi(coreBaseUrl, "/sync?limit=20", messagingCore.token);
 assertArray(coreSync.rooms, "Core /sync rooms");
 assertArray(coreSync.pendingMessages, "Core /sync pendingMessages");
-const voyagerProxySync = await voyagerApi("/v1/messaging-core/sync?limit=20", {
-  token: voyagerToken,
-});
-assertEqual(voyagerProxySync.proxied?.route, "/sync?limit=20", "Voyager proxy sync route");
-assertEqual(voyagerProxySync.proxied?.upstreamStatus, 200, "Voyager proxy sync upstream status");
-assertArray(voyagerProxySync.rooms, "Voyager proxy sync rooms");
-assertArray(voyagerProxySync.pendingMessages, "Voyager proxy sync pendingMessages");
-assertEqual(voyagerProxySync.rooms.length, coreSync.rooms.length, "Voyager proxy sync rooms length");
-assertEqual(voyagerProxySync.roomsNextCursor ?? null, coreSync.roomsNextCursor ?? null, "Voyager proxy sync rooms cursor");
-assertEqual(typeof voyagerProxySync.serverTime, "string", "Voyager proxy sync serverTime");
 
 const coreRealtimeToken = await requestJson(`${coreBaseUrl}/realtime/token`, {
   method: "POST",
@@ -113,9 +100,9 @@ assertEqual(voyagerProxyRealtimeToken.realtime?.connectPath, coreRealtimeToken.c
 if (!voyagerProxyRealtimeToken.realtime?.realtimeToken?.startsWith("mrt_")) {
   throw new Error(`Voyager proxy realtime token should expose Core token format under realtime: ${JSON.stringify(voyagerProxyRealtimeToken)}`);
 }
-let proxiedRealtimeConnect = false;
+let coreRealtimeConnect = false;
 if (exerciseRealtimeConnect) {
-  proxiedRealtimeConnect = await runCoreRealtimeConnectSmoke({
+  coreRealtimeConnect = await runCoreRealtimeConnectSmoke({
     baseUrl: coreBaseUrl,
     realtime: voyagerProxyRealtimeToken.realtime,
     claims,
@@ -124,52 +111,30 @@ if (exerciseRealtimeConnect) {
 
 const coreRooms = await coreApi(coreBaseUrl, "/rooms", messagingCore.token);
 assertArray(coreRooms.rooms, "Core /rooms rooms");
-const voyagerProxyRooms = await voyagerApi("/v1/messaging-core/rooms", {
-  token: voyagerToken,
-});
-assertArray(voyagerProxyRooms.rooms, "Voyager proxy rooms");
-assertEqual(voyagerProxyRooms.proxied?.route, "/rooms", "Voyager proxy rooms route");
-assertEqual(voyagerProxyRooms.proxied?.upstreamStatus, 200, "Voyager proxy rooms upstream status");
-assertEqual(voyagerProxyRooms.rooms.length, coreRooms.rooms.length, "Voyager proxy rooms length");
 
-let proxiedRoomDetail = false;
-let proxiedRoomCutoverRead = false;
-let proxiedRoomCutoverWrites = false;
-let proxiedMessages = false;
-let proxiedMessageWrite = false;
-let proxiedSyncCutover = false;
-let proxiedThreadInbox = false;
-let proxiedAttachmentWrite = false;
-let proxiedRealtimeMessage = false;
+let directCoreRoomDetail = false;
+let normalRoomCutoverRead = false;
+let normalRoomCutoverWrites = false;
+let directCoreMessages = false;
+let normalMessageWrite = false;
+let normalSyncCutover = false;
+let normalThreadInbox = false;
+let normalAttachmentWrite = false;
+let normalRealtimeMessage = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
 if (!firstRoomId) {
-  throw new Error("Core /rooms returned no rooms; run npm run messaging-core:backfill-readonly before parity smoke.");
+  throw new Error("Core /rooms returned no rooms; populate the Core dev deployment before parity smoke.");
 }
 if (firstRoomId) {
   const encodedRoomId = encodeURIComponent(firstRoomId);
   const coreRoom = await coreApi(coreBaseUrl, `/rooms/${encodedRoomId}`, messagingCore.token);
-  const voyagerProxyRoom = await voyagerApi(`/v1/messaging-core/rooms/${encodedRoomId}`, {
-    token: voyagerToken,
-  });
-  assertEqual(voyagerProxyRoom.proxied?.route, `/rooms/${encodedRoomId}`, "Voyager proxy room route");
-  assertEqual(voyagerProxyRoom.proxied?.upstreamStatus, 200, "Voyager proxy room upstream status");
-  assertEqual(voyagerProxyRoom.room?.roomId, coreRoom.room?.roomId, "Voyager proxy room roomId");
-  assertEqual(voyagerProxyRoom.members?.length, coreRoom.members?.length, "Voyager proxy room members length");
-  proxiedRoomDetail = true;
+  assertEqual(coreRoom.room?.roomId, firstRoomId, "Core room detail roomId");
+  assertArray(coreRoom.members, "Core room detail members");
+  directCoreRoomDetail = true;
 
   const coreMessages = await coreApi(coreBaseUrl, `/rooms/${encodedRoomId}/messages?limit=20`, messagingCore.token);
-  const voyagerProxyMessages = await voyagerApi(`/v1/messaging-core/rooms/${encodedRoomId}/messages?limit=20`, {
-    token: voyagerToken,
-  });
-  assertEqual(voyagerProxyMessages.proxied?.route, `/rooms/${encodedRoomId}/messages?limit=20`, "Voyager proxy messages route");
-  assertEqual(voyagerProxyMessages.proxied?.upstreamStatus, 200, "Voyager proxy messages upstream status");
   assertArray(coreMessages.messages, "Core room messages");
-  assertArray(voyagerProxyMessages.messages, "Voyager proxy room messages");
-  assertEqual(voyagerProxyMessages.messages.length, coreMessages.messages.length, "Voyager proxy messages length");
-  if (coreMessages.messages[0]) {
-    assertEqual(voyagerProxyMessages.messages[0]?.envelopeId, coreMessages.messages[0].envelopeId, "Voyager proxy first message envelopeId");
-  }
-  proxiedMessages = true;
+  directCoreMessages = true;
 
   if (exerciseRoomCutover) {
     const normalRooms = await voyagerApi("/v1/rooms", {
@@ -190,10 +155,10 @@ if (firstRoomId) {
     assertEqual(normalRoom.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager room detail cutover upstream status");
     assertEqual(normalRoom.room?.roomId, firstRoomId, "normal Voyager room detail cutover roomId");
     assertArray(normalRoom.room?.members, "normal Voyager room detail cutover members");
-    proxiedRoomCutoverRead = true;
+    normalRoomCutoverRead = true;
 
     if (exerciseRoomWriteCutover) {
-      proxiedRoomCutoverWrites = await runRoomWriteCutoverSmoke({
+      normalRoomCutoverWrites = await runRoomWriteCutoverSmoke({
         ownerToken: voyagerToken,
         ownerPrincipalId: claims.principalId,
       });
@@ -210,7 +175,7 @@ if (firstRoomId) {
     if (!normalSync.sync.rooms.some((room) => room.roomId === firstRoomId)) {
       throw new Error("normal Voyager sync cutover did not include the seeded Core room.");
     }
-    proxiedSyncCutover = true;
+    normalSyncCutover = true;
   }
 
   if (exerciseMessageWriteCutover) {
@@ -242,21 +207,21 @@ if (firstRoomId) {
     if (!normalList.messages.some((message) => message.envelopeId === normalSend.message.envelopeId)) {
       throw new Error("normal Voyager message list cutover did not include the sent Core message.");
     }
-    proxiedMessageWrite = true;
-    proxiedThreadInbox = await runThreadInboxCutoverSmoke({
+    normalMessageWrite = true;
+    normalThreadInbox = await runThreadInboxCutoverSmoke({
       token: voyagerToken,
       encodedRoomId,
       rootEnvelopeId: normalSend.message.envelopeId,
     });
 
-    proxiedAttachmentWrite = await runAttachmentMessageWriteCutoverSmoke({
+    normalAttachmentWrite = await runAttachmentMessageWriteCutoverSmoke({
       token: voyagerToken,
       roomId: firstRoomId,
       encodedRoomId,
     });
 
     if (exerciseRealtimeConnect) {
-      proxiedRealtimeMessage = await runCoreRealtimeMessageDeliverySmoke({
+      normalRealtimeMessage = await runCoreRealtimeMessageDeliverySmoke({
         baseUrl: coreBaseUrl,
         token: voyagerToken,
         encodedRoomId,
@@ -274,20 +239,23 @@ console.log(JSON.stringify({
   accountId: claims.accountId,
   principalId: claims.principalId,
   deviceId: claims.deviceId,
-  proxiedBootstrap: true,
-  proxiedSync: true,
-  proxiedRealtimeToken: true,
-  proxiedRealtimeConnect,
-  proxiedRooms: true,
-  proxiedRoomDetail,
-  proxiedRoomCutoverRead,
-  proxiedRoomCutoverWrites,
-  proxiedMessages,
-  proxiedMessageWrite,
-  proxiedSyncCutover,
-  proxiedThreadInbox,
-  proxiedAttachmentWrite,
-  proxiedRealtimeMessage,
+  appBootstrap: true,
+  meMessagingCore: true,
+  directCoreBootstrap: true,
+  directCoreSync: true,
+  coreRealtimeToken: true,
+  voyagerRealtimeTokenFacade: true,
+  coreRealtimeConnect,
+  directCoreRooms: true,
+  directCoreRoomDetail,
+  normalRoomCutoverRead,
+  normalRoomCutoverWrites,
+  directCoreMessages,
+  normalMessageWrite,
+  normalSyncCutover,
+  normalThreadInbox,
+  normalAttachmentWrite,
+  normalRealtimeMessage,
 }, null, 2));
 
 async function runThreadInboxCutoverSmoke({ token, encodedRoomId, rootEnvelopeId }) {

@@ -185,64 +185,6 @@ export async function createMessagingCoreSessionPayload(
   return (await createConfiguredMessagingCoreSession(env, config, base, identity)).session;
 }
 
-export async function fetchMessagingCoreBootstrapProxy(
-  env: Env,
-  identity: MessagingCoreIdentity,
-): Promise<JsonObject> {
-  const config = resolveBridgeConfig(env);
-  const base = messagingCoreBridgeStatus(env);
-  if (config.mode === "off" || !bridgeCanMintClientToken(config)) {
-    throw new HttpError(
-      503,
-      "messaging_core_proxy_unconfigured",
-      "Messaging Core proxy is not configured.",
-      { reason: bridgeStatusReason(config) },
-    );
-  }
-
-  const { session, token } = await createConfiguredMessagingCoreSession(env, config, base, identity);
-  const upstream = await getPublicCoreJson(config, token, "/bootstrap");
-  const bootstrap = objectField(upstream.payload, "bootstrap");
-  return {
-    messagingCore: session,
-    bootstrap,
-    proxied: {
-      route: "/bootstrap",
-      upstreamStatus: upstream.status,
-    },
-  };
-}
-
-export async function fetchMessagingCoreReadProxy(
-  env: Env,
-  identity: MessagingCoreIdentity,
-  path: string,
-  query?: URLSearchParams,
-): Promise<JsonObject> {
-  const config = resolveBridgeConfig(env);
-  const base = messagingCoreBridgeStatus(env);
-  if (config.mode === "off" || !bridgeCanMintClientToken(config)) {
-    throw new HttpError(
-      503,
-      "messaging_core_proxy_unconfigured",
-      "Messaging Core proxy is not configured.",
-      { reason: bridgeStatusReason(config) },
-    );
-  }
-
-  const { session, token } = await createConfiguredMessagingCoreSession(env, config, base, identity);
-  const route = appendQuery(path, query);
-  const upstream = await getPublicCoreJson(config, token, route);
-  return {
-    messagingCore: session,
-    ...upstream.payload,
-    proxied: {
-      route,
-      upstreamStatus: upstream.status,
-    },
-  };
-}
-
 export async function fetchMessagingCoreSyncCutoverProxy(
   env: Env,
   identity: MessagingCoreIdentity,

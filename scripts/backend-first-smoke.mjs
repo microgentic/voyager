@@ -15,7 +15,6 @@ import {
   assertEndpointCatalog,
   assertKeyPackageResponse,
   assertKeyPackagesResponse,
-  assertMessagingCoreSessionResponse,
   assertMessageResponse,
   assertMessagesResponse,
   assertPaginatedAgentRequestsResponse,
@@ -319,12 +318,8 @@ assertAuthResult(owner, "POST /v1/admin/bootstrap");
 const ownerHeaders = auth(owner.sessionToken);
 if (messagingCoreBridgeEnabled) {
   assertMessagingCoreBridgeSession(owner.messagingCore, owner, "POST /v1/admin/bootstrap");
-  const bridgeSession = await api("/v1/messaging-core/session", {
-    method: "POST",
-    headers: ownerHeaders
-  });
-  assertMessagingCoreSessionResponse(bridgeSession, "POST /v1/messaging-core/session");
-  assertMessagingCoreBridgeSession(bridgeSession.messagingCore, owner, "POST /v1/messaging-core/session");
+  const me = await api("/v1/me", { headers: ownerHeaders });
+  assertMessagingCoreBridgeSession(me.messagingCore, owner, "GET /v1/me");
 }
 
 const invite = await api("/v1/admin/invitations", {
