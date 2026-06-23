@@ -766,7 +766,7 @@ async function handleMessagingCoreRoomCutover(
 ): Promise<Response | null> {
   if (!messagingCoreRoomCutoverEnabled(env)) return null;
 
-  const route = await messagingCoreRoomCutoverRoute(request, url);
+  const route = await messagingCoreRoomCutoverRoute(request, env, url);
   if (!route) return null;
 
   const result = await fetchMessagingCoreRoomCutoverProxy(
@@ -786,6 +786,7 @@ async function handleMessagingCoreRoomCutover(
 
 async function messagingCoreRoomCutoverRoute(
   request: Request,
+  env: Env,
   url: URL,
 ): Promise<{
   method: "GET" | "POST" | "PATCH" | "DELETE";
@@ -839,7 +840,7 @@ async function messagingCoreRoomCutoverRoute(
 
   const roomMembersMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members$/, url.pathname);
   if (request.method === "POST" && roomMembersMatch) {
-    const body = await readJsonObject(request);
+    const body = await messagingCoreMemberAddBody(env, await readJsonObject(request));
     const principalId = requiredMessagingCoreBodyString(body, "principalId");
     return {
       method: "POST",
@@ -855,7 +856,7 @@ async function messagingCoreRoomCutoverRoute(
     return {
       method: "POST",
       path: `/rooms/${roomInvitationsMatch[1]}/invitations`,
-      body: messagingCoreInvitationBody(await readJsonObject(request)),
+      body: await messagingCoreInvitationBody(env, await readJsonObject(request)),
       responseKind: "invitation",
     };
   }
@@ -880,7 +881,7 @@ async function messagingCoreRoomCutoverRoute(
     return {
       method: "PATCH",
       path: `/rooms/${roomMemberRoleMatch[1]}/members/${roomMemberRoleMatch[2]}/role`,
-      body: await readJsonObject(request),
+      body: await messagingCoreMemberRoleBody(env, roomMemberRoleMatch[2], await readJsonObject(request)),
       responseKind: "member",
       memberPrincipalId: roomMemberRoleMatch[2],
     };
@@ -905,7 +906,7 @@ async function messagingCoreRoomCutoverRoute(
     return {
       method: "POST",
       path: `/rooms/${proposeTransferMatch[1]}/ownership-transfers`,
-      body: await readJsonObject(request),
+      body: await messagingCoreOwnershipTransferBody(env, await readJsonObject(request)),
       responseKind: "transfer",
     };
   }
@@ -967,12 +968,90 @@ function messagingCoreRoomPatchBody(body: Record<string, unknown>): Record<strin
   return patch;
 }
 
-function messagingCoreInvitationBody(body: Record<string, unknown>): Record<string, unknown> {
+async function messagingCoreMemberAddBody(env: Env, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const principalId = requiredMessagingCoreBodyString(body, "principalId");
+  const principal = await loadActiveMessagingCoreCutoverPrincipal(env, principalId);
+  if (principal.principal_type !== "agent") {
+    throw new HttpError(
+      400,
+      "human_invitation_required",
+      "Human principals must accept a room invitation",
+    );
+  }
+  return { principalId, role: "agent" };
+}
+
+async function messagingCoreMemberRoleBody(
+  env: Env,
+  principalId: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const principal = await loadActiveMessagingCoreCutoverPrincipal(env, principalId);
+  if (principal.principal_type === "agent") return { role: "agent" };
+  const role = requiredMessagingCoreBodyString(body, "role", { maxLength: 20 });
+  if (role !== "owner" && role !== "admin" && role !== "member") {
+    throw new HttpError(400, "invalid_room_role", "Room role is invalid");
+  }
+  return { role };
+}
+
+async function messagingCoreInvitationBody(env: Env, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const principalId = requiredMessagingCoreBodyString(body, "principalId");
+  const principal = await loadActiveMessagingCoreCutoverPrincipal(env, principalId);
+  if (principal.principal_type !== "human") {
+    throw new HttpError(
+      400,
+      "agent_invitation_not_supported",
+      "Agent principals should be added directly by a room admin",
+    );
+  }
   return {
-    principalId: requiredMessagingCoreBodyString(body, "principalId"),
-    role: optionalMessagingCoreBodyString(body, "role") ?? "member",
+    principalId,
+    role: optionalMessagingCoreInvitationRole(body),
     expiresAt: messagingCoreInvitationExpiresAt(body.expiresInDays),
   };
+}
+
+async function messagingCoreOwnershipTransferBody(env: Env, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const toPrincipalId = requiredMessagingCoreBodyString(body, "toPrincipalId");
+  const principal = await loadActiveMessagingCoreCutoverPrincipal(env, toPrincipalId);
+  if (principal.principal_type !== "human") {
+    throw new HttpError(
+      400,
+      "invalid_owner_target",
+      "Ownership can only transfer to an active human room member",
+    );
+  }
+  return {
+    toPrincipalId,
+    expiresAt: optionalMessagingCoreBodyString(body, "expiresAt"),
+  };
+}
+
+async function loadActiveMessagingCoreCutoverPrincipal(env: Env, principalId: string): Promise<PrincipalRow> {
+  const principal = await env.CONTROL_DB.prepare(
+    `SELECT p.principal_id, p.account_id, p.principal_type, p.display_name, p.avatar_ref,
+            p.status, p.owner_principal_id, p.created_at, p.revoked_at
+     FROM principals p
+     JOIN accounts a ON a.account_id = p.account_id
+     WHERE p.principal_id = ?
+       AND p.status = 'active'
+       AND a.status = 'active'`,
+  )
+    .bind(principalId)
+    .first<PrincipalRow>();
+  if (!principal) {
+    throw new HttpError(404, "principal_not_found", "Active principal not found");
+  }
+  return principal;
+}
+
+function optionalMessagingCoreInvitationRole(body: Record<string, unknown>): string {
+  const role = optionalMessagingCoreBodyString(body, "role", { maxLength: 20 }) ?? "member";
+  if (role !== "admin" && role !== "member") {
+    throw new HttpError(400, "invalid_room_invitation_role", "Room invitation role must be admin or member");
+  }
+  return role;
 }
 
 function messagingCoreInvitationExpiresAt(value: unknown): string {

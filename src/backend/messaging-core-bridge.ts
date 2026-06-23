@@ -469,13 +469,18 @@ function adaptCoreRoomMember(
     principalType: profile.principalType,
     displayName: profile.displayName,
     role: requiredCoreString(member, "role"),
-    status: state === "left" ? "removed" : state,
+    status: voyagerMembershipStatus(state),
     createdAt: requiredCoreString(member, "createdAt"),
     updatedAt: requiredCoreString(member, "updatedAt"),
     removedAt: state === "active" || state === "invited"
       ? null
       : stringValue(member.leftAt) ?? stringValue(member.updatedAt),
   };
+}
+
+function voyagerMembershipStatus(coreState: string): string {
+  if (coreState === "left") return "leaving";
+  return coreState;
 }
 
 async function adaptCoreInvitation(env: Env, invitation: JsonObject): Promise<JsonObject> {
