@@ -280,6 +280,12 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
 
   if (url.pathname === "/v1/messaging-core/realtime/token") {
     requireMethod(request, "POST");
+    await checkRateLimit(env, {
+      key: `realtime-token:${auth.account.account_id}:${auth.device.device_id}`,
+      action: "realtime-token",
+      limit: REALTIME_TOKEN_LIMIT,
+      windowSeconds: REALTIME_TOKEN_WINDOW_SECONDS
+    });
     return json({
       ok: true,
       ...(await fetchMessagingCoreRealtimeTokenProxy(env, messagingCoreIdentity(auth))),
