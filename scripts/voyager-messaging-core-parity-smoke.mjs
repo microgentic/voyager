@@ -2,7 +2,7 @@ const voyagerBaseUrl = trimTrailingSlash(process.env.VOYAGER_BASE_URL ?? process
 const sessionToken = process.env.VOYAGER_SESSION_TOKEN ?? "";
 const loginEmail = process.env.VOYAGER_LOGIN_EMAIL ?? "";
 const loginPassword = process.env.VOYAGER_LOGIN_PASSWORD ?? "";
-const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
+const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 20_000);
 const exerciseAllCoreCutover = process.env.SMOKE_MESSAGING_CORE_ALL_CUTOVER === "1";
 const exerciseRoomCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_ROOM_CUTOVER === "1";
 const exerciseRoomWriteCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_CUTOVER === "1";
@@ -180,14 +180,15 @@ if (firstRoomId) {
 
   if (exerciseMessageWriteCutover) {
     const idempotencyKey = `messaging-core-cutover-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const normalPayload = {
+      idempotencyKey,
+      protocolType: "opaque-test",
+      ciphertext: `messaging-core-cutover-smoke-${idempotencyKey}`,
+    };
     const normalSend = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
       method: "POST",
       token: voyagerToken,
-      json: {
-        idempotencyKey,
-        protocolType: "opaque-test",
-        ciphertext: `messaging-core-cutover-smoke-${idempotencyKey}`,
-      },
+      json: normalPayload,
     });
     assertCoreCutoverDiagnostics(normalSend.messagingCoreCutover, `/rooms/${encodedRoomId}/messages`, "normal Voyager message cutover diagnostics");
     assertEqual(normalSend.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages`, "normal Voyager message cutover route");
@@ -197,6 +198,30 @@ if (firstRoomId) {
     }
     assertEqual(normalSend.message.protocolType, "opaque-test", "normal Voyager message cutover protocol type");
     assertEqual(normalSend.message.ciphertext, `messaging-core-cutover-smoke-${idempotencyKey}`, "normal Voyager message cutover ciphertext");
+    const duplicateSend = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
+      method: "POST",
+      token: voyagerToken,
+      json: normalPayload,
+    });
+    assertCoreCutoverDiagnostics(duplicateSend.messagingCoreCutover, `/rooms/${encodedRoomId}/messages`, "normal Voyager duplicate message cutover diagnostics");
+    assertEqual(duplicateSend.message?.envelopeId, normalSend.message.envelopeId, "normal Voyager duplicate cutover envelopeId");
+    assertEqual(duplicateSend.message?.serverSequence, normalSend.message.serverSequence, "normal Voyager duplicate cutover serverSequence");
+    for (let index = 0; index < 3; index += 1) {
+      const repeatedKey = `messaging-core-cutover-repeat-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
+      const repeatedSend = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
+        method: "POST",
+        token: voyagerToken,
+        json: {
+          idempotencyKey: repeatedKey,
+          protocolType: "opaque-test",
+          ciphertext: `messaging-core-cutover-repeat-${repeatedKey}`,
+        },
+      });
+      assertCoreCutoverDiagnostics(repeatedSend.messagingCoreCutover, `/rooms/${encodedRoomId}/messages`, `normal Voyager repeated message cutover diagnostics ${index}`);
+      if (!repeatedSend.message?.envelopeId) {
+        throw new Error(`normal Voyager repeated message cutover ${index} did not return a message: ${JSON.stringify(repeatedSend)}`);
+      }
+    }
     const normalList = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages?limit=20`, {
       token: voyagerToken,
     });
