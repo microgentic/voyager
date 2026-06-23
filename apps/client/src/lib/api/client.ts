@@ -26,12 +26,7 @@ import type {
 	ForwardMessageInput,
 	KeyPackage,
 	MeResult,
-	MessagingCoreBootstrapProxyResult,
-	MessagingCoreMessagesProxyResult,
 	MessagingCoreRealtimeTokenProxyResult,
-	MessagingCoreRoomProxyResult,
-	MessagingCoreRoomsProxyResult,
-	MessagingCoreSession,
 	Membership,
 	MessageEnvelope,
 	OwnershipTransfer,
@@ -260,67 +255,6 @@ export class VoyagerClient {
 
 	logout(): Promise<{ ok: true }> {
 		return this.request('POST', '/v1/auth/logout');
-	}
-
-	async createMessagingCoreSession(): Promise<MessagingCoreSession> {
-		const res = await this.request<{ messagingCore: MessagingCoreSession }>(
-			'POST',
-			'/v1/messaging-core/session'
-		);
-		return res.messagingCore;
-	}
-
-	async messagingCoreBootstrap(): Promise<MessagingCoreBootstrapProxyResult> {
-		const res = await this.request<MessagingCoreBootstrapProxyResult & { ok: true }>(
-			'GET',
-			'/v1/messaging-core/bootstrap'
-		);
-		return {
-			messagingCore: res.messagingCore,
-			bootstrap: res.bootstrap,
-			proxied: res.proxied
-		};
-	}
-
-	async messagingCoreRooms(): Promise<MessagingCoreRoomsProxyResult> {
-		const res = await this.request<MessagingCoreRoomsProxyResult & { ok: true }>(
-			'GET',
-			'/v1/messaging-core/rooms'
-		);
-		return {
-			messagingCore: res.messagingCore,
-			rooms: res.rooms,
-			proxied: res.proxied
-		};
-	}
-
-	async messagingCoreRoom(roomId: string): Promise<MessagingCoreRoomProxyResult> {
-		const res = await this.request<MessagingCoreRoomProxyResult & { ok: true }>(
-			'GET',
-			`/v1/messaging-core/rooms/${encodeURIComponent(roomId)}`
-		);
-		return {
-			messagingCore: res.messagingCore,
-			room: res.room,
-			members: res.members,
-			proxied: res.proxied
-		};
-	}
-
-	async messagingCoreMessages(
-		roomId: string,
-		opts: { after?: number; limit?: number } = {}
-	): Promise<MessagingCoreMessagesProxyResult> {
-		const res = await this.request<MessagingCoreMessagesProxyResult & { ok: true }>(
-			'GET',
-			`/v1/messaging-core/rooms/${encodeURIComponent(roomId)}/messages`,
-			{ query: opts }
-		);
-		return {
-			messagingCore: res.messagingCore,
-			messages: res.messages,
-			proxied: res.proxied
-		};
 	}
 
 	async messagingCoreRealtimeToken(): Promise<MessagingCoreRealtimeTokenProxyResult> {
