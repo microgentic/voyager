@@ -1,4 +1,5 @@
 import { api } from '$lib/api';
+import type { RealtimeTransport } from '$lib/api/client';
 import type { RealtimeCallEvent, RealtimeEvent } from '$lib/api/types';
 import { auth } from './auth.svelte';
 import { calls } from './calls.svelte';
@@ -23,6 +24,7 @@ class RealtimeStore {
 	lastServerSequence = $state<number | null>(null);
 	lastError = $state<string | null>(null);
 	reconnectCount = $state(0);
+	transport = $state<RealtimeTransport | null>(null);
 
 	private socket: WebSocket | null = null;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -43,6 +45,7 @@ class RealtimeStore {
 		this.active = false;
 		this.state = 'idle';
 		this.connected = false;
+		this.transport = null;
 		this.clearReconnect();
 		this.clearHeartbeat();
 		if (this.socket) {
@@ -55,14 +58,14 @@ class RealtimeStore {
 		}
 	}
 
-	private async connect(): Promise<void> {
+	private async connect(forceTransport?: RealtimeTransport): Promise<void> {
 		if (!this.active || auth.status !== 'authed' || this.socket) return;
 		this.state = 'connecting';
 		this.lastError = null;
 
-		let socket: WebSocket | null;
+		let connection: Awaited<ReturnType<typeof api.openRealtimeSocket>>;
 		try {
-			socket = await api.openRealtimeSocket();
+			connection = await api.openRealtimeSocket({ transport: forceTransport ?? 'auto' });
 		} catch (error) {
 			this.lastError = (error as Error)?.message ?? 'Realtime token request failed';
 			if (!this.active || auth.status !== 'authed') return;
@@ -71,38 +74,58 @@ class RealtimeStore {
 		}
 
 		if (!this.active || auth.status !== 'authed') {
-			socket?.close(1000, 'client_stop');
+			connection?.socket.close(1000, 'client_stop');
 			return;
 		}
-		if (!socket) {
+		if (!connection) {
 			this.scheduleReconnect();
 			return;
 		}
 
+		const { socket, transport } = connection;
+		let ready = false;
 		this.socket = socket;
+		this.transport = transport;
 
 		socket.onopen = () => {
 			this.connected = true;
 			this.state = 'connected';
+			this.transport = transport;
 			this.attempts = 0;
 			this.lastConnectedAt = new Date();
 			this.startHeartbeat();
 		};
 
 		socket.onmessage = (event) => {
+			if (typeof event.data === 'string') {
+				try {
+					ready = (JSON.parse(event.data) as { type?: string }).type === 'ready' || ready;
+				} catch {
+					// The shared message handler ignores malformed frames.
+				}
+			}
 			this.handleMessage(event.data);
 		};
 
 		socket.onerror = () => {
-			this.lastError = 'Realtime connection failed';
+			this.lastError =
+				transport === 'messaging-core'
+					? 'Messaging Core realtime connection failed'
+					: 'Realtime connection failed';
 		};
 
 		socket.onclose = () => {
 			this.clearHeartbeat();
 			this.socket = null;
 			this.connected = false;
+			this.transport = null;
 			this.lastClosedAt = new Date();
 			if (!this.active) return;
+			if (!ready && transport === 'messaging-core') {
+				this.lastError = 'Messaging Core realtime connection failed; falling back to Voyager realtime';
+				void this.connect('voyager');
+				return;
+			}
 			this.scheduleReconnect();
 		};
 	}

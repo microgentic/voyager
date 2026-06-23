@@ -182,6 +182,21 @@ BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
 npm run smoke:backend:remote
 ```
 
+For Messaging Core realtime cutover validation, the web client can opt into the
+Core WebSocket contract with `VITE_MESSAGING_CORE_REALTIME=1` at build time or
+`localStorage.setItem("voyager.messagingCoreRealtime", "1")` in a running
+browser session. The client still falls back to Voyager realtime if Core token
+minting fails or the Core socket closes before `ready`. To prove the deployed
+Core WebSocket path through the Voyager validation proxy, run:
+
+```bash
+BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
+VOYAGER_LOGIN_EMAIL=ada@example.com \
+VOYAGER_LOGIN_PASSWORD=voyager-demo-pass \
+SMOKE_MESSAGING_CORE_REALTIME_CONNECT=1 \
+npm run smoke:messaging-core-parity
+```
+
 ## 6. Manual Cross-Client Checklist
 
 After this PR is deployed, manually verify:

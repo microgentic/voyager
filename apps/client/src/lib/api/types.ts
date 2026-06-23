@@ -147,6 +147,18 @@ export interface MessagingCoreMessagesProxyResult extends MessagingCoreProxyResu
 	messages: Record<string, unknown>[];
 }
 
+export interface MessagingCoreRealtimeToken {
+	realtimeTokenId?: string;
+	realtimeToken: string;
+	expiresAt: string;
+	protocol: string;
+	connectPath: string;
+}
+
+export interface MessagingCoreRealtimeTokenProxyResult extends MessagingCoreProxyResult {
+	realtime: MessagingCoreRealtimeToken;
+}
+
 export type RoomType = 'direct' | 'group' | 'channel';
 export type RoomStatus = 'active' | 'archived' | 'deleted';
 export type MemberRole = 'owner' | 'admin' | 'member' | 'agent';
@@ -744,13 +756,21 @@ export interface BootstrapStatus {
 export interface RealtimeTokenResult {
 	realtimeToken: string;
 	expiresAt: string;
+	protocol: string;
+	connectPath: string;
+	baseUrl: string;
+	transport: 'voyager' | 'messaging-core';
 }
 
 export interface RealtimeReadyEvent {
 	type: 'ready';
+	eventId?: string;
+	tenantId?: string;
+	app?: string;
 	accountId: string;
 	principalId: string;
-	deviceId: string;
+	deviceId: string | null;
+	protocol?: string;
 	createdAt: string;
 }
 
