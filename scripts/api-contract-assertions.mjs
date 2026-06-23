@@ -114,6 +114,14 @@ export const endpointStabilityCatalog = [
 ];
 
 const TEMPORARY_FALLBACK_BOUNDARY_ROUTES = [
+  ["GET", "/v1/app/bootstrap"],
+  ["GET", "/v1/principals"],
+  ["GET", "/v1/principals/{principalId}/devices"],
+  ["GET", "/v1/principals/{principalId}/key-packages"],
+  ["GET", "/v1/devices/{deviceId}/key-packages"],
+  ["POST", "/v1/devices/{deviceId}/key-packages"],
+  ["POST", "/v1/key-packages/{keyPackageId}/claim"],
+  ["POST", "/v1/key-packages/{keyPackageId}/revoke"],
   ["GET", "/v1/rooms"],
   ["GET", "/v1/threads"],
   ["POST", "/v1/rooms/direct"],
@@ -697,6 +705,11 @@ function isCoreOwnedVoyagerRoute(endpoint) {
     path === "/v1/sync" ||
     path === "/v1/realtime" ||
     path === "/v1/realtime/token" ||
+    path === "/v1/app/bootstrap" ||
+    path === "/v1/principals" ||
+    path.startsWith("/v1/principals/") ||
+    path.startsWith("/v1/devices/{deviceId}/key-packages") ||
+    path.startsWith("/v1/key-packages/") ||
     path === "/v1/threads" ||
     path.startsWith("/v1/rooms") ||
     path.startsWith("/v1/room-invitations") ||

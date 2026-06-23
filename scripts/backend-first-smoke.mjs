@@ -698,11 +698,31 @@ const ownerKeyPackage = await api(`/v1/devices/${owner.device.deviceId}/key-pack
   }
 });
 assertKeyPackageResponse(ownerKeyPackage, "POST /v1/devices/{deviceId}/key-packages");
+assertMessagingCoreFallbackDiagnostics(ownerKeyPackage, "identity_cutover_not_implemented", "POST /v1/devices/{deviceId}/key-packages");
+
+const listedPrincipals = await api("/v1/principals", { headers: userHeaders });
+assertMessagingCoreFallbackDiagnostics(listedPrincipals, "identity_cutover_not_implemented", "GET /v1/principals");
+if (!Array.isArray(listedPrincipals.principals) || !listedPrincipals.principals.some((principal) => principal.principalId === owner.principal.principalId)) {
+  throw new Error("principal listing did not include the owner principal");
+}
+
+const listedPrincipalDevices = await api(`/v1/principals/${owner.principal.principalId}/devices`, {
+  headers: userHeaders
+});
+assertMessagingCoreFallbackDiagnostics(
+  listedPrincipalDevices,
+  "identity_cutover_not_implemented",
+  "GET /v1/principals/{principalId}/devices"
+);
+if (!Array.isArray(listedPrincipalDevices.devices) || !listedPrincipalDevices.devices.some((device) => device.deviceId === owner.device.deviceId)) {
+  throw new Error("principal device listing did not include the owner device");
+}
 
 const listedKeys = await api(`/v1/principals/${owner.principal.principalId}/key-packages`, {
   headers: userHeaders
 });
 assertKeyPackagesResponse(listedKeys, "GET /v1/principals/{principalId}/key-packages");
+assertMessagingCoreFallbackDiagnostics(listedKeys, "identity_cutover_not_implemented", "GET /v1/principals/{principalId}/key-packages");
 if (listedKeys.keyPackages.length < 1) throw new Error("key package listing failed");
 
 const claimedKeyPackage = await api(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
@@ -710,6 +730,7 @@ const claimedKeyPackage = await api(`/v1/key-packages/${ownerKeyPackage.keyPacka
   headers: userHeaders
 });
 assertKeyPackageResponse(claimedKeyPackage, "POST /v1/key-packages/{keyPackageId}/claim");
+assertMessagingCoreFallbackDiagnostics(claimedKeyPackage, "identity_cutover_not_implemented", "POST /v1/key-packages/{keyPackageId}/claim");
 
 await expectFailure(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
   method: "POST",
@@ -731,12 +752,14 @@ const ownKeyPackages = await api(`/v1/devices/${owner.device.deviceId}/key-packa
   headers: ownerHeaders
 });
 assertPaginatedKeyPackagesResponse(ownKeyPackages, "GET /v1/devices/{deviceId}/key-packages");
+assertMessagingCoreFallbackDiagnostics(ownKeyPackages, "identity_cutover_not_implemented", "GET /v1/devices/{deviceId}/key-packages");
 if (ownKeyPackages.keyPackages.length !== 1 || ownKeyPackages.nextCursor === null) throw new Error("own key package pagination failed");
 
-await api(`/v1/key-packages/${ownerRevokedKeyPackage.keyPackage.keyPackageId}/revoke`, {
+const revokedKeyPackage = await api(`/v1/key-packages/${ownerRevokedKeyPackage.keyPackage.keyPackageId}/revoke`, {
   method: "POST",
   headers: ownerHeaders
 });
+assertMessagingCoreFallbackDiagnostics(revokedKeyPackage, "identity_cutover_not_implemented", "POST /v1/key-packages/{keyPackageId}/revoke");
 
 const direct = await api("/v1/rooms/direct", {
   method: "POST",
@@ -2478,6 +2501,7 @@ for (const metric of ["bootstrap;dur=", "auth;dur=", "read;dur=", "rooms;dur=", 
 }
 const bootstrap = bootstrapResult.payload.bootstrap;
 assertBootstrapResponse(bootstrapResult.payload, "GET /v1/app/bootstrap");
+assertMessagingCoreFallbackDiagnostics(bootstrapResult.payload, "identity_cutover_not_implemented", "GET /v1/app/bootstrap");
 if (bootstrap.account.accountId !== login.account.accountId) throw new Error("bootstrap identity did not match logged-in account");
 if (!Array.isArray(bootstrap.roles) || !Array.isArray(bootstrap.rooms) || !Array.isArray(bootstrap.pendingMessages)) {
   throw new Error("bootstrap response shape is invalid");
@@ -2538,6 +2562,11 @@ if (!hiddenBootstrapResult.response.ok) {
   throw new Error(`GET bootstrap after delete-for-me failed ${hiddenBootstrapResult.response.status}: ${JSON.stringify(hiddenBootstrapResult.payload)}`);
 }
 assertBootstrapResponse(hiddenBootstrapResult.payload, "GET /v1/app/bootstrap after delete-for-me");
+assertMessagingCoreFallbackDiagnostics(
+  hiddenBootstrapResult.payload,
+  "identity_cutover_not_implemented",
+  "GET /v1/app/bootstrap after delete-for-me"
+);
 if (hiddenBootstrapResult.payload.bootstrap.pendingMessages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
   throw new Error("delete-for-me message remained visible to deleting account bootstrap");
 }
