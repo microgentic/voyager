@@ -198,6 +198,12 @@ function assertMessagingCoreBridgeSession(session, identity, context) {
   if (!session.configured || !session.token) {
     throw new Error(`${context} expected configured messagingCore token bridge: ${JSON.stringify(session)}`);
   }
+  if (
+    session.identitySync?.reason &&
+    !/^internal_service_(unconfigured|unavailable|timeout|http_\d{3})$/.test(session.identitySync.reason)
+  ) {
+    throw new Error(`${context} messagingCore identity sync reason is not sanitized: ${session.identitySync.reason}`);
+  }
   assertJwtSignature(session.token, messagingCoreSmokeSecret, context);
   const claims = decodeJwtPayload(session.token);
   const expected = {

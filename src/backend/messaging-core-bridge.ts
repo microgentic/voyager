@@ -178,7 +178,7 @@ async function syncMessagingCoreIdentity(
     return {
       attempted: true,
       ok: false,
-      reason: error instanceof Error ? error.message : String(error),
+      reason: publicIdentitySyncFailureReason(error),
       accountSynced: false,
       principalSynced: false,
       deviceSynced: false,
@@ -202,8 +202,7 @@ async function postInternal(
     signal: AbortSignal.timeout(config.fetchTimeoutMs),
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Messaging Core ${path} returned ${response.status}: ${text.slice(0, 300)}`);
+    throw new Error(`internal_service_http_${response.status}`);
   }
   const contentType = response.headers.get("content-type") ?? "";
   return contentType.includes("application/json") ? response.json() : response.text();
@@ -342,6 +341,14 @@ function bridgeStatusReason(config: BridgeConfig): string | null {
   if (!config.baseUrl) return "base_url_unconfigured";
   if (!config.tokenSecret) return "token_secret_unconfigured";
   return null;
+}
+
+function publicIdentitySyncFailureReason(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") return "internal_service_timeout";
+    if (/^internal_service_http_\d{3}$/.test(error.message)) return error.message;
+  }
+  return "internal_service_unavailable";
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
