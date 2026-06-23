@@ -1,6 +1,6 @@
 import { randomId } from "../crypto";
 import { HttpError } from "../http";
-import type { AccountRow, DeviceRow, Env, PolicyRow, PrincipalRow } from "../types";
+import type { AccountRow, DeviceRow, Env, PrincipalRow } from "../types";
 import { ROOM_INVITATION_DAYS } from "./rooms/types";
 import type { JsonObject } from "./shared/types";
 
@@ -29,10 +29,6 @@ const DEFAULT_TOKEN_ISSUER = "voyager";
 const DEFAULT_TOKEN_TTL_SECONDS = 15 * 60;
 const DEFAULT_INTERNAL_TOKEN_TTL_SECONDS = 5 * 60;
 const DEFAULT_FETCH_TIMEOUT_MS = 3_000;
-const DEFAULT_BACKFILL_ROOM_LIMIT = 50;
-const DEFAULT_BACKFILL_MESSAGE_LIMIT = 200;
-const BACKFILL_IMPORT_TIMEOUT_MS = 30_000;
-const MAX_BACKFILL_BATCH_ITEMS = 500;
 const CORE_MESSAGE_COMPAT_EXPIRES_AT = "9999-12-31T23:59:59.000Z";
 const encoder = new TextEncoder();
 
@@ -82,59 +78,6 @@ interface ConfiguredMessagingCoreSession {
   session: JsonObject;
   token: string;
   sync: IdentitySyncResult;
-}
-
-type VoyagerReadonlyBackfillSnapshot = JsonObject & {
-  policies: JsonObject[];
-  accounts: JsonObject[];
-  principals: JsonObject[];
-  devices: JsonObject[];
-  rooms: JsonObject[];
-  memberships: JsonObject[];
-  messages: JsonObject[];
-};
-
-interface VoyagerRoomBackfillRow {
-  room_id: string;
-  type: "direct" | "group" | "channel";
-  name: string | null;
-  description: string | null;
-  status: "active" | "archived" | "deleted";
-  created_by_principal_id: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
-  archived_at: string | null;
-  owner_principal_id: string | null;
-}
-
-interface VoyagerMembershipBackfillRow {
-  room_id: string;
-  account_id: string;
-  principal_id: string;
-  role: "owner" | "admin" | "member" | "agent";
-  status: "invited" | "active" | "leaving" | "removed" | "banned";
-  created_at: string;
-  updated_at: string;
-  removed_at: string | null;
-}
-
-interface VoyagerMessageBackfillRow {
-  envelope_id: string;
-  room_id: string;
-  sender_account_id: string;
-  sender_principal_id: string;
-  sender_device_id: string;
-  idempotency_key: string;
-  protocol_type: string;
-  ciphertext: string;
-  server_sequence: number;
-  server_received_at: string;
-  state: string;
-  edited_at: string | null;
-  deleted_for_everyone_at: string | null;
-  thread_root_envelope_id: string | null;
-  also_sent_to_room: number;
 }
 
 export function messagingCoreBridgeStatus(env: Env): JsonObject {
@@ -1122,68 +1065,6 @@ function voyagerOwnershipTransferStatus(status: string): string {
   return status;
 }
 
-export async function backfillMessagingCoreReadonly(
-  env: Env,
-  input: Record<string, unknown> = {},
-): Promise<JsonObject> {
-  const config = resolveBridgeConfig(env);
-  const roomLimit = importLimit(input, "roomLimit", DEFAULT_BACKFILL_ROOM_LIMIT);
-  const messageLimit = importLimit(input, "messageLimit", DEFAULT_BACKFILL_MESSAGE_LIMIT);
-  const dryRun = booleanOption(input, "dryRun", false);
-  const snapshot = await buildVoyagerReadonlySnapshot(env, roomLimit, messageLimit);
-
-  if (dryRun) {
-    return {
-      ok: true,
-      dryRun,
-      tenantId: config.tenantId,
-      limits: { roomLimit, messageLimit },
-      snapshot: snapshotSummary(snapshot),
-      messagingCore: messagingCoreBridgeStatus(env),
-    };
-  }
-
-  if (!config.baseUrl || !config.internalSecret) {
-    throw new HttpError(
-      503,
-      "messaging_core_internal_service_unconfigured",
-      "Messaging Core internal service is not configured.",
-      { reason: config.baseUrl ? "internal_secret_unconfigured" : "base_url_unconfigured" },
-    );
-  }
-
-  const token = await mintInternalServiceToken(config, [
-    "internal:tenants:upsert",
-    "internal:imports:voyager-readonly",
-  ]);
-  const bootstrap = await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/bootstrap`, {
-    externalTenantRef: config.tenantExternalRef,
-    displayName: config.tenantDisplayName,
-    status: "active",
-    policies: snapshot.policies,
-  });
-  const imported = await postInternal(
-    config,
-    token,
-    `/internal/tenants/${encodeURIComponent(config.tenantId)}/imports/voyager-readonly`,
-    snapshot,
-    Math.max(config.fetchTimeoutMs, BACKFILL_IMPORT_TIMEOUT_MS),
-  );
-
-  return {
-    ok: true,
-    dryRun,
-    tenantId: config.tenantId,
-    limits: { roomLimit, messageLimit },
-    snapshot: snapshotSummary(snapshot),
-    messagingCore: messagingCoreBridgeStatus(env),
-    core: {
-      bootstrap,
-      imported,
-    },
-  };
-}
-
 async function createConfiguredMessagingCoreSession(
   env: Env,
   config: BridgeConfig,
@@ -1452,152 +1333,6 @@ function coreError(payload: JsonObject): { code: string; message: string } {
   };
 }
 
-async function buildVoyagerReadonlySnapshot(
-  env: Env,
-  roomLimit: number,
-  messageLimit: number,
-): Promise<VoyagerReadonlyBackfillSnapshot> {
-  const rooms = await env.CONTROL_DB.prepare(
-    `SELECT r.room_id,
-            r.type,
-            r.name,
-            r.description,
-            r.status,
-            r.created_by_principal_id,
-            r.version,
-            r.created_at,
-            r.updated_at,
-            r.archived_at,
-            (
-              SELECT rm.principal_id
-              FROM room_memberships rm
-              WHERE rm.room_id = r.room_id
-                AND rm.role = 'owner'
-                AND rm.status IN ('active', 'leaving')
-              ORDER BY CASE rm.status WHEN 'active' THEN 0 ELSE 1 END, rm.created_at
-              LIMIT 1
-            ) AS owner_principal_id
-     FROM rooms r
-     WHERE r.status != 'deleted'
-     ORDER BY r.updated_at DESC, r.room_id
-     LIMIT ?`,
-  )
-    .bind(roomLimit)
-    .all<VoyagerRoomBackfillRow>();
-  const roomRows = rooms.results ?? [];
-  const roomIds = roomRows.map((room) => room.room_id);
-  if (roomIds.length === 0) {
-    return emptySnapshot();
-  }
-
-  const memberships = await selectIn<VoyagerMembershipBackfillRow>(
-    env,
-    `SELECT room_id, account_id, principal_id, role, status, created_at, updated_at, removed_at
-     FROM room_memberships
-     WHERE room_id IN ({ids})
-     ORDER BY room_id, created_at, principal_id`,
-    roomIds,
-  );
-  const messages = (await selectIn<VoyagerMessageBackfillRow>(
-    env,
-    `SELECT envelope_id,
-            room_id,
-            sender_account_id,
-            sender_principal_id,
-            sender_device_id,
-            idempotency_key,
-            protocol_type,
-            ciphertext,
-            server_sequence,
-            server_received_at,
-            state,
-            edited_at,
-            deleted_for_everyone_at,
-            thread_root_envelope_id,
-            also_sent_to_room
-     FROM message_envelopes
-     WHERE room_id IN ({ids})
-       AND state != 'purged'
-       AND expires_at > CURRENT_TIMESTAMP
-       AND thread_root_envelope_id IS NULL
-     ORDER BY room_id, server_sequence
-     LIMIT ?`,
-    roomIds,
-    [messageLimit],
-  ));
-
-  const principalIds = uniqueStrings([
-    ...roomRows.map((room) => room.created_by_principal_id),
-    ...roomRows.map((room) => room.owner_principal_id),
-    ...memberships.map((membership) => membership.principal_id),
-    ...messages.map((message) => message.sender_principal_id),
-  ]);
-  const deviceIds = uniqueStrings(messages.map((message) => message.sender_device_id));
-
-  const principals = principalIds.length
-    ? await selectIn<PrincipalRow>(
-        env,
-        `SELECT principal_id, account_id, principal_type, display_name, avatar_ref, status, owner_principal_id, created_at, revoked_at
-         FROM principals
-         WHERE principal_id IN ({ids})
-         ORDER BY principal_id`,
-        principalIds,
-      )
-    : [];
-  const accountIds = uniqueStrings([
-    ...memberships.map((membership) => membership.account_id),
-    ...messages.map((message) => message.sender_account_id),
-    ...principals.map((principal) => principal.account_id),
-  ]);
-  const accounts = accountIds.length
-    ? await selectIn<AccountRow>(
-        env,
-        `SELECT account_id, status, display_name, email, phone, policy_id, default_principal_id,
-                activated_at, suspended_at, deletion_state, created_at, updated_at
-         FROM accounts
-         WHERE account_id IN ({ids})
-         ORDER BY account_id`,
-        accountIds,
-      )
-    : [];
-  const policies = accounts.length
-    ? await selectIn<PolicyRow>(
-        env,
-        `SELECT policy_id, name, require_passkey_or_mfa, require_local_lock, require_email, require_phone,
-                maximum_devices, maximum_owned_groups, maximum_group_memberships, maximum_attachment_bytes,
-                maximum_attachments_per_message, maximum_image_dimension, daily_attachment_bytes_per_account,
-                daily_attachment_bytes_per_room, message_retention_days, attachment_retention_class,
-                agent_allowed, created_at, updated_at
-         FROM policies
-         WHERE policy_id IN ({ids})
-         ORDER BY policy_id`,
-        uniqueStrings(accounts.map((account) => account.policy_id)),
-      )
-    : [];
-  const devices = deviceIds.length
-    ? await selectIn<DeviceRow>(
-        env,
-        `SELECT device_id, account_id, principal_id, platform, device_label, credential_fingerprint,
-                credential_version, public_key_package, notification_capability, client_version,
-                protocol_version, created_at, last_seen_at, revoked_at, revocation_reason
-         FROM devices
-         WHERE device_id IN ({ids})
-         ORDER BY device_id`,
-        deviceIds,
-      )
-    : [];
-
-  return {
-    policies: policies.map(importPolicy),
-    accounts: accounts.map(importAccount),
-    principals: principals.map(importPrincipal),
-    devices: devices.map(importDevice),
-    rooms: roomRows.map(importRoom),
-    memberships: memberships.map(importMembership),
-    messages: messages.map(importMessage),
-  };
-}
-
 async function selectIn<T>(
   env: Env,
   sql: string,
@@ -1611,159 +1346,6 @@ async function selectIn<T>(
     .bind(...uniqueIds, ...tailBindings)
     .all<T>();
   return result.results ?? [];
-}
-
-function emptySnapshot(): VoyagerReadonlyBackfillSnapshot {
-  return {
-    policies: [],
-    accounts: [],
-    principals: [],
-    devices: [],
-    rooms: [],
-    memberships: [],
-    messages: [],
-  };
-}
-
-function snapshotSummary(snapshot: VoyagerReadonlyBackfillSnapshot): JsonObject {
-  return {
-    policies: snapshot.policies.length,
-    accounts: snapshot.accounts.length,
-    principals: snapshot.principals.length,
-    devices: snapshot.devices.length,
-    rooms: snapshot.rooms.length,
-    memberships: snapshot.memberships.length,
-    messages: snapshot.messages.length,
-  };
-}
-
-function importPolicy(policy: PolicyRow): JsonObject {
-  return {
-    policyId: policy.policy_id,
-    name: policy.name,
-    policyJson: {
-      source: "voyager",
-      requirePasskeyOrMfa: Boolean(policy.require_passkey_or_mfa),
-      requireLocalLock: Boolean(policy.require_local_lock),
-      requireEmail: Boolean(policy.require_email),
-      requirePhone: Boolean(policy.require_phone),
-      maximumDevices: policy.maximum_devices,
-      maximumOwnedGroups: policy.maximum_owned_groups,
-      maximumGroupMemberships: policy.maximum_group_memberships,
-      maximumAttachmentBytes: policy.maximum_attachment_bytes,
-      maximumAttachmentsPerMessage: policy.maximum_attachments_per_message,
-      maximumImageDimension: policy.maximum_image_dimension,
-      dailyAttachmentBytesPerAccount: policy.daily_attachment_bytes_per_account,
-      dailyAttachmentBytesPerRoom: policy.daily_attachment_bytes_per_room,
-      messageRetentionDays: policy.message_retention_days,
-      attachmentRetentionClass: policy.attachment_retention_class,
-      agentAllowed: Boolean(policy.agent_allowed),
-    },
-  };
-}
-
-function importAccount(account: AccountRow): JsonObject {
-  return {
-    accountId: account.account_id,
-    externalSubjectId: account.email ?? account.account_id,
-    displayName: account.display_name,
-    status: publicCoreAccountStatus(account),
-    policyId: account.policy_id,
-    createdAt: account.created_at,
-    updatedAt: account.updated_at,
-  };
-}
-
-function importPrincipal(principal: PrincipalRow): JsonObject {
-  return {
-    principalId: principal.principal_id,
-    accountId: principal.account_id,
-    type: publicCorePrincipalType(principal.principal_type),
-    externalPrincipalRef: principal.principal_id,
-    displayName: principal.display_name,
-    avatarRef: principal.avatar_ref,
-    status: publicCorePrincipalStatus(principal),
-    ownerPrincipalId: principal.owner_principal_id,
-    createdAt: principal.created_at,
-    updatedAt: principal.revoked_at ?? principal.created_at,
-    revokedAt: principal.revoked_at,
-  };
-}
-
-function importDevice(device: DeviceRow): JsonObject {
-  return {
-    deviceId: device.device_id,
-    accountId: device.account_id,
-    principalId: device.principal_id,
-    externalDeviceRef: device.device_id,
-    platform: device.platform,
-    label: device.device_label,
-    credentialFingerprint: device.credential_fingerprint,
-    publicKeyPackage: device.public_key_package,
-    notificationCapability: device.notification_capability,
-    clientVersion: device.client_version,
-    protocolVersion: device.protocol_version,
-    status: device.revoked_at ? "revoked" : "active",
-    createdAt: device.created_at,
-    updatedAt: device.revoked_at ?? device.last_seen_at ?? device.created_at,
-    lastSeenAt: device.last_seen_at,
-    revokedAt: device.revoked_at,
-  };
-}
-
-function importRoom(room: VoyagerRoomBackfillRow): JsonObject {
-  return {
-    roomId: room.room_id,
-    type: room.type,
-    title: room.name,
-    description: room.description,
-    status: room.status,
-    createdByPrincipalId: room.created_by_principal_id,
-    ownerPrincipalId: room.owner_principal_id ?? room.created_by_principal_id,
-    version: room.version,
-    createdAt: room.created_at,
-    updatedAt: room.updated_at,
-    archivedAt: room.archived_at,
-  };
-}
-
-function importMembership(membership: VoyagerMembershipBackfillRow): JsonObject {
-  const state = coreMembershipState(membership.status);
-  return {
-    roomId: membership.room_id,
-    principalId: membership.principal_id,
-    role: membership.role,
-    state,
-    joinedAt: state === "active" ? membership.created_at : null,
-    leftAt: state === "left" || state === "removed" ? membership.removed_at ?? membership.updated_at : null,
-    createdAt: membership.created_at,
-    updatedAt: membership.updated_at,
-  };
-}
-
-function importMessage(message: VoyagerMessageBackfillRow): JsonObject {
-  const deletedAt = message.deleted_for_everyone_at;
-  return {
-    envelopeId: message.envelope_id,
-    roomId: message.room_id,
-    serverSequence: message.server_sequence,
-    senderPrincipalId: message.sender_principal_id,
-    senderDeviceId: message.sender_device_id,
-    clientMessageId: null,
-    idempotencyKey: message.idempotency_key,
-    rootEnvelopeId: null,
-    messageKind: "message",
-    protocolType: message.protocol_type,
-    bodyCiphertext: deletedAt ? null : message.ciphertext,
-    attachmentCount: 0,
-    status: deletedAt ? "deleted_for_everyone" : message.edited_at ? "edited" : "active",
-    forwardedFromRoomId: null,
-    forwardedFromEnvelopeId: null,
-    forwardedByPrincipalId: null,
-    createdAt: message.server_received_at,
-    updatedAt: message.edited_at ?? deletedAt ?? message.server_received_at,
-    deletedAt,
-  };
 }
 
 async function parseJsonObjectResponse(response: Response): Promise<JsonObject> {
@@ -2055,29 +1637,6 @@ function clientScopes(): string[] {
   ];
 }
 
-function importLimit(body: Record<string, unknown>, key: string, fallback: number): number {
-  const value = body[key];
-  if (value === undefined || value === null) return fallback;
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    value < 1 ||
-    value > MAX_BACKFILL_BATCH_ITEMS
-  ) {
-    throw new HttpError(400, "invalid_field", `Field must be an integer between 1 and ${MAX_BACKFILL_BATCH_ITEMS}: ${key}`);
-  }
-  return value;
-}
-
-function booleanOption(body: Record<string, unknown>, key: string, fallback: boolean): boolean {
-  const value = body[key];
-  if (value === undefined || value === null) return fallback;
-  if (typeof value !== "boolean") {
-    throw new HttpError(400, "invalid_field", `Field must be a boolean: ${key}`);
-  }
-  return value;
-}
-
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   for (const value of values) {
@@ -2085,13 +1644,6 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
     if (trimmed) seen.add(trimmed);
   }
   return [...seen];
-}
-
-function coreMembershipState(status: VoyagerMembershipBackfillRow["status"]): "invited" | "active" | "left" | "removed" {
-  if (status === "invited") return "invited";
-  if (status === "active") return "active";
-  if (status === "leaving") return "left";
-  return "removed";
 }
 
 function publicCoreAccountStatus(account: AccountRow): "active" | "suspended" | "deleted" {
