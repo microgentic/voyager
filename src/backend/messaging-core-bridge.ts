@@ -57,6 +57,11 @@ interface IdentitySyncResult {
   deviceSynced: boolean;
 }
 
+interface ConfiguredMessagingCoreSession {
+  session: JsonObject;
+  token: string;
+}
+
 export function messagingCoreBridgeStatus(env: Env): JsonObject {
   const config = resolveBridgeConfig(env);
   return {
@@ -96,6 +101,43 @@ export async function createMessagingCoreSessionPayload(
     return base;
   }
 
+  return (await createConfiguredMessagingCoreSession(env, config, base, identity)).session;
+}
+
+export async function fetchMessagingCoreBootstrapProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+): Promise<JsonObject> {
+  const config = resolveBridgeConfig(env);
+  const base = messagingCoreBridgeStatus(env);
+  if (config.mode === "off" || !bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_proxy_unconfigured",
+      "Messaging Core proxy is not configured.",
+      { reason: bridgeStatusReason(config) },
+    );
+  }
+
+  const { session, token } = await createConfiguredMessagingCoreSession(env, config, base, identity);
+  const upstream = await getPublicCoreJson(config, token, "/bootstrap");
+  const bootstrap = objectField(upstream.payload, "bootstrap");
+  return {
+    messagingCore: session,
+    bootstrap,
+    proxied: {
+      route: "/bootstrap",
+      upstreamStatus: upstream.status,
+    },
+  };
+}
+
+async function createConfiguredMessagingCoreSession(
+  env: Env,
+  config: BridgeConfig,
+  base: JsonObject,
+  identity: MessagingCoreIdentity,
+): Promise<ConfiguredMessagingCoreSession> {
   const sync = await syncMessagingCoreIdentity(env, config, identity);
   if (config.mode === "proxy" && !sync.ok) {
     throw new HttpError(
@@ -108,13 +150,16 @@ export async function createMessagingCoreSessionPayload(
 
   const { token, expiresAt, claims } = await mintScopedMessagingToken(config, identity);
   return {
-    ...base,
-    configured: true,
-    tokenType: "Bearer",
     token,
-    expiresAt,
-    scopes: claims.scopes,
-    identitySync: sync,
+    session: {
+      ...base,
+      configured: true,
+      tokenType: "Bearer",
+      token,
+      expiresAt,
+      scopes: claims.scopes,
+      identitySync: sync,
+    },
   };
 }
 
@@ -246,6 +291,70 @@ async function postInternal(
   }
   const contentType = response.headers.get("content-type") ?? "";
   return contentType.includes("application/json") ? response.json() : response.text();
+}
+
+async function getPublicCoreJson(
+  config: BridgeConfig,
+  token: string,
+  path: string,
+): Promise<{ status: number; payload: JsonObject }> {
+  const request = new Request(messagingCoreUrl(config, path), {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+    signal: AbortSignal.timeout(config.fetchTimeoutMs),
+  });
+  const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
+  const payload = await parseJsonObjectResponse(response);
+  if (!response.ok) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_failed",
+      "Messaging Core proxy request failed.",
+      { upstreamStatus: response.status, upstreamError: stringValue(payload.error) },
+    );
+  }
+  return { status: response.status, payload };
+}
+
+async function parseJsonObjectResponse(response: Response): Promise<JsonObject> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core proxy returned a non-JSON response.",
+      { upstreamStatus: response.status },
+    );
+  }
+  const payload = await response.json();
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core proxy returned an invalid JSON response.",
+      { upstreamStatus: response.status },
+    );
+  }
+  return payload as JsonObject;
+}
+
+function objectField(value: JsonObject, key: string): JsonObject {
+  const field = value[key];
+  if (!field || typeof field !== "object" || Array.isArray(field)) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core proxy response is missing the expected object field.",
+      { field: key },
+    );
+  }
+  return field as JsonObject;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 function messagingCoreUrl(config: BridgeConfig, path: string): string {

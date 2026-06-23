@@ -118,6 +118,15 @@ export interface MessagingCoreSession {
 	scopes?: string[];
 }
 
+export interface MessagingCoreBootstrapProxyResult {
+	messagingCore: MessagingCoreSession;
+	bootstrap: Record<string, unknown>;
+	proxied: {
+		route: '/bootstrap';
+		upstreamStatus: number;
+	};
+}
+
 export type RoomType = 'direct' | 'group' | 'channel';
 export type RoomStatus = 'active' | 'archived' | 'deleted';
 export type MemberRole = 'owner' | 'admin' | 'member' | 'agent';
