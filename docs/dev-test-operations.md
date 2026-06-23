@@ -197,10 +197,13 @@ SMOKE_MESSAGING_CORE_REALTIME_CONNECT=1 \
 npm run smoke:messaging-core-parity
 ```
 
-To prove the guarded all-Core messaging mode, deploy Voyager with
-`VOYAGER_MESSAGING_CORE_ALL_CUTOVER=1`, build the web client with
-`VITE_MESSAGING_CORE_ALL_CUTOVER=1` when testing the app UI, and keep the
-Messaging Core bridge configured. Then run:
+The dev Worker and Pages deployment now default to the guarded all-Core
+messaging mode through the deployment workflows: `npm run deploy:dev` passes
+`VOYAGER_MESSAGING_CORE_ALL_CUTOVER=1`, and the Pages workflow builds with
+`VITE_MESSAGING_CORE_ALL_CUTOVER=1`. Plain local `wrangler dev` and
+`npm run smoke:backend:local` keep the config default at `0` unless you
+explicitly pass the Core cutover flag. Keep the Messaging Core bridge configured,
+then run:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
@@ -214,6 +217,12 @@ That smoke exercises normal Voyager login, Core session minting, bootstrap,
 room list/detail, room writes, message send/list, sync, attachment
 upload/download, thread inbox, Core realtime `ready`/`pong`, and Core
 `room.message` delivery for a message sent through the normal Voyager route.
+
+Rollback is intentionally boring: use `npm run deploy` or
+`npx wrangler deploy --var VOYAGER_MESSAGING_CORE_ALL_CUTOVER:0` for the Worker,
+remove or set `VITE_MESSAGING_CORE_ALL_CUTOVER=0` for the Pages build, or use
+`localStorage.setItem("voyager.messagingCoreRealtime", "0")` for a single
+browser session.
 
 ## 6. Manual Cross-Client Checklist
 

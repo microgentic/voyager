@@ -8,6 +8,7 @@
     "db:migrate:local": "wrangler d1 migrations apply voyager-dev-control --local",
     "db:migrate:remote": "wrangler d1 migrations apply voyager-dev-control --remote",
     "deploy": "wrangler deploy",
+    "deploy:dev": "wrangler deploy --var VOYAGER_MESSAGING_CORE_ALL_CUTOVER:1",
     "dev": "wrangler dev",
     "dev:backend": "node scripts/dev-local-backend.mjs",
     "dev:cleanup-devices": "node scripts/cleanup-test-devices.mjs",
