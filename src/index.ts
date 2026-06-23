@@ -33,10 +33,14 @@ import {
 import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
 import {
   createMessagingCoreSessionPayload,
+  fetchMessagingCoreAttachmentDownloadCutoverProxy,
+  fetchMessagingCoreAttachmentUploadCutoverProxy,
   fetchMessagingCoreBootstrapProxy,
   fetchMessagingCoreMessageCutoverProxy,
   fetchMessagingCoreReadProxy,
   fetchMessagingCoreRoomCutoverProxy,
+  messagingCoreAttachmentAllocateBody,
+  messagingCoreAttachmentCompleteBody,
   messagingCoreMessageCutoverEnabled,
   messagingCoreRoomCutoverEnabled,
 } from "./backend/messaging-core-bridge";
@@ -1114,12 +1118,37 @@ async function handleMessagingCoreMessageCutover(
   const route = await messagingCoreMessageCutoverRoute(request, url);
   if (!route) return null;
 
+  if (route.kind !== "json") {
+    if (route.kind === "attachmentUpload") {
+      const result = await fetchMessagingCoreAttachmentUploadCutoverProxy(
+        env,
+        messagingCoreIdentity(auth),
+        route.path,
+        request,
+        route.query,
+      );
+      return json(result.payload, { status: result.status });
+    }
+
+    return fetchMessagingCoreAttachmentDownloadCutoverProxy(
+      env,
+      messagingCoreIdentity(auth),
+      route.path,
+      route.query,
+    );
+  }
+
   const result = await fetchMessagingCoreMessageCutoverProxy(
     env,
     messagingCoreIdentity(auth),
     route.method,
     route.path,
-    { body: route.body, query: route.query, responseField: route.responseField },
+    {
+      body: route.body,
+      query: route.query,
+      responseKind: route.responseKind,
+      roomId: route.roomId,
+    },
   );
   return json(result.payload, { status: result.status });
 }
@@ -1127,95 +1156,160 @@ async function handleMessagingCoreMessageCutover(
 async function messagingCoreMessageCutoverRoute(
   request: Request,
   url: URL,
-): Promise<{
-  method: "GET" | "POST" | "PATCH" | "DELETE";
-  path: string;
-  query?: URLSearchParams;
-  body?: Record<string, unknown>;
-  responseField?: string;
-} | null> {
+): Promise<
+  | {
+      kind: "json";
+      method: "GET" | "POST" | "PATCH" | "DELETE";
+      path: string;
+      query?: URLSearchParams;
+      body?: Record<string, unknown>;
+      responseKind: "messages" | "message" | "deleted" | "receipt" | "thread" | "threadState" | "attachment" | "ok";
+      roomId?: string;
+    }
+  | {
+      kind: "attachmentUpload" | "attachmentDownload";
+      path: string;
+      query?: URLSearchParams;
+    }
+  | null
+> {
+  const allocateAttachmentMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/attachments$/, url.pathname);
+  if (request.method === "POST" && allocateAttachmentMatch) {
+    return {
+      kind: "json",
+      method: "POST",
+      path: `/rooms/${allocateAttachmentMatch[1]}/attachments`,
+      body: messagingCoreAttachmentAllocateBody(await readJsonObject(request)),
+      responseKind: "attachment",
+    };
+  }
+
+  const attachmentBlobMatch = routeParams(/^\/v1\/attachments\/([^/]+)\/blob$/, url.pathname);
+  if (attachmentBlobMatch) {
+    const path = `/attachments/${attachmentBlobMatch[1]}/blob`;
+    const query = proxyQuery(url, ["variant"]);
+    if (request.method === "PUT") {
+      return { kind: "attachmentUpload", path, query };
+    }
+    if (request.method === "GET") {
+      return { kind: "attachmentDownload", path, query };
+    }
+  }
+
+  const completeAttachmentMatch = routeParams(/^\/v1\/attachments\/([^/]+)\/complete$/, url.pathname);
+  if (request.method === "POST" && completeAttachmentMatch) {
+    return {
+      kind: "json",
+      method: "POST",
+      path: `/attachments/${completeAttachmentMatch[1]}/complete`,
+      body: messagingCoreAttachmentCompleteBody(await readJsonObject(request)),
+      responseKind: "attachment",
+    };
+  }
+
+  const attachmentMatch = routeParams(/^\/v1\/attachments\/([^/]+)$/, url.pathname);
+  if (request.method === "DELETE" && attachmentMatch) {
+    return {
+      kind: "json",
+      method: "DELETE",
+      path: `/attachments/${attachmentMatch[1]}`,
+      responseKind: "ok",
+    };
+  }
+
   const messagesMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages$/, url.pathname);
   if (messagesMatch) {
     const roomPath = `/rooms/${messagesMatch[1]}/messages`;
     if (request.method === "GET") {
-      return { method: "GET", path: roomPath, query: proxyQuery(url, ["after", "limit"]) };
+      return {
+        kind: "json",
+        method: "GET",
+        path: roomPath,
+        query: proxyQuery(url, ["after", "limit"]),
+        responseKind: "messages",
+      };
     }
     if (request.method === "POST") {
       const body = await readJsonObject(request);
-      assertMessagingCoreSendBodySupported(body);
-      return { method: "POST", path: roomPath, body, responseField: "message" };
+      return { kind: "json", method: "POST", path: roomPath, body, responseKind: "message" };
     }
   }
 
   const deleteMessagesMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/delete$/, url.pathname);
   if (request.method === "POST" && deleteMessagesMatch) {
     return {
+      kind: "json",
       method: "POST",
       path: `/rooms/${deleteMessagesMatch[1]}/messages/delete`,
       body: await readJsonObject(request),
-      responseField: "deleted",
+      responseKind: "deleted",
     };
   }
 
   const messageMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)$/, url.pathname);
   if (request.method === "PATCH" && messageMatch) {
     const body = await readJsonObject(request);
-    assertMessagingCoreSendBodySupported(body);
     return {
+      kind: "json",
       method: "PATCH",
       path: `/rooms/${messageMatch[1]}/messages/${messageMatch[2]}`,
       body,
-      responseField: "message",
+      responseKind: "message",
     };
   }
 
   const messageForwardMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/forward$/, url.pathname);
   if (request.method === "POST" && messageForwardMatch) {
     const body = await readJsonObject(request);
-    assertMessagingCoreSendBodySupported(body);
     return {
+      kind: "json",
       method: "POST",
       path: `/rooms/${messageForwardMatch[1]}/messages/${messageForwardMatch[2]}/forward`,
       body,
-      responseField: "message",
+      responseKind: "message",
     };
   }
 
   const messageReactionsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/reactions$/, url.pathname);
   if (request.method === "POST" && messageReactionsMatch) {
     return {
+      kind: "json",
       method: "POST",
       path: `/rooms/${messageReactionsMatch[1]}/messages/${messageReactionsMatch[2]}/reactions`,
       body: await readJsonObject(request),
-      responseField: "message",
+      responseKind: "message",
     };
   }
 
   const messageReactionDeleteMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/reactions\/([^/]+)$/, url.pathname);
   if (request.method === "DELETE" && messageReactionDeleteMatch) {
     return {
+      kind: "json",
       method: "DELETE",
       path: `/rooms/${messageReactionDeleteMatch[1]}/messages/${messageReactionDeleteMatch[2]}/reactions/${messageReactionDeleteMatch[3]}`,
-      responseField: "message",
+      responseKind: "message",
     };
   }
 
   const messagePinMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/pin$/, url.pathname);
   if ((request.method === "POST" || request.method === "DELETE") && messagePinMatch) {
     return {
+      kind: "json",
       method: request.method,
       path: `/rooms/${messagePinMatch[1]}/messages/${messagePinMatch[2]}/pin`,
-      responseField: "message",
+      responseKind: "message",
     };
   }
 
   const ackMessageMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/ack$/, url.pathname);
   if (request.method === "POST" && ackMessageMatch) {
     return {
+      kind: "json",
       method: "POST",
       path: `/rooms/${ackMessageMatch[1]}/messages/${ackMessageMatch[2]}/ack`,
       body: await readJsonObject(request),
-      responseField: "receipt",
+      responseKind: "receipt",
+      roomId: ackMessageMatch[1],
     };
   }
 
@@ -1223,41 +1317,57 @@ async function messagingCoreMessageCutoverRoute(
   if (threadMatch) {
     const threadPath = `/rooms/${threadMatch[1]}/messages/${threadMatch[2]}/thread`;
     if (request.method === "GET") {
-      return { method: "GET", path: threadPath, query: proxyQuery(url, ["after", "limit"]), responseField: "thread" };
+      return {
+        kind: "json",
+        method: "GET",
+        path: threadPath,
+        query: proxyQuery(url, ["after", "limit"]),
+        responseKind: "thread",
+      };
+    }
+    if (request.method === "POST") {
+      const body = await readJsonObject(request);
+      if (body.alsoSendToRoom === true) {
+        throw new HttpError(
+          409,
+          "messaging_core_thread_broadcast_pending",
+          "Messaging Core message cutover does not support also-send-to-room thread replies yet.",
+        );
+      }
+      return {
+        kind: "json",
+        method: "POST",
+        path: threadPath,
+        body,
+        responseKind: "message",
+      };
     }
   }
 
   const threadReadMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread\/read$/, url.pathname);
   if (request.method === "POST" && threadReadMatch) {
     return {
+      kind: "json",
       method: "POST",
       path: `/rooms/${threadReadMatch[1]}/messages/${threadReadMatch[2]}/thread/read`,
-      responseField: "threadState",
+      responseKind: "threadState",
+      roomId: threadReadMatch[1],
     };
   }
 
   const threadSubscriptionMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread\/subscription$/, url.pathname);
   if (request.method === "PATCH" && threadSubscriptionMatch) {
     return {
+      kind: "json",
       method: "PATCH",
       path: `/rooms/${threadSubscriptionMatch[1]}/messages/${threadSubscriptionMatch[2]}/thread/subscription`,
       body: await readJsonObject(request),
-      responseField: "threadState",
+      responseKind: "threadState",
+      roomId: threadSubscriptionMatch[1],
     };
   }
 
   return null;
-}
-
-function assertMessagingCoreSendBodySupported(body: Record<string, unknown>): void {
-  const attachmentIds = body.attachmentIds;
-  if (Array.isArray(attachmentIds) && attachmentIds.length > 0) {
-    throw new HttpError(
-      409,
-      "messaging_core_attachment_cutover_pending",
-      "Messaging Core message cutover does not support attachment-backed messages yet.",
-    );
-  }
 }
 
 function readTimingHeaders(routeName: string, authMs: number, startedAt: number): Record<string, string> {

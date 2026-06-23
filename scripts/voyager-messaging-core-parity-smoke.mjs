@@ -89,6 +89,7 @@ let proxiedRoomCutoverRead = false;
 let proxiedRoomCutoverWrites = false;
 let proxiedMessages = false;
 let proxiedMessageWrite = false;
+let proxiedAttachmentWrite = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
 if (!firstRoomId) {
   throw new Error("Core /rooms returned no rooms; run npm run messaging-core:backfill-readonly before parity smoke.");
@@ -162,6 +163,8 @@ if (firstRoomId) {
     if (!normalSend.message?.envelopeId) {
       throw new Error(`normal Voyager message cutover did not return a message: ${JSON.stringify(normalSend)}`);
     }
+    assertEqual(normalSend.message.protocolType, "opaque-test", "normal Voyager message cutover protocol type");
+    assertEqual(normalSend.message.ciphertext, `messaging-core-cutover-smoke-${idempotencyKey}`, "normal Voyager message cutover ciphertext");
     const normalList = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages?limit=20`, {
       token: voyagerToken,
     });
@@ -172,6 +175,12 @@ if (firstRoomId) {
       throw new Error("normal Voyager message list cutover did not include the sent Core message.");
     }
     proxiedMessageWrite = true;
+
+    proxiedAttachmentWrite = await runAttachmentMessageWriteCutoverSmoke({
+      token: voyagerToken,
+      roomId: firstRoomId,
+      encodedRoomId,
+    });
   }
 }
 
@@ -190,7 +199,93 @@ console.log(JSON.stringify({
   proxiedRoomCutoverWrites,
   proxiedMessages,
   proxiedMessageWrite,
+  proxiedAttachmentWrite,
 }, null, 2));
+
+async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoomId }) {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const body = Buffer.from(`messaging-core-cutover-attachment-${suffix}`, "utf8");
+  const allocated = await voyagerApi(`/v1/rooms/${encodedRoomId}/attachments`, {
+    method: "POST",
+    token,
+    json: {
+      expectedBytes: body.byteLength,
+      contentCategory: "audio/ogg",
+      retentionClass: "standard",
+      originalFilename: `core-cutover-${suffix}.ogg`,
+      declaredMimeType: "audio/ogg",
+      mediaKind: "audio",
+      durationMs: 1234,
+      variantManifest: { smoke: "messaging-core-cutover" },
+    },
+  });
+  assertEqual(allocated.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/attachments`, "normal Voyager attachment allocate cutover route");
+  assertEqual(allocated.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager attachment allocate cutover upstream status");
+  assertEqual(allocated.attachment?.roomId, roomId, "normal Voyager attachment allocate roomId");
+  assertEqual(allocated.attachment?.state, "allocated", "normal Voyager attachment allocate state");
+  assertEqual(allocated.attachment?.mediaKind, "audio", "normal Voyager attachment allocate media kind");
+  const attachmentId = allocated.attachment?.attachmentId;
+  if (!attachmentId) {
+    throw new Error(`normal Voyager attachment allocate did not return attachmentId: ${JSON.stringify(allocated)}`);
+  }
+
+  const encodedAttachmentId = encodeURIComponent(attachmentId);
+  const uploaded = await voyagerApi(`/v1/attachments/${encodedAttachmentId}/blob?variant=original`, {
+    method: "PUT",
+    token,
+    headers: { "content-type": "audio/ogg" },
+    body,
+  });
+  assertEqual(uploaded.messagingCoreCutover?.route, `/attachments/${encodedAttachmentId}/blob?variant=original`, "normal Voyager attachment upload cutover route");
+  assertEqual(uploaded.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager attachment upload cutover upstream status");
+  assertEqual(uploaded.attachment?.state, "uploaded", "normal Voyager attachment upload state");
+
+  const completed = await voyagerApi(`/v1/attachments/${encodedAttachmentId}/complete`, {
+    method: "POST",
+    token,
+    json: {
+      ciphertextSha256: "sha256-smoke-placeholder",
+      mediaKind: "audio",
+      durationMs: 1234,
+      variantManifest: { smoke: "messaging-core-cutover", completed: true },
+    },
+  });
+  assertEqual(completed.messagingCoreCutover?.route, `/attachments/${encodedAttachmentId}/complete`, "normal Voyager attachment complete cutover route");
+  assertEqual(completed.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager attachment complete upstream status");
+  assertEqual(completed.attachment?.state, "uploaded", "normal Voyager attachment complete compatibility state");
+  assertEqual(completed.attachment?.variants?.original?.bytes, body.byteLength, "normal Voyager attachment complete original bytes");
+
+  const idempotencyKey = `messaging-core-cutover-attachment-${suffix}`;
+  const sent = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
+    method: "POST",
+    token,
+    json: {
+      idempotencyKey,
+      protocolType: "opaque-test",
+      ciphertext: `messaging-core-cutover-attachment-message-${suffix}`,
+      attachmentIds: [attachmentId],
+    },
+  });
+  assertEqual(sent.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages`, "normal Voyager attachment message cutover route");
+  assertEqual(sent.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager attachment message cutover upstream status");
+  if (!sent.message?.envelopeId) {
+    throw new Error(`normal Voyager attachment message did not return a message: ${JSON.stringify(sent)}`);
+  }
+
+  const listed = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages?limit=20`, { token });
+  if (!listed.messages.some((message) => message.envelopeId === sent.message.envelopeId)) {
+    throw new Error("normal Voyager attachment message list did not include the sent Core message.");
+  }
+
+  const downloaded = await requestBinary(`${voyagerBaseUrl}/v1/attachments/${encodedAttachmentId}/blob?variant=original`, {
+    token,
+  });
+  assertEqual(downloaded.response.headers.get("x-attachment-id"), attachmentId, "normal Voyager attachment download id header");
+  assertEqual(downloaded.response.headers.get("x-attachment-variant"), "original", "normal Voyager attachment download variant header");
+  assertEqual(downloaded.buffer.toString("utf8"), body.toString("utf8"), "normal Voyager attachment download body");
+
+  return true;
+}
 
 async function runRoomWriteCutoverSmoke({ ownerToken, ownerPrincipalId }) {
   if (!roomWritePassword) {
@@ -451,6 +546,25 @@ async function requestRaw(url, options = {}) {
   const text = await response.text();
   const payload = text ? JSON.parse(text) : null;
   return { response, payload, text };
+}
+
+async function requestBinary(url, options = {}) {
+  const headers = new Headers(options.headers ?? {});
+  const fetchOptions = { ...options };
+  delete fetchOptions.auth;
+  delete fetchOptions.token;
+  if (options.auth !== false) {
+    headers.set("authorization", `Bearer ${options.token ?? ""}`);
+  }
+  const response = await fetch(url, {
+    ...fetchOptions,
+    headers,
+    signal: fetchOptions.signal ?? AbortSignal.timeout(fetchTimeoutMs),
+  });
+  if (!response.ok) {
+    throw new Error(`${options.method ?? "GET"} ${url} failed ${response.status}: ${await response.text()}`);
+  }
+  return { response, buffer: Buffer.from(await response.arrayBuffer()) };
 }
 
 function decodeJwtPayload(token) {
