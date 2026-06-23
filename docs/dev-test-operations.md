@@ -236,6 +236,14 @@ remove or set `VITE_MESSAGING_CORE_ALL_CUTOVER=0` for the Pages build, or use
 `localStorage.setItem("voyager.messagingCoreRealtime", "0")` for a single
 browser session.
 
+The remaining Voyager-owned messaging routes are frozen as documented fallback
+boundaries, not new product ownership. `node scripts/route-inventory-check.mjs`
+validates the boundary catalog: room/message/attachment/thread/sync routes are
+temporary fallback when their Core flags are off, call lifecycle/media routes
+are temporary call fallback with `call_cutover_not_implemented` diagnostics, and
+the `/v1/messaging-core/*` validation proxies are ready for removal after
+migration diagnostics are no longer needed.
+
 ## 6. Manual Cross-Client Checklist
 
 After this PR is deployed, manually verify:

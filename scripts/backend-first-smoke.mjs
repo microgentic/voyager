@@ -94,6 +94,25 @@ function assertServerTiming(header, metrics, context) {
   }
 }
 
+function assertMessagingCoreFallbackDiagnostics(payload, fallbackReason, context) {
+  const diagnostics = payload?.messagingCoreCutover;
+  if (!diagnostics || typeof diagnostics !== "object" || Array.isArray(diagnostics)) {
+    throw new Error(`${context} missing messagingCoreCutover fallback diagnostics`);
+  }
+  if (
+    diagnostics.source !== "voyager_legacy" ||
+    diagnostics.fallbackReason !== fallbackReason ||
+    diagnostics.route !== null ||
+    diagnostics.upstreamStatus !== null
+  ) {
+    throw new Error(`${context} used unexpected Messaging Core fallback diagnostics: ${JSON.stringify(diagnostics)}`);
+  }
+  const flags = diagnostics.flags;
+  if (!flags || typeof flags !== "object" || Array.isArray(flags) || typeof flags.allCoreMessaging !== "boolean") {
+    throw new Error(`${context} missing Messaging Core fallback flag snapshot`);
+  }
+}
+
 function realtimeUrl() {
   return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/realtime`;
 }
@@ -760,6 +779,7 @@ assertServerTiming(
 );
 const createdCall = createdCallResult.payload;
 assertCallResponse(createdCall, "POST /v1/rooms/{roomId}/calls");
+assertMessagingCoreFallbackDiagnostics(createdCall, "call_cutover_not_implemented", "POST /v1/rooms/{roomId}/calls");
 if (createdCall.call.status !== "ringing" || createdCall.call.callType !== "audio") {
   throw new Error("created audio call did not enter ringing state");
 }
@@ -790,12 +810,14 @@ if (
 
 const listedCalls = await api(`/v1/rooms/${direct.room.roomId}/calls`, { headers: userHeaders });
 assertCallsResponse(listedCalls, "GET /v1/rooms/{roomId}/calls");
+assertMessagingCoreFallbackDiagnostics(listedCalls, "call_cutover_not_implemented", "GET /v1/rooms/{roomId}/calls");
 if (!listedCalls.calls.some((call) => call.callId === createdCall.call.callId)) {
   throw new Error("room call list did not include the created call");
 }
 
 const fetchedCall = await api(`/v1/calls/${createdCall.call.callId}`, { headers: userHeaders });
 assertCallResponse(fetchedCall, "GET /v1/calls/{callId}");
+assertMessagingCoreFallbackDiagnostics(fetchedCall, "call_cutover_not_implemented", "GET /v1/calls/{callId}");
 if (fetchedCall.call.callId !== createdCall.call.callId) {
   throw new Error("call fetch returned the wrong call");
 }
