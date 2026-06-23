@@ -348,19 +348,22 @@ async function adaptRoomCutoverPayload(
   payload: JsonObject,
   options: {
     responseKind: RoomCutoverResponseKind;
+    query?: URLSearchParams;
     memberPrincipalId?: string;
   },
 ): Promise<JsonObject> {
   if (options.responseKind === "rooms") {
     const coreRooms = arrayField(payload, "rooms");
+    const page = roomCutoverPage(options.query);
+    const pagedCoreRooms = coreRooms.slice(page.offset, page.offset + page.limit);
     const roomViews: JsonObject[] = [];
-    for (const coreRoom of coreRooms) {
+    for (const coreRoom of pagedCoreRooms) {
       const roomId = requiredCoreString(coreRoom, "roomId");
       roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
     }
     return {
       rooms: await adaptCoreRoomViews(env, roomViews),
-      nextCursor: null,
+      nextCursor: pagedCoreRooms.length === page.limit ? String(page.offset + page.limit) : null,
     };
   }
 
@@ -518,6 +521,33 @@ function adaptCoreOwnershipTransfer(transfer: JsonObject): JsonObject {
     createdAt: requiredCoreString(transfer, "createdAt"),
     respondedAt: stringValue(transfer.completedAt),
   };
+}
+
+function roomCutoverPage(query: URLSearchParams | undefined): { limit: number; offset: number } {
+  const limit = numericRoomCutoverQuery(query, "limit", 1, 200, 50);
+  const cursor = query?.get("cursor");
+  if (!cursor) return { limit, offset: 0 };
+  const offset = Number(cursor);
+  if (!Number.isInteger(offset) || offset < 0 || offset > Number.MAX_SAFE_INTEGER) {
+    throw new HttpError(400, "invalid_cursor", "Cursor is invalid");
+  }
+  return { limit, offset };
+}
+
+function numericRoomCutoverQuery(
+  query: URLSearchParams | undefined,
+  key: string,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  const value = query?.get(key);
+  if (value === null || value === undefined || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new HttpError(400, "invalid_query", `Query parameter must be an integer between ${min} and ${max}: ${key}`);
+  }
+  return parsed;
 }
 
 interface VoyagerPrincipalProfile {

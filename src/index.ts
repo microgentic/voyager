@@ -796,7 +796,7 @@ async function messagingCoreRoomCutoverRoute(
   memberPrincipalId?: string;
 } | null> {
   if (url.pathname === "/v1/rooms" && request.method === "GET") {
-    return { method: "GET", path: "/rooms", responseKind: "rooms" };
+    return { method: "GET", path: "/rooms", query: proxyQuery(url, ["limit", "cursor"]), responseKind: "rooms" };
   }
 
   if (url.pathname === "/v1/rooms/direct" && request.method === "POST") {
@@ -923,28 +923,47 @@ async function messagingCoreRoomCutoverRoute(
 }
 
 function messagingCoreDirectRoomBody(body: Record<string, unknown>): Record<string, unknown> {
-  const principalIds = body.principalIds;
-  const principalId = Array.isArray(principalIds)
-    ? principalIds.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
-    : stringValue(body.principalId);
-  if (!principalId) {
-    throw new HttpError(400, "invalid_field", "Field is required: principalIds");
+  const principalIds = stringArrayField(body, "principalIds", { maxItems: 1, maxLength: 128 });
+  if (principalIds.length !== 1) {
+    throw new HttpError(
+      400,
+      "invalid_direct_room",
+      "Direct rooms require exactly two principals",
+    );
   }
-  return { principalId };
+  return {
+    principalId: principalIds[0],
+    title: optionalMessagingCoreBodyString(body, "name", { maxLength: 120 }),
+    description: optionalMessagingCoreBodyString(body, "description", { maxLength: 1000 }),
+  };
 }
 
 function messagingCoreGroupRoomBody(body: Record<string, unknown>): Record<string, unknown> {
+  const memberPrincipalIds = stringArrayField(body, "memberPrincipalIds", { maxItems: 200, maxLength: 128 });
+  if (memberPrincipalIds.length > 0) {
+    throw new HttpError(
+      400,
+      "initial_group_members_not_supported",
+      "Create the group first, then invite humans or add agents",
+    );
+  }
   return {
-    title: requiredMessagingCoreBodyString(body, "name"),
-    description: optionalMessagingCoreBodyString(body, "description"),
-    memberPrincipalIds: Array.isArray(body.memberPrincipalIds) ? body.memberPrincipalIds : undefined,
+    title: requiredMessagingCoreBodyString(body, "name", { maxLength: 120 }),
+    description: optionalMessagingCoreBodyString(body, "description", { maxLength: 1000 }),
   };
 }
 
 function messagingCoreRoomPatchBody(body: Record<string, unknown>): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
-  if ("name" in body) patch.title = optionalMessagingCoreBodyString(body, "name");
-  if ("description" in body) patch.description = optionalMessagingCoreBodyString(body, "description");
+  if (typeof body.name === "string") patch.title = validateMessagingCoreString(body.name.trim(), "name", { maxLength: 120 });
+  else if (body.name !== undefined && body.name !== null) {
+    throw new HttpError(400, "invalid_field", "Field must be a string or null: name");
+  }
+  if (typeof body.description === "string") {
+    patch.description = validateMessagingCoreString(body.description.trim(), "description", { maxLength: 1000 });
+  } else if (body.description !== undefined && body.description !== null) {
+    throw new HttpError(400, "invalid_field", "Field must be a string or null: description");
+  }
   return patch;
 }
 
@@ -963,20 +982,42 @@ function messagingCoreInvitationExpiresAt(value: unknown): string {
   return sqliteTimestamp(Date.now() + days * 24 * 60 * 60 * 1000);
 }
 
-function requiredMessagingCoreBodyString(body: Record<string, unknown>, key: string): string {
+function requiredMessagingCoreBodyString(
+  body: Record<string, unknown>,
+  key: string,
+  options: { maxLength?: number } = {},
+): string {
   const value = stringValue(body[key])?.trim();
   if (!value) {
     throw new HttpError(400, "invalid_field", `Field is required: ${key}`);
   }
-  return value;
+  return validateMessagingCoreString(value, key, options);
 }
 
-function optionalMessagingCoreBodyString(body: Record<string, unknown>, key: string): string | null | undefined {
+function optionalMessagingCoreBodyString(
+  body: Record<string, unknown>,
+  key: string,
+  options: { maxLength?: number } = {},
+): string | null | undefined {
   const value = body[key];
   if (value === undefined) return undefined;
   if (value === null) return null;
-  const string = stringValue(value)?.trim();
-  return string || null;
+  if (typeof value !== "string") {
+    throw new HttpError(400, "invalid_field", `Field must be a string or null: ${key}`);
+  }
+  const string = value.trim();
+  return string ? validateMessagingCoreString(string, key, options) : null;
+}
+
+function validateMessagingCoreString(
+  value: string,
+  key: string,
+  options: { maxLength?: number },
+): string {
+  if (options.maxLength !== undefined && value.length > options.maxLength) {
+    throw new HttpError(400, "invalid_field", `Field is too long: ${key}`);
+  }
+  return value;
 }
 
 function stringValue(value: unknown): string | null {
