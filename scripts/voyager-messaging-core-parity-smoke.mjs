@@ -3,6 +3,7 @@ const sessionToken = process.env.VOYAGER_SESSION_TOKEN ?? "";
 const loginEmail = process.env.VOYAGER_LOGIN_EMAIL ?? "";
 const loginPassword = process.env.VOYAGER_LOGIN_PASSWORD ?? "";
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
+const exerciseRoomCutover = process.env.SMOKE_MESSAGING_CORE_ROOM_CUTOVER === "1";
 const exerciseMessageWriteCutover = process.env.SMOKE_MESSAGING_CORE_WRITE_CUTOVER === "1";
 
 if (!voyagerBaseUrl) {
@@ -78,6 +79,7 @@ assertEqual(voyagerProxyRooms.proxied?.upstreamStatus, 200, "Voyager proxy rooms
 assertEqual(voyagerProxyRooms.rooms.length, coreRooms.rooms.length, "Voyager proxy rooms length");
 
 let proxiedRoomDetail = false;
+let proxiedRoomCutoverRead = false;
 let proxiedMessages = false;
 let proxiedMessageWrite = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
@@ -109,6 +111,26 @@ if (firstRoomId) {
     assertEqual(voyagerProxyMessages.messages[0]?.envelopeId, coreMessages.messages[0].envelopeId, "Voyager proxy first message envelopeId");
   }
   proxiedMessages = true;
+
+  if (exerciseRoomCutover) {
+    const normalRooms = await voyagerApi("/v1/rooms", {
+      token: voyagerToken,
+    });
+    assertEqual(normalRooms.messagingCoreCutover?.route, "/rooms", "normal Voyager room list cutover route");
+    assertEqual(normalRooms.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager room list cutover upstream status");
+    assertArray(normalRooms.rooms, "normal Voyager room list cutover rooms");
+    if (!normalRooms.rooms.some((room) => room.roomId === firstRoomId)) {
+      throw new Error("normal Voyager room cutover list did not include the seeded Core room.");
+    }
+    const normalRoom = await voyagerApi(`/v1/rooms/${encodedRoomId}`, {
+      token: voyagerToken,
+    });
+    assertEqual(normalRoom.messagingCoreCutover?.route, `/rooms/${encodedRoomId}`, "normal Voyager room detail cutover route");
+    assertEqual(normalRoom.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager room detail cutover upstream status");
+    assertEqual(normalRoom.room?.roomId, firstRoomId, "normal Voyager room detail cutover roomId");
+    assertArray(normalRoom.room?.members, "normal Voyager room detail cutover members");
+    proxiedRoomCutoverRead = true;
+  }
 
   if (exerciseMessageWriteCutover) {
     const idempotencyKey = `messaging-core-cutover-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -150,6 +172,7 @@ console.log(JSON.stringify({
   proxiedBootstrap: true,
   proxiedRooms: true,
   proxiedRoomDetail,
+  proxiedRoomCutoverRead,
   proxiedMessages,
   proxiedMessageWrite,
 }, null, 2));

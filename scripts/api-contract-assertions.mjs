@@ -483,6 +483,7 @@ export function assertMessagingCoreSession(value, context) {
   }
   if ("cutover" in session) {
     const cutover = object(session.cutover, `${context}.cutover`);
+    boolean(cutover.roomRoutes, `${context}.cutover.roomRoutes`);
     boolean(cutover.messageRoutes, `${context}.cutover.messageRoutes`);
   }
   nullableString(session.reason, `${context}.reason`);
