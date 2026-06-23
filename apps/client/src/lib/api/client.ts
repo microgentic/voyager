@@ -26,6 +26,7 @@ import type {
 	ForwardMessageInput,
 	KeyPackage,
 	MeResult,
+	MessagingCoreBootstrapProxyResult,
 	MessagingCoreSession,
 	Membership,
 	MessageEnvelope,
@@ -208,6 +209,18 @@ export class VoyagerClient {
 			'/v1/messaging-core/session'
 		);
 		return res.messagingCore;
+	}
+
+	async messagingCoreBootstrap(): Promise<MessagingCoreBootstrapProxyResult> {
+		const res = await this.request<MessagingCoreBootstrapProxyResult & { ok: true }>(
+			'GET',
+			'/v1/messaging-core/bootstrap'
+		);
+		return {
+			messagingCore: res.messagingCore,
+			bootstrap: res.bootstrap,
+			proxied: res.proxied
+		};
 	}
 
 	changePassword(currentPassword: string, newPassword: string): Promise<{ ok: true }> {

@@ -58,6 +58,7 @@ export const endpointStabilityCatalog = [
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
   { method: "POST", path: "/v1/messaging-core/session", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/messaging-core/bootstrap", stability: "future-sensitive" },
   { method: "POST", path: "/v1/rooms/{roomId}/invitations", stability: "stable/current" },
   { method: "GET", path: "/v1/room-invitations", stability: "stable/current" },
   { method: "POST", path: "/v1/room-invitations/{roomInvitationId}/accept", stability: "stable/current" },
@@ -126,6 +127,27 @@ export function assertAuthResult(payload, context) {
 export function assertMessagingCoreSessionResponse(payload, context) {
   const value = success(payload, context);
   assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
+}
+
+export function assertMessagingCoreBootstrapProxyResponse(payload, context) {
+  const value = success(payload, context);
+  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
+  const bootstrap = object(value.bootstrap, `${context}.bootstrap`);
+  string(bootstrap.app, `${context}.bootstrap.app`);
+  string(bootstrap.tenantId, `${context}.bootstrap.tenantId`);
+  object(bootstrap.account, `${context}.bootstrap.account`);
+  object(bootstrap.principal, `${context}.bootstrap.principal`);
+  if (bootstrap.device !== null) object(bootstrap.device, `${context}.bootstrap.device`);
+  array(bootstrap.roles, `${context}.bootstrap.roles`).forEach((role, index) => string(role, `${context}.bootstrap.roles[${index}]`));
+  array(bootstrap.scopes, `${context}.bootstrap.scopes`).forEach((scope, index) => string(scope, `${context}.bootstrap.scopes[${index}]`));
+  array(bootstrap.rooms, `${context}.bootstrap.rooms`);
+  nullableString(bootstrap.roomsNextCursor, `${context}.bootstrap.roomsNextCursor`);
+  array(bootstrap.pendingMessages, `${context}.bootstrap.pendingMessages`);
+  string(bootstrap.serverTime, `${context}.bootstrap.serverTime`);
+  string(bootstrap.requestId, `${context}.bootstrap.requestId`);
+  const proxied = object(value.proxied, `${context}.proxied`);
+  literal(proxied.route, "/bootstrap", `${context}.proxied.route`);
+  number(proxied.upstreamStatus, `${context}.proxied.upstreamStatus`);
 }
 
 export function assertBootstrapResponse(payload, context) {

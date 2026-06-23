@@ -53,6 +53,19 @@ if (!coreBootstrap.ok || !coreBootstrap.bootstrap) {
 assertEqual(coreBootstrap.bootstrap.tenantId, claims.tenantId, "Core /bootstrap tenantId");
 assertEqual(coreBootstrap.bootstrap.account?.accountId, claims.accountId, "Core /bootstrap accountId");
 
+const voyagerProxyBootstrap = await voyagerApi("/v1/messaging-core/bootstrap", {
+  token: voyagerToken,
+});
+if (!voyagerProxyBootstrap.ok || !voyagerProxyBootstrap.bootstrap || !voyagerProxyBootstrap.messagingCore) {
+  throw new Error(`Voyager proxy /v1/messaging-core/bootstrap did not return bootstrap payload: ${JSON.stringify(voyagerProxyBootstrap)}`);
+}
+assertEqual(voyagerProxyBootstrap.proxied?.route, "/bootstrap", "Voyager proxy bootstrap route");
+assertEqual(voyagerProxyBootstrap.proxied?.upstreamStatus, 200, "Voyager proxy bootstrap upstream status");
+assertEqual(voyagerProxyBootstrap.bootstrap.tenantId, coreBootstrap.bootstrap.tenantId, "Voyager proxy bootstrap tenantId");
+assertEqual(voyagerProxyBootstrap.bootstrap.account?.accountId, coreBootstrap.bootstrap.account?.accountId, "Voyager proxy bootstrap accountId");
+assertEqual(voyagerProxyBootstrap.bootstrap.principal?.principalId, coreBootstrap.bootstrap.principal?.principalId, "Voyager proxy bootstrap principalId");
+assertEqual(voyagerProxyBootstrap.bootstrap.device?.deviceId, coreBootstrap.bootstrap.device?.deviceId, "Voyager proxy bootstrap deviceId");
+
 console.log(JSON.stringify({
   ok: true,
   voyagerBaseUrl,
@@ -61,6 +74,7 @@ console.log(JSON.stringify({
   accountId: claims.accountId,
   principalId: claims.principalId,
   deviceId: claims.deviceId,
+  proxiedBootstrap: true,
 }, null, 2));
 
 async function voyagerApi(path, options = {}) {

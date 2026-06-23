@@ -31,7 +31,7 @@ import {
   updateAccountPolicy
 } from "./db";
 import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
-import { createMessagingCoreSessionPayload } from "./backend/messaging-core-bridge";
+import { createMessagingCoreSessionPayload, fetchMessagingCoreBootstrapProxy } from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
@@ -249,6 +249,19 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
         device: auth.device,
         roles: auth.roles
       })
+    });
+  }
+
+  if (url.pathname === "/v1/messaging-core/bootstrap") {
+    requireMethod(request, "GET");
+    return json({
+      ok: true,
+      ...(await fetchMessagingCoreBootstrapProxy(env, {
+        account: auth.account,
+        principal: auth.principal,
+        device: auth.device,
+        roles: auth.roles
+      }))
     });
   }
 

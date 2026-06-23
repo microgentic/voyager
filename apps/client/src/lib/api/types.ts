@@ -107,6 +107,8 @@ export interface MessagingCoreSession {
 				attempted: boolean;
 				ok: boolean;
 				reason: string | null;
+				failedStep: 'tenant' | 'account' | 'principal' | 'device' | null;
+				tenantSynced: boolean;
 				accountSynced: boolean;
 				principalSynced: boolean;
 				deviceSynced: boolean;
@@ -116,6 +118,15 @@ export interface MessagingCoreSession {
 	tokenType?: 'Bearer';
 	expiresAt?: string;
 	scopes?: string[];
+}
+
+export interface MessagingCoreBootstrapProxyResult {
+	messagingCore: MessagingCoreSession;
+	bootstrap: Record<string, unknown>;
+	proxied: {
+		route: '/bootstrap';
+		upstreamStatus: number;
+	};
 }
 
 export type RoomType = 'direct' | 'group' | 'channel';
