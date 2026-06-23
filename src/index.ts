@@ -40,10 +40,13 @@ import {
   fetchMessagingCoreReadProxy,
   fetchMessagingCoreRealtimeTokenProxy,
   fetchMessagingCoreRoomCutoverProxy,
+  fetchMessagingCoreSyncCutoverProxy,
   messagingCoreAttachmentAllocateBody,
   messagingCoreAttachmentCompleteBody,
+  messagingCoreCutoverFallbackDiagnostics,
   messagingCoreMessageCutoverEnabled,
   messagingCoreRoomCutoverEnabled,
+  messagingCoreSyncCutoverEnabled,
 } from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
 import { ROOM_INVITATION_DAYS } from "./backend/rooms/types";
@@ -251,7 +254,12 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       windowSeconds: REALTIME_TOKEN_WINDOW_SECONDS
     });
     const token = await createRealtimeSocketToken(env, auth);
-    return json({ ok: true, realtimeToken: token.token, expiresAt: token.expiresAt });
+    return json({
+      ok: true,
+      realtimeToken: token.token,
+      expiresAt: token.expiresAt,
+      messagingCoreCutover: messagingCoreCutoverFallbackDiagnostics(env, "voyager_realtime_token_route"),
+    });
   }
 
   if (url.pathname === "/v1/messaging-core/session") {
@@ -337,9 +345,14 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return messagingCoreMessageCutoverResponse;
   }
 
+  const messagingCoreSyncCutoverResponse = await handleMessagingCoreSyncCutover(request, env, url, auth, authTimingMs);
+  if (messagingCoreSyncCutoverResponse) {
+    return messagingCoreSyncCutoverResponse;
+  }
+
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
   if (backendFirstResponse) {
-    return backendFirstResponse;
+    return annotateMessagingCoreLegacyFallback(backendFirstResponse, env, request, url);
   }
 
   if (url.pathname === "/v1/me") {
@@ -1401,6 +1414,101 @@ async function messagingCoreMessageCutoverRoute(
   }
 
   return null;
+}
+
+async function handleMessagingCoreSyncCutover(
+  request: Request,
+  env: Env,
+  url: URL,
+  auth: AuthContext,
+  authTimingMs: number,
+): Promise<Response | null> {
+  if (!messagingCoreSyncCutoverEnabled(env)) return null;
+  if (url.pathname !== "/v1/sync") return null;
+  requireMethod(request, "GET");
+  const startedAt = performance.now();
+  const result = await fetchMessagingCoreSyncCutoverProxy(
+    env,
+    messagingCoreIdentity(auth),
+    proxyQuery(url, ["limit"]),
+  );
+  return json(result.payload, {
+    status: result.status,
+    headers: readTimingHeaders("messagingCoreSync", authTimingMs, startedAt),
+  });
+}
+
+async function annotateMessagingCoreLegacyFallback(
+  response: Response,
+  env: Env,
+  request: Request,
+  url: URL,
+): Promise<Response> {
+  const fallbackReason = messagingCoreLegacyFallbackReason(env, request, url);
+  if (!fallbackReason) return response;
+  if (!(response.headers.get("content-type") ?? "").includes("application/json")) {
+    return response;
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    return response;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || "messagingCoreCutover" in payload) {
+    return response;
+  }
+
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return json(
+    {
+      ...(payload as Record<string, unknown>),
+      messagingCoreCutover: messagingCoreCutoverFallbackDiagnostics(env, fallbackReason),
+    },
+    {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    },
+  );
+}
+
+function messagingCoreLegacyFallbackReason(env: Env, request: Request, url: URL): string | null {
+  if (url.pathname === "/v1/sync" && request.method === "GET") {
+    return messagingCoreSyncCutoverEnabled(env) ? "sync_cutover_route_not_used" : "sync_cutover_disabled";
+  }
+  if (isMessagingCoreMessageFallbackPath(request, url)) {
+    return messagingCoreMessageCutoverEnabled(env) ? "message_cutover_route_not_supported" : "message_cutover_disabled";
+  }
+  if (isMessagingCoreRoomFallbackPath(request, url)) {
+    return messagingCoreRoomCutoverEnabled(env) ? "room_cutover_route_not_supported" : "room_cutover_disabled";
+  }
+  if (url.pathname === "/v1/realtime/token" && request.method === "POST") {
+    return "voyager_realtime_token_route";
+  }
+  return null;
+}
+
+function isMessagingCoreMessageFallbackPath(request: Request, url: URL): boolean {
+  if (request.method === "GET" && url.pathname === "/v1/threads") return true;
+  if (/^\/v1\/rooms\/[^/]+\/messages(?:\/.*)?$/.test(url.pathname)) return true;
+  if (request.method === "POST" && /^\/v1\/rooms\/[^/]+\/attachments$/.test(url.pathname)) return true;
+  if (/^\/v1\/attachments\/[^/]+(?:\/blob|\/complete)?$/.test(url.pathname)) return true;
+  return false;
+}
+
+function isMessagingCoreRoomFallbackPath(request: Request, url: URL): boolean {
+  if (url.pathname === "/v1/rooms" && request.method === "GET") return true;
+  if (url.pathname === "/v1/rooms/direct" && request.method === "POST") return true;
+  if (url.pathname === "/v1/rooms/groups" && request.method === "POST") return true;
+  if (url.pathname === "/v1/room-invitations" && request.method === "GET") return true;
+  if (/^\/v1\/room-invitations\/[^/]+\/(?:accept|decline)$/.test(url.pathname) && request.method === "POST") return true;
+  if (/^\/v1\/rooms\/[^/]+(?:\/archive|\/members(?:\/[^/]+(?:\/role)?)?|\/leave|\/invitations|\/ownership-transfers(?:\/[^/]+\/accept)?)?$/.test(url.pathname)) {
+    return true;
+  }
+  return false;
 }
 
 function readTimingHeaders(routeName: string, authMs: number, startedAt: number): Record<string, string> {
