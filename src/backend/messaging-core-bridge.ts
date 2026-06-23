@@ -7,8 +7,10 @@ export const VOYAGER_DEFAULT_MESSAGING_TENANT_ID = "tenant_voyager_default";
 
 type MessagingCoreMode = "off" | "shadow" | "proxy";
 type PrincipalType = "human" | "agent" | "service";
+type IdentitySyncStep = "tenant" | "account" | "principal" | "device";
 
 const DEFAULT_APP_ID = "voyager";
+const DEFAULT_TENANT_DISPLAY_NAME = "Voyager";
 const DEFAULT_TOKEN_AUDIENCE = "messaging-core";
 const DEFAULT_INTERNAL_AUDIENCE = "messaging-core-internal";
 const DEFAULT_TOKEN_ISSUER = "voyager";
@@ -28,8 +30,11 @@ interface BridgeConfig {
   mode: MessagingCoreMode;
   invalidMode: string | null;
   tenantId: string;
+  tenantExternalRef: string;
+  tenantDisplayName: string;
   app: string;
   baseUrl: string | null;
+  serviceBinding: Fetcher | null;
   tokenIssuer: string;
   tokenAudience: string;
   tokenSecret: string | null;
@@ -45,6 +50,8 @@ interface IdentitySyncResult {
   attempted: boolean;
   ok: boolean;
   reason: string | null;
+  failedStep: IdentitySyncStep | null;
+  tenantSynced: boolean;
   accountSynced: boolean;
   principalSynced: boolean;
   deviceSynced: boolean;
@@ -72,7 +79,7 @@ export function messagingCoreBridgeStatus(env: Env): JsonObject {
       ttlSeconds: config.internalTtlSeconds,
     },
     identitySync: {
-      available: Boolean(config.baseUrl && config.internalSecret),
+      available: Boolean((config.baseUrl || config.serviceBinding) && config.internalSecret),
       required: config.mode === "proxy",
     },
     reason: bridgeStatusReason(config),
@@ -121,6 +128,8 @@ async function syncMessagingCoreIdentity(
       attempted: false,
       ok: false,
       reason: "internal_service_unconfigured",
+      failedStep: null,
+      tenantSynced: false,
       accountSynced: false,
       principalSynced: false,
       deviceSynced: false,
@@ -128,12 +137,33 @@ async function syncMessagingCoreIdentity(
   }
 
   const token = await mintInternalServiceToken(config, [
+    "internal:tenants:upsert",
     "internal:accounts:upsert",
     "internal:principals:upsert",
     "internal:devices:upsert",
   ]);
 
+  let failedStep: IdentitySyncStep = "tenant";
+  let tenantSynced = false;
+  let accountSynced = false;
+  let principalSynced = false;
+  let deviceSynced = false;
+
   try {
+    await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/bootstrap`, {
+      externalTenantRef: config.tenantExternalRef,
+      displayName: config.tenantDisplayName,
+      status: "active",
+      policies: [
+        {
+          policyId: identity.account.policy_id,
+          name: identity.account.policy_id,
+          policyJson: { source: "voyager" },
+        },
+      ],
+    });
+    tenantSynced = true;
+    failedStep = "account";
     await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/accounts/upsert`, {
       accountId: identity.account.account_id,
       externalSubjectId: identity.account.account_id,
@@ -141,6 +171,8 @@ async function syncMessagingCoreIdentity(
       status: publicCoreAccountStatus(identity.account),
       policyId: identity.account.policy_id,
     });
+    accountSynced = true;
+    failedStep = "principal";
     await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/principals/upsert`, {
       principalId: identity.principal.principal_id,
       accountId: identity.account.account_id,
@@ -151,6 +183,8 @@ async function syncMessagingCoreIdentity(
       status: publicCorePrincipalStatus(identity.principal),
       ownerPrincipalId: identity.principal.owner_principal_id,
     });
+    principalSynced = true;
+    failedStep = "device";
     await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/devices/upsert`, {
       deviceId: identity.device.device_id,
       accountId: identity.account.account_id,
@@ -166,22 +200,27 @@ async function syncMessagingCoreIdentity(
       status: identity.device.revoked_at ? "revoked" : "active",
       lastSeenAt: identity.device.last_seen_at,
     });
+    deviceSynced = true;
     return {
       attempted: true,
       ok: true,
       reason: null,
-      accountSynced: true,
-      principalSynced: true,
-      deviceSynced: true,
+      failedStep: null,
+      tenantSynced,
+      accountSynced,
+      principalSynced,
+      deviceSynced,
     };
   } catch (error) {
     return {
       attempted: true,
       ok: false,
       reason: publicIdentitySyncFailureReason(error),
-      accountSynced: false,
-      principalSynced: false,
-      deviceSynced: false,
+      failedStep,
+      tenantSynced,
+      accountSynced,
+      principalSynced,
+      deviceSynced,
     };
   }
 }
@@ -192,7 +231,7 @@ async function postInternal(
   path: string,
   body: Record<string, unknown>,
 ): Promise<unknown> {
-  const response = await fetch(messagingCoreUrl(config, path), {
+  const request = new Request(messagingCoreUrl(config, path), {
     method: "POST",
     headers: {
       authorization: `Bearer ${token}`,
@@ -201,6 +240,7 @@ async function postInternal(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(config.fetchTimeoutMs),
   });
+  const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
   if (!response.ok) {
     throw new Error(`internal_service_http_${response.status}`);
   }
@@ -308,8 +348,11 @@ function resolveBridgeConfig(env: Env): BridgeConfig {
     mode,
     invalidMode,
     tenantId: env.MESSAGING_CORE_TENANT_ID?.trim() || VOYAGER_DEFAULT_MESSAGING_TENANT_ID,
+    tenantExternalRef: env.MESSAGING_CORE_TENANT_EXTERNAL_REF?.trim() || DEFAULT_APP_ID,
+    tenantDisplayName: env.MESSAGING_CORE_TENANT_DISPLAY_NAME?.trim() || DEFAULT_TENANT_DISPLAY_NAME,
     app: env.MESSAGING_CORE_APP_ID?.trim() || DEFAULT_APP_ID,
     baseUrl: trimmed(env.MESSAGING_CORE_BASE_URL),
+    serviceBinding: env.MESSAGING_CORE_SERVICE ?? null,
     tokenIssuer: env.MESSAGING_CORE_TOKEN_ISSUER?.trim() || DEFAULT_TOKEN_ISSUER,
     tokenAudience: env.MESSAGING_CORE_TOKEN_AUDIENCE?.trim() || DEFAULT_TOKEN_AUDIENCE,
     tokenSecret: trimmed(env.MESSAGING_CORE_TOKEN_SECRET),
