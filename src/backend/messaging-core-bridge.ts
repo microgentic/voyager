@@ -7,9 +7,18 @@ import type { JsonObject } from "./shared/types";
 export const VOYAGER_DEFAULT_MESSAGING_TENANT_ID = "tenant_voyager_default";
 
 type MessagingCoreMode = "off" | "shadow" | "proxy";
-type PublicCoreMethod = "GET" | "POST" | "PATCH" | "DELETE";
+type PublicCoreMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 type PrincipalType = "human" | "agent" | "service";
 type IdentitySyncStep = "tenant" | "account" | "principal" | "device";
+type MessageCutoverResponseKind =
+  | "messages"
+  | "message"
+  | "deleted"
+  | "receipt"
+  | "thread"
+  | "threadState"
+  | "attachment"
+  | "ok";
 
 const DEFAULT_APP_ID = "voyager";
 const DEFAULT_TENANT_DISPLAY_NAME = "Voyager";
@@ -23,6 +32,7 @@ const DEFAULT_BACKFILL_ROOM_LIMIT = 50;
 const DEFAULT_BACKFILL_MESSAGE_LIMIT = 200;
 const BACKFILL_IMPORT_TIMEOUT_MS = 30_000;
 const MAX_BACKFILL_BATCH_ITEMS = 500;
+const CORE_MESSAGE_COMPAT_EXPIRES_AT = "9999-12-31T23:59:59.000Z";
 const encoder = new TextEncoder();
 
 export interface MessagingCoreIdentity {
@@ -113,6 +123,7 @@ interface VoyagerMessageBackfillRow {
   sender_principal_id: string;
   sender_device_id: string;
   idempotency_key: string;
+  protocol_type: string;
   ciphertext: string;
   server_sequence: number;
   server_received_at: string;
@@ -237,6 +248,26 @@ export function messagingCoreRoomCutoverEnabled(env: Env): boolean {
   return config.roomCutoverEnabled;
 }
 
+export function messagingCoreAttachmentAllocateBody(body: Record<string, unknown>): Record<string, unknown> {
+  const expectedBytes = numberValue(body.expectedBytes);
+  if (expectedBytes === null || !Number.isInteger(expectedBytes) || expectedBytes < 1) {
+    throw new HttpError(400, "invalid_field", "Field must be a positive integer: expectedBytes");
+  }
+  const declaredMimeType = stringValue(body.declaredMimeType);
+  const contentCategory = stringValue(body.contentCategory);
+  return {
+    contentType: declaredMimeType ?? contentCategory ?? "application/octet-stream",
+    byteSize: expectedBytes,
+    metadata: voyagerAttachmentMetadata(body),
+  };
+}
+
+export function messagingCoreAttachmentCompleteBody(body: Record<string, unknown>): Record<string, unknown> {
+  return {
+    metadata: voyagerAttachmentMetadata(body),
+  };
+}
+
 type RoomCutoverResponseKind =
   | "rooms"
   | "room"
@@ -300,7 +331,12 @@ export async function fetchMessagingCoreMessageCutoverProxy(
   identity: MessagingCoreIdentity,
   method: PublicCoreMethod,
   path: string,
-  options: { body?: Record<string, unknown>; query?: URLSearchParams; responseField?: string } = {},
+  options: {
+    body?: Record<string, unknown>;
+    query?: URLSearchParams;
+    responseKind?: MessageCutoverResponseKind;
+    roomId?: string;
+  } = {},
 ): Promise<{ status: number; payload: JsonObject }> {
   const config = resolveBridgeConfig(env);
   const base = messagingCoreBridgeStatus(env);
@@ -325,9 +361,7 @@ export async function fetchMessagingCoreMessageCutoverProxy(
 
   const route = appendQuery(path, options.query);
   const upstream = await publicCoreJson(config, token, method, route, options.body, { preserveClientErrors: true });
-  const payload = options.responseField && !(options.responseField in upstream.payload)
-    ? { [options.responseField]: upstream.payload }
-    : upstream.payload;
+  const payload = await adaptMessageCutoverPayload(env, upstream.payload, options.responseKind ?? "ok", options);
   return {
     status: upstream.status,
     payload: {
@@ -339,6 +373,87 @@ export async function fetchMessagingCoreMessageCutoverProxy(
       },
     },
   };
+}
+
+export async function fetchMessagingCoreAttachmentUploadCutoverProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+  path: string,
+  request: Request,
+  query?: URLSearchParams,
+): Promise<{ status: number; payload: JsonObject }> {
+  const config = resolveBridgeConfig(env);
+  const { token, sync } = await requireMessageCutoverSession(env, config, identity);
+  if (!sync.ok) {
+    throw new HttpError(
+      503,
+      "messaging_core_identity_sync_failed",
+      "Messaging Core identity sync failed",
+      { reason: sync.reason },
+    );
+  }
+
+  const route = appendQuery(path, query);
+  const upstream = await publicCoreRaw(config, token, "PUT", route, request, { preserveClientErrors: true });
+  const payload = await parseJsonObjectResponse(upstream.response);
+  const adapted = await adaptMessageCutoverPayload(env, payload, "attachment");
+  return {
+    status: upstream.response.status,
+    payload: {
+      ok: true,
+      ...adapted,
+      messagingCoreCutover: {
+        route,
+        upstreamStatus: upstream.response.status,
+      },
+    },
+  };
+}
+
+export async function fetchMessagingCoreAttachmentDownloadCutoverProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+  path: string,
+  query?: URLSearchParams,
+): Promise<Response> {
+  const config = resolveBridgeConfig(env);
+  const { token, sync } = await requireMessageCutoverSession(env, config, identity);
+  if (!sync.ok) {
+    throw new HttpError(
+      503,
+      "messaging_core_identity_sync_failed",
+      "Messaging Core identity sync failed",
+      { reason: sync.reason },
+    );
+  }
+
+  const route = appendQuery(path, query);
+  const upstream = await publicCoreRaw(config, token, "GET", route, undefined, { preserveClientErrors: true });
+  if (!upstream.response.ok) {
+    await throwCoreResponseError(upstream.response, { preserveClientErrors: true });
+  }
+  return new Response(upstream.response.body, {
+    status: upstream.response.status,
+    statusText: upstream.response.statusText,
+    headers: upstream.response.headers,
+  });
+}
+
+async function requireMessageCutoverSession(
+  env: Env,
+  config: BridgeConfig,
+  identity: MessagingCoreIdentity,
+): Promise<{ token: string; sync: IdentitySyncResult }> {
+  const base = messagingCoreBridgeStatus(env);
+  if (!config.messageCutoverEnabled || !bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_cutover_unconfigured",
+      "Messaging Core message cutover is not configured.",
+      { reason: bridgeStatusReason(config) ?? "message_cutover_disabled" },
+    );
+  }
+  return createConfiguredMessagingCoreSession(env, config, base, identity);
 }
 
 async function adaptRoomCutoverPayload(
@@ -526,6 +641,270 @@ function adaptCoreOwnershipTransfer(transfer: JsonObject): JsonObject {
     createdAt: requiredCoreString(transfer, "createdAt"),
     respondedAt: stringValue(transfer.completedAt),
   };
+}
+
+async function adaptMessageCutoverPayload(
+  env: Env,
+  payload: JsonObject,
+  responseKind: MessageCutoverResponseKind,
+  context: { roomId?: string } = {},
+): Promise<JsonObject> {
+  if (responseKind === "messages") {
+    return {
+      messages: await adaptCoreMessages(env, arrayField(payload, "messages")),
+      nextCursor: stringValue(payload.nextCursor),
+    };
+  }
+
+  if (responseKind === "message") {
+    return { message: (await adaptCoreMessages(env, [objectValue(payload.message) ?? payload]))[0] };
+  }
+
+  if (responseKind === "thread") {
+    const root = objectField(payload, "root");
+    const replies = arrayField(payload, "replies");
+    const adapted = await adaptCoreMessages(env, [root, ...replies]);
+    return {
+      thread: {
+        root: adapted[0],
+        replies: adapted.slice(1),
+        olderCursor: stringValue(payload.olderCursor),
+      },
+    };
+  }
+
+  if (responseKind === "threadState") {
+    return { threadState: adaptCoreThreadState(objectValue(payload.threadState) ?? payload, context.roomId) };
+  }
+
+  if (responseKind === "receipt") {
+    return { receipt: adaptCoreReceipt(objectValue(payload.receipt) ?? payload, context.roomId) };
+  }
+
+  if (responseKind === "attachment") {
+    return { attachment: await adaptCoreAttachment(env, objectValue(payload.attachment) ?? payload) };
+  }
+
+  if (responseKind === "deleted") {
+    return { deleted: payload.deleted ?? payload };
+  }
+
+  return payload;
+}
+
+async function adaptCoreMessages(env: Env, messages: JsonObject[]): Promise<JsonObject[]> {
+  const profiles = await loadVoyagerPrincipalProfiles(
+    env,
+    uniqueStrings(messages.map((message) => stringValue(message.senderPrincipalId))),
+  );
+  return messages.map((message) => adaptCoreMessage(message, profiles));
+}
+
+function adaptCoreMessage(
+  message: JsonObject,
+  profiles: Map<string, VoyagerPrincipalProfile>,
+): JsonObject {
+  const senderPrincipalId = requiredCoreString(message, "senderPrincipalId");
+  const sender = profiles.get(senderPrincipalId);
+  if (!sender) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core message references a principal Voyager cannot resolve.",
+      { principalId: senderPrincipalId },
+    );
+  }
+  const ciphertext = stringValue(message.bodyCiphertext) ?? "deleted-for-everyone";
+  const deletedAt = stringValue(message.deletedAt);
+  const receipt = objectValue(message.receiptSummary) ?? {};
+  return {
+    envelopeId: requiredCoreString(message, "envelopeId"),
+    roomId: requiredCoreString(message, "roomId"),
+    senderAccountId: sender.accountId,
+    senderPrincipalId,
+    senderDeviceId: stringValue(message.senderDeviceId) ?? "",
+    idempotencyKey: stringValue(message.idempotencyKey) ?? "",
+    protocolType: voyagerProtocolType(stringValue(message.protocolType)),
+    ciphertext,
+    ciphertextBytes: encoder.encode(ciphertext).byteLength,
+    clientCreatedAt: null,
+    serverSequence: numberValue(message.serverSequence) ?? 0,
+    serverReceivedAt: requiredCoreString(message, "createdAt"),
+    expiresAt: CORE_MESSAGE_COMPAT_EXPIRES_AT,
+    state: "available",
+    editedAt: requiredCoreString(message, "status") === "edited" ? stringValue(message.updatedAt) : null,
+    editCount: requiredCoreString(message, "status") === "edited" ? 1 : 0,
+    forwardedFrom: adaptCoreForwardedFrom(objectValue(message.forwardedFrom)),
+    deletedForEveryone: {
+      deleted: requiredCoreString(message, "status") === "deleted_for_everyone",
+      deletedAt,
+      deletedByPrincipalId: null,
+      reason: null,
+    },
+    threadRootEnvelopeId: stringValue(message.rootEnvelopeId),
+    alsoSentToRoom: false,
+    threadSummary: adaptCoreThreadSummary(objectValue(message.threadSummary)),
+    receiptSummary: {
+      total: numberValue(receipt.total) ?? 0,
+      pending: Math.max(0, (numberValue(receipt.total) ?? 0) - (numberValue(receipt.delivered) ?? 0)),
+      delivered: numberValue(receipt.delivered) ?? 0,
+      read: numberValue(receipt.read) ?? 0,
+    },
+    reactions: jsonObjectArrayValue(message.reactions).map((reaction) => ({
+      reaction: requiredCoreString(reaction, "reaction"),
+      count: numberValue(reaction.count) ?? 0,
+      reactedByMe: Boolean(reaction.reactedByMe),
+    })),
+    pin: adaptCorePin(objectValue(message.pin)),
+  };
+}
+
+function adaptCoreForwardedFrom(forwardedFrom: JsonObject | null): JsonObject | null {
+  if (!forwardedFrom) return null;
+  return {
+    forwardedByPrincipalId: stringValue(forwardedFrom.forwardedByPrincipalId),
+  };
+}
+
+function adaptCoreThreadSummary(summary: JsonObject | null): JsonObject | null {
+  if (!summary) return null;
+  return {
+    replyCount: numberValue(summary.replyCount) ?? 0,
+    lastReplyEnvelopeId: stringValue(summary.lastReplyEnvelopeId),
+    lastReplySenderPrincipalId: stringValue(summary.lastReplySenderPrincipalId),
+    lastReplyAt: stringValue(summary.lastReplyAt),
+  };
+}
+
+function adaptCorePin(pin: JsonObject | null): JsonObject {
+  return {
+    pinned: Boolean(pin?.pinned),
+    pinnedAt: pin ? stringValue(pin.pinnedAt) : null,
+    pinnedByPrincipalId: pin ? stringValue(pin.pinnedByPrincipalId) : null,
+  };
+}
+
+function adaptCoreReceipt(receipt: JsonObject, roomId: string | undefined): JsonObject {
+  const envelopeId = requiredCoreString(receipt, "envelopeId");
+  const recipientDeviceId = stringValue(receipt.recipientDeviceId) ?? "";
+  const readAt = stringValue(receipt.readAt);
+  const deliveredAt = stringValue(receipt.deliveredAt);
+  return {
+    receiptId: `rcp_core_${envelopeId}_${recipientDeviceId}`,
+    envelopeId,
+    roomId: roomId ?? "",
+    recipientDeviceId,
+    status: readAt ? "read" : deliveredAt ? "stored" : "pending",
+    storedAt: deliveredAt,
+    readAt,
+  };
+}
+
+function adaptCoreThreadState(state: JsonObject, roomId: string | undefined): JsonObject {
+  const subscriptionState = stringValue(state.subscriptionState);
+  return {
+    rootEnvelopeId: requiredCoreString(state, "rootEnvelopeId"),
+    roomId: roomId ?? stringValue(state.roomId) ?? "",
+    following: subscriptionState !== "muted",
+    muted: subscriptionState === "muted",
+    lastReadSequence: numberValue(state.lastReadReplySequence) ?? 0,
+    updatedAt: requiredCoreString(state, "updatedAt"),
+  };
+}
+
+async function adaptCoreAttachment(env: Env, attachment: JsonObject): Promise<JsonObject> {
+  const ownerPrincipalId = requiredCoreString(attachment, "ownerPrincipalId");
+  const profiles = await loadVoyagerPrincipalProfiles(env, [ownerPrincipalId]);
+  const owner = profiles.get(ownerPrincipalId);
+  if (!owner) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core attachment references a principal Voyager cannot resolve.",
+      { principalId: ownerPrincipalId },
+    );
+  }
+  const metadata = objectValue(attachment.metadata) ?? {};
+  const variants = jsonObjectArrayValue(attachment.variants);
+  const original = coreAttachmentVariant(attachment, variants, "original", metadata)!;
+  const preview = coreAttachmentVariant(attachment, variants, "preview", metadata);
+  const thumbnail = coreAttachmentVariant(attachment, variants, "thumbnail", metadata);
+  const publicVariants: JsonObject = { original };
+  if (preview) publicVariants.preview = preview;
+  if (thumbnail) publicVariants.thumbnail = thumbnail;
+  return {
+    attachmentId: requiredCoreString(attachment, "attachmentId"),
+    roomId: requiredCoreString(attachment, "roomId"),
+    uploaderAccountId: owner.accountId,
+    uploaderPrincipalId: ownerPrincipalId,
+    uploaderDeviceId: stringValue(attachment.ownerDeviceId) ?? "",
+    state: voyagerAttachmentState(requiredCoreString(attachment, "state")),
+    expectedBytes: numberValue(attachment.byteSize) ?? 0,
+    ciphertextBytes: original.bytes,
+    ciphertextSha256: stringValue(metadata.ciphertextSha256),
+    contentCategory: stringValue(metadata.contentCategory) ?? stringValue(attachment.contentType),
+    retentionClass: stringValue(metadata.retentionClass) ?? "default",
+    originalFilename: stringValue(metadata.originalFilename),
+    declaredMimeType: stringValue(metadata.declaredMimeType) ?? stringValue(attachment.contentType),
+    mediaKind: voyagerAttachmentMediaKind(stringValue(metadata.mediaKind), stringValue(attachment.contentType)),
+    width: numberValue(metadata.width),
+    height: numberValue(metadata.height),
+    durationMs: numberValue(metadata.durationMs),
+    variants: publicVariants,
+    variantManifest: metadata.variantManifest ?? null,
+    expiresAt: stringValue(metadata.expiresAt) ?? CORE_MESSAGE_COMPAT_EXPIRES_AT,
+    createdAt: requiredCoreString(attachment, "allocatedAt"),
+    uploadedAt: stringValue(attachment.uploadedAt),
+    referencedAt: stringValue(metadata.referencedAt),
+    deletedAt: stringValue(attachment.deletedAt),
+  };
+}
+
+function coreAttachmentVariant(
+  attachment: JsonObject,
+  variants: JsonObject[],
+  kind: "original" | "preview" | "thumbnail",
+  metadata: JsonObject,
+): JsonObject | null {
+  const matched = variants.find((variant) => stringValue(variant.kind) === kind);
+  if (!matched && kind !== "original") return null;
+  const width = kind === "thumbnail" ? null : numberValue(metadata.width);
+  const height = kind === "thumbnail" ? null : numberValue(metadata.height);
+  return {
+    variant: kind,
+    bytes: matched ? numberValue(matched.byteSize) : null,
+    width,
+    height,
+    downloadPath: `/v1/attachments/${requiredCoreString(attachment, "attachmentId")}/blob?variant=${kind}`,
+  };
+}
+
+function voyagerAttachmentState(state: string): string {
+  if (state === "completed") return "uploaded";
+  return state;
+}
+
+function voyagerAttachmentMediaKind(value: string | null, contentType: string | null): string {
+  if (value === "image" || value === "video" || value === "audio" || value === "file" || value === "unknown") {
+    return value;
+  }
+  if (contentType?.startsWith("image/")) return "image";
+  if (contentType?.startsWith("video/")) return "video";
+  if (contentType?.startsWith("audio/")) return "audio";
+  return "file";
+}
+
+function voyagerProtocolType(value: string | null): string {
+  if (
+    value === "opaque-test" ||
+    value === "mls_application" ||
+    value === "mls_commit" ||
+    value === "mls_proposal" ||
+    value === "mls_welcome"
+  ) {
+    return value;
+  }
+  return "opaque-test";
 }
 
 function roomCutoverPage(query: URLSearchParams | undefined): { limit: number; offset: number } {
@@ -886,23 +1265,66 @@ async function publicCoreJson(
   const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
   const payload = await parseJsonObjectResponse(response);
   if (!response.ok) {
-    if (options.preserveClientErrors && response.status >= 400 && response.status < 500) {
-      const upstreamError = coreError(payload);
-      throw new HttpError(
-        response.status,
-        upstreamError.code,
-        upstreamError.message,
-        { upstreamStatus: response.status },
-      );
-    }
-    throw new HttpError(
-      502,
-      "messaging_core_proxy_failed",
-      "Messaging Core proxy request failed.",
-      { upstreamStatus: response.status, upstreamError: stringValue(payload.error) },
-    );
+    throwCorePayloadError(response.status, payload, options);
   }
   return { status: response.status, payload };
+}
+
+async function publicCoreRaw(
+  config: BridgeConfig,
+  token: string,
+  method: PublicCoreMethod,
+  path: string,
+  upstreamRequest?: Request,
+  options: { preserveClientErrors?: boolean } = {},
+): Promise<{ response: Response }> {
+  const headers = new Headers({ authorization: `Bearer ${token}` });
+  const init: RequestInit = {
+    method,
+    headers,
+    signal: AbortSignal.timeout(config.fetchTimeoutMs),
+  };
+  if (upstreamRequest) {
+    const contentType = upstreamRequest.headers.get("content-type");
+    if (contentType) headers.set("content-type", contentType);
+    init.body = upstreamRequest.body;
+  }
+  const request = new Request(messagingCoreUrl(config, path), init);
+  const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
+  if (!response.ok && method !== "GET") {
+    await throwCoreResponseError(response, options);
+  }
+  return { response };
+}
+
+async function throwCoreResponseError(
+  response: Response,
+  options: { preserveClientErrors?: boolean } = {},
+): Promise<never> {
+  const payload = await parseJsonObjectResponse(response);
+  throwCorePayloadError(response.status, payload, options);
+}
+
+function throwCorePayloadError(
+  status: number,
+  payload: JsonObject,
+  options: { preserveClientErrors?: boolean } = {},
+): never {
+  if (options.preserveClientErrors && status >= 400 && status < 500) {
+    const upstreamError = coreError(payload);
+    throw new HttpError(
+      status,
+      upstreamError.code,
+      upstreamError.message,
+      { upstreamStatus: status },
+    );
+  }
+  throw new HttpError(
+    502,
+    "messaging_core_proxy_failed",
+    "Messaging Core proxy request failed.",
+    { upstreamStatus: status, upstreamError: stringValue(payload.error) },
+  );
 }
 
 function coreError(payload: JsonObject): { code: string; message: string } {
@@ -972,6 +1394,7 @@ async function buildVoyagerReadonlySnapshot(
             sender_principal_id,
             sender_device_id,
             idempotency_key,
+            protocol_type,
             ciphertext,
             server_sequence,
             server_received_at,
@@ -1218,6 +1641,7 @@ function importMessage(message: VoyagerMessageBackfillRow): JsonObject {
     idempotencyKey: message.idempotency_key,
     rootEnvelopeId: null,
     messageKind: "message",
+    protocolType: message.protocol_type,
     bodyCiphertext: deletedAt ? null : message.ciphertext,
     attachmentCount: 0,
     status: deletedAt ? "deleted_for_everyone" : message.edited_at ? "edited" : "active",
@@ -1283,6 +1707,14 @@ function arrayField(value: JsonObject, key: string): JsonObject[] {
   return field as JsonObject[];
 }
 
+function jsonObjectArrayValue(value: unknown): JsonObject[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const object = objectValue(item);
+    return object ? [object] : [];
+  });
+}
+
 function requiredCoreString(value: JsonObject, key: string): string {
   const result = stringValue(value[key]);
   if (result === null) {
@@ -1302,6 +1734,32 @@ function stringValue(value: unknown): string | null {
 
 function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function voyagerAttachmentMetadata(body: Record<string, unknown>): JsonObject {
+  const metadata: JsonObject = {};
+  copyMetadataField(body, metadata, "ciphertextSha256");
+  copyMetadataField(body, metadata, "contentCategory");
+  copyMetadataField(body, metadata, "retentionClass");
+  copyMetadataField(body, metadata, "originalFilename");
+  copyMetadataField(body, metadata, "declaredMimeType");
+  copyMetadataField(body, metadata, "mediaKind");
+  copyMetadataField(body, metadata, "width");
+  copyMetadataField(body, metadata, "height");
+  copyMetadataField(body, metadata, "durationMs");
+  copyMetadataField(body, metadata, "variantManifest");
+  copyMetadataField(body, metadata, "expiresAt");
+  return metadata;
+}
+
+function copyMetadataField(
+  source: Record<string, unknown>,
+  target: JsonObject,
+  key: string,
+): void {
+  if (source[key] !== undefined) {
+    target[key] = source[key];
+  }
 }
 
 function messagingCoreUrl(config: BridgeConfig, path: string): string {
