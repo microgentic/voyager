@@ -31,6 +31,7 @@ import {
   updateAccountPolicy
 } from "./db";
 import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
+import { createMessagingCoreSessionPayload } from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
@@ -129,16 +130,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       requestId,
       result: "success"
     });
-    return json(
-      {
-        ok: true,
-        account: publicAccount(result.account),
-        principal: publicPrincipal(result.principal),
-        device: publicDevice(result.device),
-        sessionToken: result.sessionToken
-      },
-      { status: 201 }
-    );
+    return json(await authResultPayload(env, result), { status: 201 });
   }
 
   if (url.pathname === "/v1/invitations/accept") {
@@ -157,16 +149,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       requestId,
       result: "success"
     });
-    return json(
-      {
-        ok: true,
-        account: publicAccount(result.account),
-        principal: publicPrincipal(result.principal),
-        device: publicDevice(result.device),
-        sessionToken: result.sessionToken
-      },
-      { status: 201 }
-    );
+    return json(await authResultPayload(env, result), { status: 201 });
   }
 
   if (url.pathname === "/v1/auth/password/login") {
@@ -192,31 +175,22 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       result: "success"
     });
     const auditMs = durationSince(auditStartedAt);
-    return json(
-      {
-        ok: true,
-        account: publicAccount(result.account),
-        principal: publicPrincipal(result.principal),
-        device: publicDevice(result.device),
-        sessionToken: result.sessionToken
-      },
-      {
-        headers: {
-          "server-timing": serverTimingHeader([
-            ["login", durationSince(routeStartedAt)],
-            ["rateLimit", rateLimitMs],
-            ["account", result.metrics.accountMs],
-            ["authenticator", result.metrics.authenticatorMs],
-            ["passwordVerify", result.metrics.passwordVerifyMs],
-            ["authenticatorTouch", result.metrics.authenticatorTouchMs],
-            ["principal", result.metrics.principalMs],
-            ["device", result.metrics.deviceMs],
-            ["session", result.metrics.sessionMs],
-            ["audit", auditMs]
-          ])
-        }
+    return json(await authResultPayload(env, result), {
+      headers: {
+        "server-timing": serverTimingHeader([
+          ["login", durationSince(routeStartedAt)],
+          ["rateLimit", rateLimitMs],
+          ["account", result.metrics.accountMs],
+          ["authenticator", result.metrics.authenticatorMs],
+          ["passwordVerify", result.metrics.passwordVerifyMs],
+          ["authenticatorTouch", result.metrics.authenticatorTouchMs],
+          ["principal", result.metrics.principalMs],
+          ["device", result.metrics.deviceMs],
+          ["session", result.metrics.sessionMs],
+          ["audit", auditMs]
+        ])
       }
-    );
+    });
   }
 
   if (url.pathname === "/v1/auth/password/reset/complete") {
@@ -236,16 +210,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       requestId,
       result: "success"
     });
-    return json(
-      {
-        ok: true,
-        account: publicAccount(result.account),
-        principal: publicPrincipal(result.principal),
-        device: publicDevice(result.device),
-        sessionToken: result.sessionToken
-      },
-      { status: 201 }
-    );
+    return json(await authResultPayload(env, result), { status: 201 });
   }
 
   if (url.pathname === "/v1/realtime") {
@@ -274,6 +239,19 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return json({ ok: true, realtimeToken: token.token, expiresAt: token.expiresAt });
   }
 
+  if (url.pathname === "/v1/messaging-core/session") {
+    requireMethod(request, "POST");
+    return json({
+      ok: true,
+      messagingCore: await createMessagingCoreSessionPayload(env, {
+        account: auth.account,
+        principal: auth.principal,
+        device: auth.device,
+        roles: auth.roles
+      })
+    });
+  }
+
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
   if (backendFirstResponse) {
     return backendFirstResponse;
@@ -283,7 +261,19 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "GET");
     const startedAt = performance.now();
     return json(
-      { ok: true, account: publicAccount(auth.account), principal: publicPrincipal(auth.principal), device: publicDevice(auth.device), roles: auth.roles },
+      {
+        ok: true,
+        account: publicAccount(auth.account),
+        principal: publicPrincipal(auth.principal),
+        device: publicDevice(auth.device),
+        roles: auth.roles,
+        messagingCore: await createMessagingCoreSessionPayload(env, {
+          account: auth.account,
+          principal: auth.principal,
+          device: auth.device,
+          roles: auth.roles
+        })
+      },
       { headers: readTimingHeaders("me", authTimingMs, startedAt) }
     );
   }
@@ -636,6 +626,31 @@ function publicSession(session: SessionRow) {
     lastUsedAt: session.last_used_at,
     revokedAt: session.revoked_at,
     riskState: session.risk_state
+  };
+}
+
+async function authResultPayload(
+  env: Env,
+  result: {
+    account: AuthContext["account"];
+    principal: AuthContext["principal"];
+    device: AuthContext["device"];
+    sessionToken: string;
+  },
+) {
+  const roles = await getActiveAdminRoles(env, result.account.account_id);
+  return {
+    ok: true,
+    account: publicAccount(result.account),
+    principal: publicPrincipal(result.principal),
+    device: publicDevice(result.device),
+    sessionToken: result.sessionToken,
+    messagingCore: await createMessagingCoreSessionPayload(env, {
+      account: result.account,
+      principal: result.principal,
+      device: result.device,
+      roles,
+    }),
   };
 }
 

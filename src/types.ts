@@ -18,6 +18,19 @@ export interface Env {
   CALLS_REALTIME_MEDIA_ENABLED?: string;
   CALL_RING_TIMEOUT_MS?: string;
   CALL_PARTICIPANT_LIVENESS_TIMEOUT_MS?: string;
+  VOYAGER_MESSAGING_CORE_MODE?: string;
+  VOYAGER_MESSAGING_CORE_TIMEOUT_MS?: string;
+  MESSAGING_CORE_BASE_URL?: string;
+  MESSAGING_CORE_TENANT_ID?: string;
+  MESSAGING_CORE_APP_ID?: string;
+  MESSAGING_CORE_TOKEN_SECRET?: string;
+  MESSAGING_CORE_TOKEN_ISSUER?: string;
+  MESSAGING_CORE_TOKEN_AUDIENCE?: string;
+  MESSAGING_CORE_TOKEN_TTL_SECONDS?: string;
+  MESSAGING_CORE_INTERNAL_SERVICE_SECRET?: string;
+  MESSAGING_CORE_INTERNAL_SERVICE_ISSUER?: string;
+  MESSAGING_CORE_INTERNAL_SERVICE_AUDIENCE?: string;
+  MESSAGING_CORE_INTERNAL_SERVICE_TTL_SECONDS?: string;
   // Comma-separated extra origins allowed by CORS (e.g. the production web host).
   // Dev/localhost and Tauri app origins are always allowed.
   CORS_ALLOWED_ORIGINS?: string;

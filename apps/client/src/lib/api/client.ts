@@ -11,13 +11,13 @@ import type {
 	BootstrapStatus,
 	Call,
 	CallRealtimeCloseTracksInput,
-		CallRealtimeConfig,
-		CallRealtimeRenegotiateInput,
-		CallRealtimeSessionInput,
-		CallRealtimeTracksInput,
-		CallUsageReport,
-		CallUsageReportInput,
-		CreateCallInput,
+	CallRealtimeConfig,
+	CallRealtimeRenegotiateInput,
+	CallRealtimeSessionInput,
+	CallRealtimeTracksInput,
+	CallUsageReport,
+	CallUsageReportInput,
+	CreateCallInput,
 	DeleteMessagesResult,
 	DeliveryReceipt,
 	Device,
@@ -26,6 +26,7 @@ import type {
 	ForwardMessageInput,
 	KeyPackage,
 	MeResult,
+	MessagingCoreSession,
 	Membership,
 	MessageEnvelope,
 	OwnershipTransfer,
@@ -199,6 +200,14 @@ export class VoyagerClient {
 	async createRealtimeToken(): Promise<RealtimeTokenResult> {
 		const res = await this.request<RealtimeTokenResult & { ok: true }>('POST', '/v1/realtime/token');
 		return { realtimeToken: res.realtimeToken, expiresAt: res.expiresAt };
+	}
+
+	async createMessagingCoreSession(): Promise<MessagingCoreSession> {
+		const res = await this.request<{ messagingCore: MessagingCoreSession }>(
+			'POST',
+			'/v1/messaging-core/session'
+		);
+		return res.messagingCore;
 	}
 
 	changePassword(currentPassword: string, newPassword: string): Promise<{ ok: true }> {
