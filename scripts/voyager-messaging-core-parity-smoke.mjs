@@ -89,6 +89,7 @@ let proxiedRoomCutoverRead = false;
 let proxiedRoomCutoverWrites = false;
 let proxiedMessages = false;
 let proxiedMessageWrite = false;
+let proxiedThreadInbox = false;
 let proxiedAttachmentWrite = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
 if (!firstRoomId) {
@@ -175,6 +176,11 @@ if (firstRoomId) {
       throw new Error("normal Voyager message list cutover did not include the sent Core message.");
     }
     proxiedMessageWrite = true;
+    proxiedThreadInbox = await runThreadInboxCutoverSmoke({
+      token: voyagerToken,
+      encodedRoomId,
+      rootEnvelopeId: normalSend.message.envelopeId,
+    });
 
     proxiedAttachmentWrite = await runAttachmentMessageWriteCutoverSmoke({
       token: voyagerToken,
@@ -199,8 +205,43 @@ console.log(JSON.stringify({
   proxiedRoomCutoverWrites,
   proxiedMessages,
   proxiedMessageWrite,
+  proxiedThreadInbox,
   proxiedAttachmentWrite,
 }, null, 2));
+
+async function runThreadInboxCutoverSmoke({ token, encodedRoomId, rootEnvelopeId }) {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const encodedRootEnvelopeId = encodeURIComponent(rootEnvelopeId);
+  const reply = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, {
+    method: "POST",
+    token,
+    json: {
+      idempotencyKey: `messaging-core-thread-cutover-${suffix}`,
+      protocolType: "opaque-test",
+      ciphertext: `messaging-core-thread-reply-${suffix}`,
+    },
+  });
+  assertEqual(reply.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, "normal Voyager thread reply cutover route");
+  assertEqual(reply.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager thread reply cutover upstream status");
+  assertEqual(reply.message?.threadRootEnvelopeId, rootEnvelopeId, "normal Voyager thread reply root");
+
+  const inbox = await voyagerApi("/v1/threads?limit=20", { token });
+  assertEqual(inbox.messagingCoreCutover?.route, "/threads?limit=20", "normal Voyager thread inbox cutover route");
+  assertEqual(inbox.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager thread inbox cutover upstream status");
+  assertArray(inbox.items, "normal Voyager thread inbox cutover items");
+  const item = inbox.items.find((candidate) => candidate.root?.envelopeId === rootEnvelopeId);
+  if (!item) {
+    throw new Error(`normal Voyager thread inbox did not include the cutover thread root: ${JSON.stringify(inbox.items)}`);
+  }
+  assertEqual(item.room?.roomId, decodeURIComponent(encodedRoomId), "normal Voyager thread inbox room id");
+  assertEqual(item.root?.envelopeId, rootEnvelopeId, "normal Voyager thread inbox root id");
+  assertEqual(typeof item.following, "boolean", "normal Voyager thread inbox following flag");
+  assertEqual(typeof item.muted, "boolean", "normal Voyager thread inbox muted flag");
+  assertEqual(typeof item.unreadCount, "number", "normal Voyager thread inbox unread count");
+  assertEqual(typeof item.lastReadSequence, "number", "normal Voyager thread inbox last-read sequence");
+  assertEqual(typeof item.updatedAt, "string", "normal Voyager thread inbox updatedAt");
+  return true;
+}
 
 async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoomId }) {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;

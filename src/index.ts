@@ -1163,7 +1163,7 @@ async function messagingCoreMessageCutoverRoute(
       path: string;
       query?: URLSearchParams;
       body?: Record<string, unknown>;
-      responseKind: "messages" | "message" | "deleted" | "receipt" | "thread" | "threadState" | "attachment" | "ok";
+      responseKind: "messages" | "message" | "deleted" | "receipt" | "thread" | "threads" | "threadState" | "attachment" | "ok";
       roomId?: string;
     }
   | {
@@ -1173,6 +1173,16 @@ async function messagingCoreMessageCutoverRoute(
     }
   | null
 > {
+  if (request.method === "GET" && url.pathname === "/v1/threads") {
+    return {
+      kind: "json",
+      method: "GET",
+      path: "/threads",
+      query: proxyQuery(url, ["limit", "cursor"]),
+      responseKind: "threads",
+    };
+  }
+
   const allocateAttachmentMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/attachments$/, url.pathname);
   if (request.method === "POST" && allocateAttachmentMatch) {
     return {
