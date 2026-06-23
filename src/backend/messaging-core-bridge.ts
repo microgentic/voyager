@@ -28,7 +28,7 @@ const DEFAULT_INTERNAL_AUDIENCE = "messaging-core-internal";
 const DEFAULT_TOKEN_ISSUER = "voyager";
 const DEFAULT_TOKEN_TTL_SECONDS = 15 * 60;
 const DEFAULT_INTERNAL_TOKEN_TTL_SECONDS = 5 * 60;
-const DEFAULT_FETCH_TIMEOUT_MS = 3_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 const CORE_MESSAGE_COMPAT_EXPIRES_AT = "9999-12-31T23:59:59.000Z";
 const encoder = new TextEncoder();
 
@@ -1255,7 +1255,7 @@ async function publicCoreJson(
     init.body = JSON.stringify(body);
   }
   const request = new Request(messagingCoreUrl(config, path), init);
-  const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
+  const response = await fetchPublicCore(config, request);
   const payload = await parseJsonObjectResponse(response);
   if (!response.ok) {
     throwCorePayloadError(response.status, payload, options);
@@ -1283,11 +1283,27 @@ async function publicCoreRaw(
     init.body = upstreamRequest.body;
   }
   const request = new Request(messagingCoreUrl(config, path), init);
-  const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
+  const response = await fetchPublicCore(config, request);
   if (!response.ok && method !== "GET") {
     await throwCoreResponseError(response, options);
   }
   return { response };
+}
+
+async function fetchPublicCore(config: BridgeConfig, request: Request): Promise<Response> {
+  try {
+    return config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new HttpError(
+        504,
+        "messaging_core_proxy_timeout",
+        "Messaging Core proxy request timed out.",
+        { timeoutMs: config.fetchTimeoutMs, retryable: true },
+      );
+    }
+    throw error;
+  }
 }
 
 async function throwCoreResponseError(
@@ -1605,11 +1621,15 @@ function bridgeStatusReason(config: BridgeConfig): string | null {
 }
 
 function publicIdentitySyncFailureReason(error: unknown): string {
+  if (isTimeoutError(error)) return "internal_service_timeout";
   if (error instanceof Error) {
-    if (error.name === "TimeoutError" || error.name === "AbortError") return "internal_service_timeout";
     if (/^internal_service_http_\d{3}$/.test(error.message)) return error.message;
   }
   return "internal_service_unavailable";
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {

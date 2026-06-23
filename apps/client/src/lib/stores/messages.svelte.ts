@@ -56,6 +56,8 @@ export interface ChatMessage {
 
 const READ_KEY = 'voyager.read';
 const PAGE = 200;
+const READ_ACK_CONCURRENCY = 4;
+const READ_ACK_PAUSE_MS = 50;
 
 interface DownloadedAttachmentVariant {
 	variant: AttachmentVariantName;
@@ -64,6 +66,16 @@ interface DownloadedAttachmentVariant {
 	bytes: number;
 	width: number | null;
 	height: number | null;
+}
+
+interface SendRetryOptions {
+	idempotencyKey?: string | null;
+	clientCreatedAt?: string | null;
+}
+
+interface PendingReadAck {
+	roomId: string;
+	envelopeId: string;
 }
 
 function loadReadState(): Record<string, number> {
@@ -94,6 +106,10 @@ function mediaKindFromMime(mimeType: string): AttachmentMediaKind {
 	if (mimeType.startsWith('audio/')) return 'audio';
 	if (mimeType) return 'file';
 	return 'unknown';
+}
+
+function wait(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function attachmentVariantRef(variant: AttachmentVariant, mimeType?: string): AttachmentRefVariant {
@@ -145,6 +161,8 @@ class MessagesStore {
 
 	private cursor: Record<string, number> = {};
 	private acked = new Set<string>();
+	private pendingReadAcks = new Map<string, PendingReadAck>();
+	private readAckFlush: Promise<void> | null = null;
 
 	constructor() {
 		auth.onSignOut(() => this.reset());
@@ -157,6 +175,8 @@ class MessagesStore {
 		this.lastReadSeq = {};
 		this.cursor = {};
 		this.acked.clear();
+		this.pendingReadAcks.clear();
+		this.readAckFlush = null;
 		this.loadedRooms.clear();
 		this.loadingRoom = null;
 	}
@@ -359,11 +379,11 @@ class MessagesStore {
 		}
 	}
 
-	async sendText(roomId: string, content: MessageContent): Promise<void> {
+	async sendText(roomId: string, content: MessageContent, options: SendRetryOptions = {}): Promise<void> {
 		const principalId = auth.principal?.principalId;
 		if (!principalId) throw new Error('Not authenticated');
-		const key = idempotencyKey();
-		const createdAt = new Date().toISOString();
+		const key = options.idempotencyKey ?? idempotencyKey();
+		const createdAt = options.clientCreatedAt ?? new Date().toISOString();
 		const optimistic: ChatMessage = {
 			key: localId('msg'),
 			envelopeId: null,
@@ -650,12 +670,13 @@ class MessagesStore {
 		roomId: string,
 		rootEnvelopeId: string,
 		content: MessageContent,
-		alsoSendToRoom: boolean
+		alsoSendToRoom: boolean,
+		options: SendRetryOptions = {}
 	): Promise<void> {
 		const principalId = auth.principal?.principalId;
 		if (!principalId) throw new Error('Not authenticated');
-		const key = idempotencyKey();
-		const createdAt = new Date().toISOString();
+		const key = options.idempotencyKey ?? idempotencyKey();
+		const createdAt = options.clientCreatedAt ?? new Date().toISOString();
 		const optimistic: ChatMessage = {
 			key: localId('msg'),
 			envelopeId: null,
@@ -783,6 +804,10 @@ class MessagesStore {
 
 	async retry(message: ChatMessage): Promise<void> {
 		if (message.delivery !== 'failed') return;
+		const retryOptions: SendRetryOptions = {
+			idempotencyKey: message.idempotencyKey,
+			clientCreatedAt: message.clientCreatedAt ?? message.content.createdAt
+		};
 		// Drop the failed placeholder and resend its content through the right path.
 		if (message.threadRootEnvelopeId) {
 			const root = message.threadRootEnvelopeId;
@@ -804,7 +829,8 @@ class MessagesStore {
 					body: message.content.body,
 					attachments: message.content.attachments
 				},
-				message.alsoSentToRoom
+				message.alsoSentToRoom,
+				retryOptions
 			);
 			return;
 		}
@@ -817,7 +843,7 @@ class MessagesStore {
 			body: message.content.body,
 			replyToMessageId: message.content.replyToMessageId,
 			attachments: message.content.attachments
-		});
+		}, retryOptions);
 	}
 
 	async deleteForMe(roomId: string, envelopeIds: string[]): Promise<string[]> {
@@ -913,6 +939,30 @@ class MessagesStore {
 		this.byRoom = { ...this.byRoom, [roomId]: copy };
 	}
 
+	private queueReadAck(roomId: string, envelopeId: string): void {
+		this.pendingReadAcks.set(envelopeId, { roomId, envelopeId });
+		if (!this.readAckFlush) this.readAckFlush = this.flushReadAcks();
+	}
+
+	private async flushReadAcks(): Promise<void> {
+		try {
+			while (this.pendingReadAcks.size) {
+				const batch = Array.from(this.pendingReadAcks.values()).slice(0, READ_ACK_CONCURRENCY);
+				for (const item of batch) this.pendingReadAcks.delete(item.envelopeId);
+				const results = await Promise.allSettled(
+					batch.map((item) => api.ackMessage(item.roomId, item.envelopeId, 'read'))
+				);
+				results.forEach((result, index) => {
+					if (result.status === 'rejected') this.acked.delete(batch[index].envelopeId);
+				});
+				if (this.pendingReadAcks.size) await wait(READ_ACK_PAUSE_MS);
+			}
+		} finally {
+			this.readAckFlush = null;
+			if (this.pendingReadAcks.size) this.readAckFlush = this.flushReadAcks();
+		}
+	}
+
 	/** Mark a room as read locally and acknowledge others' messages to the server. */
 	markRead(roomId: string): void {
 		const max = this.maxSeq(roomId);
@@ -927,8 +977,7 @@ class MessagesStore {
 		for (const m of this.list(roomId)) {
 			if (m.mine || !m.envelopeId || this.acked.has(m.envelopeId)) continue;
 			this.acked.add(m.envelopeId);
-			const envelopeId = m.envelopeId;
-			api.ackMessage(roomId, envelopeId, 'read').catch(() => this.acked.delete(envelopeId));
+			this.queueReadAck(roomId, m.envelopeId);
 		}
 	}
 
@@ -937,8 +986,7 @@ class MessagesStore {
 		for (const m of this.threadList(rootEnvelopeId)) {
 			if (m.mine || !m.envelopeId || this.acked.has(m.envelopeId)) continue;
 			this.acked.add(m.envelopeId);
-			const envelopeId = m.envelopeId;
-			api.ackMessage(roomId, envelopeId, 'read').catch(() => this.acked.delete(envelopeId));
+			this.queueReadAck(roomId, m.envelopeId);
 		}
 	}
 
