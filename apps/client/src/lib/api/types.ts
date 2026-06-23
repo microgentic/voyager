@@ -77,6 +77,47 @@ export interface Session {
 	riskState: string;
 }
 
+export type MessagingCoreMode = 'off' | 'shadow' | 'proxy';
+
+export interface MessagingCoreSession {
+	enabled: boolean;
+	mode: MessagingCoreMode;
+	configured: boolean;
+	tenantId: string;
+	app: string;
+	baseUrl: string | null;
+	tokenConfig: {
+		audience: string;
+		issuer: string;
+		hmacConfigured: boolean;
+		ttlSeconds: number;
+	};
+	internalService: {
+		audience: string;
+		issuer: string;
+		configured: boolean;
+		ttlSeconds: number;
+	};
+	identitySync:
+		| {
+				available: boolean;
+				required: boolean;
+		  }
+		| {
+				attempted: boolean;
+				ok: boolean;
+				reason: string | null;
+				accountSynced: boolean;
+				principalSynced: boolean;
+				deviceSynced: boolean;
+		  };
+	reason: string | null;
+	token?: string;
+	tokenType?: 'Bearer';
+	expiresAt?: string;
+	scopes?: string[];
+}
+
 export type RoomType = 'direct' | 'group' | 'channel';
 export type RoomStatus = 'active' | 'archived' | 'deleted';
 export type MemberRole = 'owner' | 'admin' | 'member' | 'agent';
@@ -439,6 +480,7 @@ export interface AuthResult {
 	principal: Principal;
 	device: Device;
 	sessionToken: string;
+	messagingCore?: MessagingCoreSession;
 }
 
 export interface MeResult {
@@ -446,6 +488,7 @@ export interface MeResult {
 	principal: Principal;
 	device: Device;
 	roles: string[];
+	messagingCore?: MessagingCoreSession;
 }
 
 export interface BootstrapResult extends MeResult {

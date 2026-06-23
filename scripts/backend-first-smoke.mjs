@@ -15,6 +15,7 @@ import {
   assertEndpointCatalog,
   assertKeyPackageResponse,
   assertKeyPackagesResponse,
+  assertMessagingCoreSessionResponse,
   assertMessageResponse,
   assertMessagesResponse,
   assertPaginatedAgentRequestsResponse,
@@ -34,6 +35,7 @@ import {
   assertThreadsResponse
 } from "./api-contract-assertions.mjs";
 import { assertRouteInventory } from "./route-inventory-check.mjs";
+import { createHmac } from "node:crypto";
 
 assertEndpointCatalog();
 assertRouteInventory();
@@ -43,6 +45,8 @@ const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
 const realtimeMockEnabled = process.env.CLOUDFLARE_REALTIME_MOCK === "1";
+const messagingCoreBridgeEnabled = process.env.SMOKE_MESSAGING_CORE_BRIDGE === "1";
+const messagingCoreSmokeSecret = process.env.SMOKE_MESSAGING_CORE_TOKEN_SECRET ?? "local-messaging-core-token-secret";
 
 async function api(path, options = {}) {
   const { response, payload } = await apiRaw(path, options);
@@ -187,6 +191,66 @@ function mockSessionDescription(label) {
   };
 }
 
+function assertMessagingCoreBridgeSession(session, identity, context) {
+  if (!session || typeof session !== "object") {
+    throw new Error(`${context} missing messagingCore session`);
+  }
+  if (!session.configured || !session.token) {
+    throw new Error(`${context} expected configured messagingCore token bridge: ${JSON.stringify(session)}`);
+  }
+  assertJwtSignature(session.token, messagingCoreSmokeSecret, context);
+  const claims = decodeJwtPayload(session.token);
+  const expected = {
+    aud: "messaging-core",
+    iss: "voyager",
+    sub: identity.account.accountId,
+    subjectId: identity.account.accountId,
+    app: "voyager",
+    tenantId: "tenant_voyager_default",
+    accountId: identity.account.accountId,
+    principalId: identity.principal.principalId,
+    deviceId: identity.device.deviceId,
+    principalType: identity.principal.principalType
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (claims[key] !== value) {
+      throw new Error(`${context} messagingCore token ${key} expected ${value} but got ${claims[key]}`);
+    }
+  }
+  if (
+    !Array.isArray(claims.scopes) ||
+    !claims.scopes.includes("messaging:read") ||
+    !claims.scopes.includes("messaging:rooms:write") ||
+    !claims.scopes.includes("messaging:messages:write") ||
+    !claims.scopes.includes("messaging:key-packages:write")
+  ) {
+    throw new Error(`${context} messagingCore token scopes are missing messaging scopes`);
+  }
+  if (!Number.isInteger(claims.exp) || !Number.isInteger(claims.iat) || claims.exp <= claims.iat) {
+    throw new Error(`${context} messagingCore token expiry claims are invalid`);
+  }
+}
+
+function assertJwtSignature(token, secret, context) {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error(`${context} messagingCore token is not a compact JWT`);
+  const signingInput = `${parts[0]}.${parts[1]}`;
+  const expected = createHmac("sha256", secret).update(signingInput).digest("base64url");
+  if (parts[2] !== expected) {
+    throw new Error(`${context} messagingCore token signature is invalid`);
+  }
+}
+
+function decodeJwtPayload(token) {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error("messagingCore token is not a compact JWT");
+  return JSON.parse(Buffer.from(base64UrlToBase64(parts[1]), "base64").toString("utf8"));
+}
+
+function base64UrlToBase64(value) {
+  return value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+}
+
 async function expectRealtimeConnectFailure(token, timeoutMs = 5_000) {
   if (typeof WebSocket === "undefined") {
     throw new Error("Node WebSocket global is required for realtime smoke coverage");
@@ -228,6 +292,15 @@ const owner = await api("/v1/admin/bootstrap", {
 });
 assertAuthResult(owner, "POST /v1/admin/bootstrap");
 const ownerHeaders = auth(owner.sessionToken);
+if (messagingCoreBridgeEnabled) {
+  assertMessagingCoreBridgeSession(owner.messagingCore, owner, "POST /v1/admin/bootstrap");
+  const bridgeSession = await api("/v1/messaging-core/session", {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertMessagingCoreSessionResponse(bridgeSession, "POST /v1/messaging-core/session");
+  assertMessagingCoreBridgeSession(bridgeSession.messagingCore, owner, "POST /v1/messaging-core/session");
+}
 
 const invite = await api("/v1/admin/invitations", {
   method: "POST",

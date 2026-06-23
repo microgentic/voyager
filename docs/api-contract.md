@@ -126,12 +126,13 @@ Bootstrap response:
 
 | Method | Path | Response |
 | --- | --- | --- |
-| `POST` | `/v1/auth/password/login` | `{ account, principal, device, sessionToken }` |
+| `POST` | `/v1/auth/password/login` | `{ account, principal, device, sessionToken, messagingCore? }` |
 | `POST` | `/v1/auth/logout` | `{ ok: true }` |
 | `POST` | `/v1/auth/password/change` | `{ ok: true }` |
-| `POST` | `/v1/auth/password/reset/complete` | `{ account, principal, device, sessionToken }` |
-| `GET` | `/v1/me` | `{ account, principal, device, roles }` |
+| `POST` | `/v1/auth/password/reset/complete` | `{ account, principal, device, sessionToken, messagingCore? }` |
+| `GET` | `/v1/me` | `{ account, principal, device, roles, messagingCore? }` |
 | `POST` | `/v1/realtime/token` | `{ realtimeToken, expiresAt }` |
+| `POST` | `/v1/messaging-core/session` | `{ messagingCore }` |
 | `GET` | `/v1/sessions` | `{ sessions }` |
 | `DELETE` | `/v1/sessions/{sessionId}` | `{ ok: true }` |
 | `GET` | `/v1/devices` | `{ devices }` |
@@ -139,6 +140,18 @@ Bootstrap response:
 | `POST` | `/v1/devices/{deviceId}/revoke` | `{ ok: true }` |
 
 Login accepts `email`, `password`, and an optional `device` object. Existing-device login may send `device.deviceId`. Today that is a development contract; future device private-key proof can extend this without changing the route.
+
+`messagingCore` is an additive cutover-prep payload. It is disabled unless `VOYAGER_MESSAGING_CORE_MODE` is set to `shadow` or `proxy` and the Messaging Core base URL plus token secret are configured. When enabled, Voyager can mint a scoped Messaging Core bearer token for the compatibility tenant `tenant_voyager_default`; if internal service credentials are configured, Voyager also attempts to upsert the account, principal, and device through Messaging Core internal routes. This PR does not switch Voyager traffic to Messaging Core by itself.
+
+For a configured Voyager API and Messaging Core service, the optional parity smoke verifies that Voyager can mint a Messaging Core token and that Core accepts it for `/me` and `/bootstrap`:
+
+```bash
+VOYAGER_BASE_URL="https://voyager-api.example" \
+VOYAGER_SESSION_TOKEN="vgr_..." \
+npm run smoke:messaging-core-parity
+```
+
+Alternatively set `VOYAGER_LOGIN_EMAIL` and `VOYAGER_LOGIN_PASSWORD` instead of `VOYAGER_SESSION_TOKEN`.
 
 ### Principals And Key Packages
 

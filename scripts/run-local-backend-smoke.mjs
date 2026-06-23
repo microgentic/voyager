@@ -166,7 +166,10 @@ const workerVars = [
   "AUDIO_CALLS_ENABLED:1",
   "VIDEO_CALLS_ENABLED:1",
   "SCREEN_SHARE_ENABLED:1",
-  "CALLS_REALTIME_MEDIA_ENABLED:1"
+  "CALLS_REALTIME_MEDIA_ENABLED:1",
+  "VOYAGER_MESSAGING_CORE_MODE:shadow",
+  "MESSAGING_CORE_BASE_URL:https://messaging-core.example.test",
+  "MESSAGING_CORE_TOKEN_SECRET:local-messaging-core-token-secret"
 ];
 if (process.env.CLOUDFLARE_REALTIME_MOCK === "1") {
   workerVars.push("CLOUDFLARE_REALTIME_MOCK:1");
@@ -201,7 +204,9 @@ try {
     env: {
       ...process.env,
       BASE_URL: baseUrl,
-      BOOTSTRAP_TOKEN: bootstrapToken
+      BOOTSTRAP_TOKEN: bootstrapToken,
+      SMOKE_MESSAGING_CORE_BRIDGE: "1",
+      SMOKE_MESSAGING_CORE_TOKEN_SECRET: "local-messaging-core-token-secret"
     },
     commandTimeoutMs: smokeTimeoutMs
   });

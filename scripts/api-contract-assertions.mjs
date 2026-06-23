@@ -57,6 +57,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
+  { method: "POST", path: "/v1/messaging-core/session", stability: "future-sensitive" },
   { method: "POST", path: "/v1/rooms/{roomId}/invitations", stability: "stable/current" },
   { method: "GET", path: "/v1/room-invitations", stability: "stable/current" },
   { method: "POST", path: "/v1/room-invitations/{roomInvitationId}/accept", stability: "stable/current" },
@@ -119,6 +120,12 @@ export function assertAuthResult(payload, context) {
   assertPrincipal(value.principal, `${context}.principal`);
   assertDevice(value.device, `${context}.device`);
   string(value.sessionToken, `${context}.sessionToken`);
+  if ("messagingCore" in value) assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
+}
+
+export function assertMessagingCoreSessionResponse(payload, context) {
+  const value = success(payload, context);
+  assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
 }
 
 export function assertBootstrapResponse(payload, context) {
@@ -381,6 +388,45 @@ export function assertRealtimeTokenResponse(payload, context) {
   const value = success(payload, context);
   string(value.realtimeToken, `${context}.realtimeToken`);
   string(value.expiresAt, `${context}.expiresAt`);
+}
+
+export function assertMessagingCoreSession(value, context) {
+  const session = object(value, context);
+  boolean(session.enabled, `${context}.enabled`);
+  enumValue(session.mode, ["off", "shadow", "proxy"], `${context}.mode`);
+  boolean(session.configured, `${context}.configured`);
+  string(session.tenantId, `${context}.tenantId`);
+  string(session.app, `${context}.app`);
+  nullableString(session.baseUrl, `${context}.baseUrl`);
+  const tokenConfig = object(session.tokenConfig, `${context}.tokenConfig`);
+  string(tokenConfig.audience, `${context}.tokenConfig.audience`);
+  string(tokenConfig.issuer, `${context}.tokenConfig.issuer`);
+  boolean(tokenConfig.hmacConfigured, `${context}.tokenConfig.hmacConfigured`);
+  number(tokenConfig.ttlSeconds, `${context}.tokenConfig.ttlSeconds`);
+  const internalService = object(session.internalService, `${context}.internalService`);
+  string(internalService.audience, `${context}.internalService.audience`);
+  string(internalService.issuer, `${context}.internalService.issuer`);
+  boolean(internalService.configured, `${context}.internalService.configured`);
+  number(internalService.ttlSeconds, `${context}.internalService.ttlSeconds`);
+  const identitySync = object(session.identitySync, `${context}.identitySync`);
+  if ("available" in identitySync) {
+    boolean(identitySync.available, `${context}.identitySync.available`);
+    boolean(identitySync.required, `${context}.identitySync.required`);
+  } else {
+    boolean(identitySync.attempted, `${context}.identitySync.attempted`);
+    boolean(identitySync.ok, `${context}.identitySync.ok`);
+    nullableString(identitySync.reason, `${context}.identitySync.reason`);
+    boolean(identitySync.accountSynced, `${context}.identitySync.accountSynced`);
+    boolean(identitySync.principalSynced, `${context}.identitySync.principalSynced`);
+    boolean(identitySync.deviceSynced, `${context}.identitySync.deviceSynced`);
+  }
+  nullableString(session.reason, `${context}.reason`);
+  if (session.configured) {
+    literal(session.tokenType, "Bearer", `${context}.tokenType`);
+    string(session.token, `${context}.token`);
+    string(session.expiresAt, `${context}.expiresAt`);
+    array(session.scopes, `${context}.scopes`).forEach((scope, index) => string(scope, `${context}.scopes[${index}]`));
+  }
 }
 
 export function assertAdminUsageResponse(payload, context) {
