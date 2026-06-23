@@ -134,6 +134,9 @@ Bootstrap response:
 | `POST` | `/v1/realtime/token` | `{ realtimeToken, expiresAt }` |
 | `POST` | `/v1/messaging-core/session` | `{ messagingCore }` |
 | `GET` | `/v1/messaging-core/bootstrap` | `{ messagingCore, bootstrap, proxied }` |
+| `GET` | `/v1/messaging-core/rooms` | `{ messagingCore, rooms, proxied }` |
+| `GET` | `/v1/messaging-core/rooms/{roomId}` | `{ messagingCore, room, members, proxied }` |
+| `GET` | `/v1/messaging-core/rooms/{roomId}/messages` | `{ messagingCore, messages, proxied }` |
 | `GET` | `/v1/sessions` | `{ sessions }` |
 | `DELETE` | `/v1/sessions/{sessionId}` | `{ ok: true }` |
 | `GET` | `/v1/devices` | `{ devices }` |
@@ -144,9 +147,9 @@ Login accepts `email`, `password`, and an optional `device` object. Existing-dev
 
 `messagingCore` is an additive cutover-prep payload. It is disabled unless `VOYAGER_MESSAGING_CORE_MODE` is set to `shadow` or `proxy` and the Messaging Core base URL plus token secret are configured. When enabled, Voyager can mint a scoped Messaging Core bearer token for the compatibility tenant `tenant_voyager_default`; if internal service credentials are configured, Voyager also attempts to bootstrap the Core tenant/policy and then upsert the account, principal, and device through Messaging Core internal routes. Voyager prefers the optional `MESSAGING_CORE_SERVICE` service binding for internal sync and public Core proxy calls, and falls back to the public base URL when that binding is not present. Sync status includes `tenantSynced`, `accountSynced`, `principalSynced`, `deviceSynced`, and a sanitized `failedStep`/`reason` pair when a step fails.
 
-`GET /v1/messaging-core/bootstrap` is a read-only proxy pilot for cutover validation. It authenticates the caller with the Voyager session, mints/syncs a Messaging Core session, calls Core `/bootstrap`, and returns Core's product-neutral bootstrap payload plus proxy metadata. It does not switch Voyager room, message, attachment, realtime, or call traffic to Core.
+The `GET /v1/messaging-core/*` proxy routes are read-only cutover validation routes. They authenticate the caller with the Voyager session, mint/sync a Messaging Core session, call the matching product-neutral Core route, and return Core's payload plus proxy metadata. Current proxy coverage includes Core `/bootstrap`, `/rooms`, `/rooms/{roomId}`, and `/rooms/{roomId}/messages`. These routes do not switch normal Voyager room, message, attachment, realtime, or call traffic to Core.
 
-For a configured Voyager API and Messaging Core service, the optional parity smoke verifies that Voyager can mint a Messaging Core token, that Core accepts it for `/me` and `/bootstrap`, and that the Voyager read-only bootstrap proxy matches the direct Core bootstrap identity:
+For a configured Voyager API and Messaging Core service, the optional parity smoke verifies that Voyager can mint a Messaging Core token, that Core accepts it for `/me`, `/bootstrap`, `/rooms`, and related read paths, and that the Voyager read-only proxies match direct Core identity and room/message reads:
 
 ```bash
 VOYAGER_BASE_URL="https://voyager-api.example" \

@@ -66,6 +66,46 @@ assertEqual(voyagerProxyBootstrap.bootstrap.account?.accountId, coreBootstrap.bo
 assertEqual(voyagerProxyBootstrap.bootstrap.principal?.principalId, coreBootstrap.bootstrap.principal?.principalId, "Voyager proxy bootstrap principalId");
 assertEqual(voyagerProxyBootstrap.bootstrap.device?.deviceId, coreBootstrap.bootstrap.device?.deviceId, "Voyager proxy bootstrap deviceId");
 
+const coreRooms = await coreApi(coreBaseUrl, "/rooms", messagingCore.token);
+assertArray(coreRooms.rooms, "Core /rooms rooms");
+const voyagerProxyRooms = await voyagerApi("/v1/messaging-core/rooms", {
+  token: voyagerToken,
+});
+assertArray(voyagerProxyRooms.rooms, "Voyager proxy rooms");
+assertEqual(voyagerProxyRooms.proxied?.route, "/rooms", "Voyager proxy rooms route");
+assertEqual(voyagerProxyRooms.proxied?.upstreamStatus, 200, "Voyager proxy rooms upstream status");
+assertEqual(voyagerProxyRooms.rooms.length, coreRooms.rooms.length, "Voyager proxy rooms length");
+
+let proxiedRoomDetail = false;
+let proxiedMessages = false;
+const firstRoomId = coreRooms.rooms[0]?.roomId;
+if (firstRoomId) {
+  const encodedRoomId = encodeURIComponent(firstRoomId);
+  const coreRoom = await coreApi(coreBaseUrl, `/rooms/${encodedRoomId}`, messagingCore.token);
+  const voyagerProxyRoom = await voyagerApi(`/v1/messaging-core/rooms/${encodedRoomId}`, {
+    token: voyagerToken,
+  });
+  assertEqual(voyagerProxyRoom.proxied?.route, `/rooms/${encodedRoomId}`, "Voyager proxy room route");
+  assertEqual(voyagerProxyRoom.proxied?.upstreamStatus, 200, "Voyager proxy room upstream status");
+  assertEqual(voyagerProxyRoom.room?.roomId, coreRoom.room?.roomId, "Voyager proxy room roomId");
+  assertEqual(voyagerProxyRoom.members?.length, coreRoom.members?.length, "Voyager proxy room members length");
+  proxiedRoomDetail = true;
+
+  const coreMessages = await coreApi(coreBaseUrl, `/rooms/${encodedRoomId}/messages?limit=20`, messagingCore.token);
+  const voyagerProxyMessages = await voyagerApi(`/v1/messaging-core/rooms/${encodedRoomId}/messages?limit=20`, {
+    token: voyagerToken,
+  });
+  assertEqual(voyagerProxyMessages.proxied?.route, `/rooms/${encodedRoomId}/messages?limit=20`, "Voyager proxy messages route");
+  assertEqual(voyagerProxyMessages.proxied?.upstreamStatus, 200, "Voyager proxy messages upstream status");
+  assertArray(coreMessages.messages, "Core room messages");
+  assertArray(voyagerProxyMessages.messages, "Voyager proxy room messages");
+  assertEqual(voyagerProxyMessages.messages.length, coreMessages.messages.length, "Voyager proxy messages length");
+  if (coreMessages.messages[0]) {
+    assertEqual(voyagerProxyMessages.messages[0]?.envelopeId, coreMessages.messages[0].envelopeId, "Voyager proxy first message envelopeId");
+  }
+  proxiedMessages = true;
+}
+
 console.log(JSON.stringify({
   ok: true,
   voyagerBaseUrl,
@@ -75,6 +115,9 @@ console.log(JSON.stringify({
   principalId: claims.principalId,
   deviceId: claims.deviceId,
   proxiedBootstrap: true,
+  proxiedRooms: true,
+  proxiedRoomDetail,
+  proxiedMessages,
 }, null, 2));
 
 async function voyagerApi(path, options = {}) {
@@ -128,6 +171,12 @@ function trimTrailingSlash(value) {
 function assertObject(value, context) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${context} must be an object`);
+  }
+}
+
+function assertArray(value, context) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${context} must be an array`);
   }
 }
 

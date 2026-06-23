@@ -27,6 +27,9 @@ import type {
 	KeyPackage,
 	MeResult,
 	MessagingCoreBootstrapProxyResult,
+	MessagingCoreMessagesProxyResult,
+	MessagingCoreRoomProxyResult,
+	MessagingCoreRoomsProxyResult,
 	MessagingCoreSession,
 	Membership,
 	MessageEnvelope,
@@ -219,6 +222,47 @@ export class VoyagerClient {
 		return {
 			messagingCore: res.messagingCore,
 			bootstrap: res.bootstrap,
+			proxied: res.proxied
+		};
+	}
+
+	async messagingCoreRooms(): Promise<MessagingCoreRoomsProxyResult> {
+		const res = await this.request<MessagingCoreRoomsProxyResult & { ok: true }>(
+			'GET',
+			'/v1/messaging-core/rooms'
+		);
+		return {
+			messagingCore: res.messagingCore,
+			rooms: res.rooms,
+			proxied: res.proxied
+		};
+	}
+
+	async messagingCoreRoom(roomId: string): Promise<MessagingCoreRoomProxyResult> {
+		const res = await this.request<MessagingCoreRoomProxyResult & { ok: true }>(
+			'GET',
+			`/v1/messaging-core/rooms/${encodeURIComponent(roomId)}`
+		);
+		return {
+			messagingCore: res.messagingCore,
+			room: res.room,
+			members: res.members,
+			proxied: res.proxied
+		};
+	}
+
+	async messagingCoreMessages(
+		roomId: string,
+		opts: { after?: number; limit?: number } = {}
+	): Promise<MessagingCoreMessagesProxyResult> {
+		const res = await this.request<MessagingCoreMessagesProxyResult & { ok: true }>(
+			'GET',
+			`/v1/messaging-core/rooms/${encodeURIComponent(roomId)}/messages`,
+			{ query: opts }
+		);
+		return {
+			messagingCore: res.messagingCore,
+			messages: res.messages,
 			proxied: res.proxied
 		};
 	}
