@@ -222,11 +222,13 @@ if (firstRoomId) {
         throw new Error(`normal Voyager repeated message cutover ${index} did not return a message: ${JSON.stringify(repeatedSend)}`);
       }
     }
-    const normalList = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages?limit=20`, {
+    const listAfter = Math.max(0, Number(normalSend.message.serverSequence ?? 0) - 1);
+    const normalListRoute = `/rooms/${encodedRoomId}/messages?after=${listAfter}&limit=20`;
+    const normalList = await voyagerApi(`/v1${normalListRoute}`, {
       token: voyagerToken,
     });
-    assertCoreCutoverDiagnostics(normalList.messagingCoreCutover, `/rooms/${encodedRoomId}/messages?limit=20`, "normal Voyager message list cutover diagnostics");
-    assertEqual(normalList.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages?limit=20`, "normal Voyager message list cutover route");
+    assertCoreCutoverDiagnostics(normalList.messagingCoreCutover, normalListRoute, "normal Voyager message list cutover diagnostics");
+    assertEqual(normalList.messagingCoreCutover?.route, normalListRoute, "normal Voyager message list cutover route");
     assertEqual(normalList.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager message list cutover upstream status");
     assertArray(normalList.messages, "normal Voyager message list cutover messages");
     if (!normalList.messages.some((message) => message.envelopeId === normalSend.message.envelopeId)) {
@@ -393,7 +395,10 @@ async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoo
     throw new Error(`normal Voyager attachment message did not return a message: ${JSON.stringify(sent)}`);
   }
 
-  const listed = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages?limit=20`, { token });
+  const listAfter = Math.max(0, Number(sent.message.serverSequence ?? 0) - 1);
+  const listRoute = `/rooms/${encodedRoomId}/messages?after=${listAfter}&limit=20`;
+  const listed = await voyagerApi(`/v1${listRoute}`, { token });
+  assertCoreCutoverDiagnostics(listed.messagingCoreCutover, listRoute, "normal Voyager attachment message list cutover diagnostics");
   if (!listed.messages.some((message) => message.envelopeId === sent.message.envelopeId)) {
     throw new Error("normal Voyager attachment message list did not include the sent Core message.");
   }
