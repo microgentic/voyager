@@ -94,6 +94,25 @@ function assertServerTiming(header, metrics, context) {
   }
 }
 
+function assertMessagingCoreFallbackDiagnostics(payload, fallbackReason, context) {
+  const diagnostics = payload?.messagingCoreCutover;
+  if (!diagnostics || typeof diagnostics !== "object" || Array.isArray(diagnostics)) {
+    throw new Error(`${context} missing messagingCoreCutover fallback diagnostics`);
+  }
+  if (
+    diagnostics.source !== "voyager_legacy" ||
+    diagnostics.fallbackReason !== fallbackReason ||
+    diagnostics.route !== null ||
+    diagnostics.upstreamStatus !== null
+  ) {
+    throw new Error(`${context} used unexpected Messaging Core fallback diagnostics: ${JSON.stringify(diagnostics)}`);
+  }
+  const flags = diagnostics.flags;
+  if (!flags || typeof flags !== "object" || Array.isArray(flags) || typeof flags.allCoreMessaging !== "boolean") {
+    throw new Error(`${context} missing Messaging Core fallback flag snapshot`);
+  }
+}
+
 function realtimeUrl() {
   return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/realtime`;
 }
@@ -679,11 +698,31 @@ const ownerKeyPackage = await api(`/v1/devices/${owner.device.deviceId}/key-pack
   }
 });
 assertKeyPackageResponse(ownerKeyPackage, "POST /v1/devices/{deviceId}/key-packages");
+assertMessagingCoreFallbackDiagnostics(ownerKeyPackage, "identity_cutover_not_implemented", "POST /v1/devices/{deviceId}/key-packages");
+
+const listedPrincipals = await api("/v1/principals", { headers: userHeaders });
+assertMessagingCoreFallbackDiagnostics(listedPrincipals, "identity_cutover_not_implemented", "GET /v1/principals");
+if (!Array.isArray(listedPrincipals.principals) || !listedPrincipals.principals.some((principal) => principal.principalId === owner.principal.principalId)) {
+  throw new Error("principal listing did not include the owner principal");
+}
+
+const listedPrincipalDevices = await api(`/v1/principals/${owner.principal.principalId}/devices`, {
+  headers: userHeaders
+});
+assertMessagingCoreFallbackDiagnostics(
+  listedPrincipalDevices,
+  "identity_cutover_not_implemented",
+  "GET /v1/principals/{principalId}/devices"
+);
+if (!Array.isArray(listedPrincipalDevices.devices) || !listedPrincipalDevices.devices.some((device) => device.deviceId === owner.device.deviceId)) {
+  throw new Error("principal device listing did not include the owner device");
+}
 
 const listedKeys = await api(`/v1/principals/${owner.principal.principalId}/key-packages`, {
   headers: userHeaders
 });
 assertKeyPackagesResponse(listedKeys, "GET /v1/principals/{principalId}/key-packages");
+assertMessagingCoreFallbackDiagnostics(listedKeys, "identity_cutover_not_implemented", "GET /v1/principals/{principalId}/key-packages");
 if (listedKeys.keyPackages.length < 1) throw new Error("key package listing failed");
 
 const claimedKeyPackage = await api(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
@@ -691,6 +730,7 @@ const claimedKeyPackage = await api(`/v1/key-packages/${ownerKeyPackage.keyPacka
   headers: userHeaders
 });
 assertKeyPackageResponse(claimedKeyPackage, "POST /v1/key-packages/{keyPackageId}/claim");
+assertMessagingCoreFallbackDiagnostics(claimedKeyPackage, "identity_cutover_not_implemented", "POST /v1/key-packages/{keyPackageId}/claim");
 
 await expectFailure(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
   method: "POST",
@@ -712,12 +752,14 @@ const ownKeyPackages = await api(`/v1/devices/${owner.device.deviceId}/key-packa
   headers: ownerHeaders
 });
 assertPaginatedKeyPackagesResponse(ownKeyPackages, "GET /v1/devices/{deviceId}/key-packages");
+assertMessagingCoreFallbackDiagnostics(ownKeyPackages, "identity_cutover_not_implemented", "GET /v1/devices/{deviceId}/key-packages");
 if (ownKeyPackages.keyPackages.length !== 1 || ownKeyPackages.nextCursor === null) throw new Error("own key package pagination failed");
 
-await api(`/v1/key-packages/${ownerRevokedKeyPackage.keyPackage.keyPackageId}/revoke`, {
+const revokedKeyPackage = await api(`/v1/key-packages/${ownerRevokedKeyPackage.keyPackage.keyPackageId}/revoke`, {
   method: "POST",
   headers: ownerHeaders
 });
+assertMessagingCoreFallbackDiagnostics(revokedKeyPackage, "identity_cutover_not_implemented", "POST /v1/key-packages/{keyPackageId}/revoke");
 
 const direct = await api("/v1/rooms/direct", {
   method: "POST",
@@ -760,6 +802,7 @@ assertServerTiming(
 );
 const createdCall = createdCallResult.payload;
 assertCallResponse(createdCall, "POST /v1/rooms/{roomId}/calls");
+assertMessagingCoreFallbackDiagnostics(createdCall, "call_cutover_not_implemented", "POST /v1/rooms/{roomId}/calls");
 if (createdCall.call.status !== "ringing" || createdCall.call.callType !== "audio") {
   throw new Error("created audio call did not enter ringing state");
 }
@@ -790,12 +833,14 @@ if (
 
 const listedCalls = await api(`/v1/rooms/${direct.room.roomId}/calls`, { headers: userHeaders });
 assertCallsResponse(listedCalls, "GET /v1/rooms/{roomId}/calls");
+assertMessagingCoreFallbackDiagnostics(listedCalls, "call_cutover_not_implemented", "GET /v1/rooms/{roomId}/calls");
 if (!listedCalls.calls.some((call) => call.callId === createdCall.call.callId)) {
   throw new Error("room call list did not include the created call");
 }
 
 const fetchedCall = await api(`/v1/calls/${createdCall.call.callId}`, { headers: userHeaders });
 assertCallResponse(fetchedCall, "GET /v1/calls/{callId}");
+assertMessagingCoreFallbackDiagnostics(fetchedCall, "call_cutover_not_implemented", "GET /v1/calls/{callId}");
 if (fetchedCall.call.callId !== createdCall.call.callId) {
   throw new Error("call fetch returned the wrong call");
 }
@@ -2456,6 +2501,7 @@ for (const metric of ["bootstrap;dur=", "auth;dur=", "read;dur=", "rooms;dur=", 
 }
 const bootstrap = bootstrapResult.payload.bootstrap;
 assertBootstrapResponse(bootstrapResult.payload, "GET /v1/app/bootstrap");
+assertMessagingCoreFallbackDiagnostics(bootstrapResult.payload, "identity_cutover_not_implemented", "GET /v1/app/bootstrap");
 if (bootstrap.account.accountId !== login.account.accountId) throw new Error("bootstrap identity did not match logged-in account");
 if (!Array.isArray(bootstrap.roles) || !Array.isArray(bootstrap.rooms) || !Array.isArray(bootstrap.pendingMessages)) {
   throw new Error("bootstrap response shape is invalid");
@@ -2516,6 +2562,11 @@ if (!hiddenBootstrapResult.response.ok) {
   throw new Error(`GET bootstrap after delete-for-me failed ${hiddenBootstrapResult.response.status}: ${JSON.stringify(hiddenBootstrapResult.payload)}`);
 }
 assertBootstrapResponse(hiddenBootstrapResult.payload, "GET /v1/app/bootstrap after delete-for-me");
+assertMessagingCoreFallbackDiagnostics(
+  hiddenBootstrapResult.payload,
+  "identity_cutover_not_implemented",
+  "GET /v1/app/bootstrap after delete-for-me"
+);
 if (hiddenBootstrapResult.payload.bootstrap.pendingMessages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
   throw new Error("delete-for-me message remained visible to deleting account bootstrap");
 }

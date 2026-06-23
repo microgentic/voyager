@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { endpointStabilityCatalog } from "./api-contract-assertions.mjs";
+import { assertMessagingCoreBoundaryCatalog, endpointStabilityCatalog } from "./api-contract-assertions.mjs";
 
 const SOURCE_FILES = [
   "src/index.ts",
@@ -22,6 +22,7 @@ export function implementedRouteInventory() {
 }
 
 export function assertRouteInventory() {
+  assertMessagingCoreBoundaryCatalog();
   const implemented = implementedRouteInventory();
   const implementedKeys = new Set(implemented.map(ROUTE_KEY));
   const catalogKeys = new Set(endpointStabilityCatalog.map(ROUTE_KEY));

@@ -1479,6 +1479,9 @@ function messagingCoreLegacyFallbackReason(env: Env, request: Request, url: URL)
   if (url.pathname === "/v1/sync" && request.method === "GET") {
     return messagingCoreSyncCutoverEnabled(env) ? "sync_cutover_route_not_used" : "sync_cutover_disabled";
   }
+  if (isMessagingCoreIdentityFallbackPath(request, url)) {
+    return "identity_cutover_not_implemented";
+  }
   if (isMessagingCoreMessageFallbackPath(request, url)) {
     return messagingCoreMessageCutoverEnabled(env) ? "message_cutover_route_not_supported" : "message_cutover_disabled";
   }
@@ -1488,7 +1491,24 @@ function messagingCoreLegacyFallbackReason(env: Env, request: Request, url: URL)
   if (url.pathname === "/v1/realtime/token" && request.method === "POST") {
     return "voyager_realtime_token_route";
   }
+  if (isMessagingCoreCallFallbackPath(request, url)) {
+    return "call_cutover_not_implemented";
+  }
   return null;
+}
+
+function isMessagingCoreIdentityFallbackPath(request: Request, url: URL): boolean {
+  if (url.pathname === "/v1/app/bootstrap" && request.method === "GET") return true;
+  if (url.pathname === "/v1/principals" && request.method === "GET") return true;
+  if (/^\/v1\/principals\/[^/]+\/devices$/.test(url.pathname) && request.method === "GET") return true;
+  if (/^\/v1\/principals\/[^/]+\/key-packages$/.test(url.pathname) && request.method === "GET") return true;
+  if (/^\/v1\/devices\/[^/]+\/key-packages$/.test(url.pathname) && ["GET", "POST"].includes(request.method)) {
+    return true;
+  }
+  if (/^\/v1\/key-packages\/[^/]+\/(?:claim|revoke)$/.test(url.pathname) && request.method === "POST") {
+    return true;
+  }
+  return false;
 }
 
 function isMessagingCoreMessageFallbackPath(request: Request, url: URL): boolean {
@@ -1506,6 +1526,22 @@ function isMessagingCoreRoomFallbackPath(request: Request, url: URL): boolean {
   if (url.pathname === "/v1/room-invitations" && request.method === "GET") return true;
   if (/^\/v1\/room-invitations\/[^/]+\/(?:accept|decline)$/.test(url.pathname) && request.method === "POST") return true;
   if (/^\/v1\/rooms\/[^/]+(?:\/archive|\/members(?:\/[^/]+(?:\/role)?)?|\/leave|\/invitations|\/ownership-transfers(?:\/[^/]+\/accept)?)?$/.test(url.pathname)) {
+    return true;
+  }
+  return false;
+}
+
+function isMessagingCoreCallFallbackPath(request: Request, url: URL): boolean {
+  if (request.method === "GET" && /^\/v1\/rooms\/[^/]+\/calls$/.test(url.pathname)) return true;
+  if (request.method === "POST" && /^\/v1\/rooms\/[^/]+\/calls$/.test(url.pathname)) return true;
+  if (request.method === "GET" && /^\/v1\/calls\/[^/]+$/.test(url.pathname)) return true;
+  if (/^\/v1\/calls\/[^/]+\/(?:join|leave|decline|mute|unmute|usage-report)$/.test(url.pathname) && request.method === "POST") {
+    return true;
+  }
+  if (/^\/v1\/calls\/[^/]+\/participants\/me$/.test(url.pathname) && request.method === "PATCH") {
+    return true;
+  }
+  if (/^\/v1\/calls\/[^/]+\/realtime\/(?:session|tracks|renegotiate|tracks\/close)$/.test(url.pathname) && request.method === "POST") {
     return true;
   }
   return false;

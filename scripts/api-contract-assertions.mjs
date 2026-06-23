@@ -113,6 +113,105 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/admin/maintenance/cleanup", stability: "admin/dev-only" }
 ];
 
+const TEMPORARY_FALLBACK_BOUNDARY_ROUTES = [
+  ["GET", "/v1/app/bootstrap"],
+  ["GET", "/v1/principals"],
+  ["GET", "/v1/principals/{principalId}/devices"],
+  ["GET", "/v1/principals/{principalId}/key-packages"],
+  ["GET", "/v1/devices/{deviceId}/key-packages"],
+  ["POST", "/v1/devices/{deviceId}/key-packages"],
+  ["POST", "/v1/key-packages/{keyPackageId}/claim"],
+  ["POST", "/v1/key-packages/{keyPackageId}/revoke"],
+  ["GET", "/v1/rooms"],
+  ["GET", "/v1/threads"],
+  ["POST", "/v1/rooms/direct"],
+  ["POST", "/v1/rooms/groups"],
+  ["GET", "/v1/rooms/{roomId}"],
+  ["PATCH", "/v1/rooms/{roomId}"],
+  ["POST", "/v1/rooms/{roomId}/archive"],
+  ["POST", "/v1/rooms/{roomId}/members"],
+  ["PATCH", "/v1/rooms/{roomId}/members/{principalId}/role"],
+  ["DELETE", "/v1/rooms/{roomId}/members/{principalId}"],
+  ["POST", "/v1/rooms/{roomId}/leave"],
+  ["POST", "/v1/rooms/{roomId}/ownership-transfers"],
+  ["POST", "/v1/rooms/{roomId}/ownership-transfers/{transferId}/accept"],
+  ["GET", "/v1/rooms/{roomId}/messages"],
+  ["POST", "/v1/rooms/{roomId}/messages"],
+  ["POST", "/v1/rooms/{roomId}/messages/delete"],
+  ["PATCH", "/v1/rooms/{roomId}/messages/{envelopeId}"],
+  ["POST", "/v1/rooms/{roomId}/messages/{envelopeId}/forward"],
+  ["GET", "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread"],
+  ["POST", "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread"],
+  ["POST", "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/read"],
+  ["PATCH", "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/subscription"],
+  ["POST", "/v1/rooms/{roomId}/messages/{envelopeId}/reactions"],
+  ["DELETE", "/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}"],
+  ["POST", "/v1/rooms/{roomId}/messages/{envelopeId}/pin"],
+  ["DELETE", "/v1/rooms/{roomId}/messages/{envelopeId}/pin"],
+  ["POST", "/v1/rooms/{roomId}/messages/{envelopeId}/ack"],
+  ["GET", "/v1/sync"],
+  ["GET", "/v1/realtime"],
+  ["POST", "/v1/realtime/token"],
+  ["POST", "/v1/rooms/{roomId}/invitations"],
+  ["GET", "/v1/room-invitations"],
+  ["POST", "/v1/room-invitations/{roomInvitationId}/accept"],
+  ["POST", "/v1/room-invitations/{roomInvitationId}/decline"],
+  ["POST", "/v1/rooms/{roomId}/attachments"],
+  ["PUT", "/v1/attachments/{attachmentId}/blob"],
+  ["GET", "/v1/attachments/{attachmentId}/blob"],
+  ["POST", "/v1/attachments/{attachmentId}/complete"],
+  ["DELETE", "/v1/attachments/{attachmentId}"]
+];
+
+const TEMPORARY_CALL_FALLBACK_BOUNDARY_ROUTES = [
+  ["GET", "/v1/rooms/{roomId}/calls"],
+  ["POST", "/v1/rooms/{roomId}/calls"],
+  ["GET", "/v1/calls/{callId}"],
+  ["POST", "/v1/calls/{callId}/join"],
+  ["POST", "/v1/calls/{callId}/leave"],
+  ["POST", "/v1/calls/{callId}/decline"],
+  ["POST", "/v1/calls/{callId}/mute"],
+  ["POST", "/v1/calls/{callId}/unmute"],
+  ["PATCH", "/v1/calls/{callId}/participants/me"],
+  ["POST", "/v1/calls/{callId}/realtime/session"],
+  ["POST", "/v1/calls/{callId}/realtime/tracks"],
+  ["POST", "/v1/calls/{callId}/realtime/renegotiate"],
+  ["POST", "/v1/calls/{callId}/realtime/tracks/close"],
+  ["POST", "/v1/calls/{callId}/usage-report"]
+];
+
+const READY_FOR_REMOVAL_BOUNDARY_ROUTES = [
+  ["POST", "/v1/messaging-core/session"],
+  ["GET", "/v1/messaging-core/bootstrap"],
+  ["GET", "/v1/messaging-core/sync"],
+  ["POST", "/v1/messaging-core/realtime/token"],
+  ["GET", "/v1/messaging-core/rooms"],
+  ["GET", "/v1/messaging-core/rooms/{roomId}"],
+  ["GET", "/v1/messaging-core/rooms/{roomId}/messages"],
+  ["POST", "/v1/admin/messaging-core/backfill-readonly"]
+];
+
+export const messagingCoreBoundaryCatalog = [
+  ...TEMPORARY_FALLBACK_BOUNDARY_ROUTES.map(([method, path]) => ({
+    method,
+    path,
+    boundary: "temporary-fallback",
+    diagnostics: path === "/v1/realtime" ? "websocket-protocol" : "messagingCoreCutover",
+  })),
+  ...TEMPORARY_CALL_FALLBACK_BOUNDARY_ROUTES.map(([method, path]) => ({
+    method,
+    path,
+    boundary: "temporary-call-fallback",
+    diagnostics: "messagingCoreCutover",
+  })),
+  ...READY_FOR_REMOVAL_BOUNDARY_ROUTES.map(([method, path]) => ({
+    method,
+    path,
+    boundary: "ready-for-removal",
+    diagnostics: "proxy-metadata",
+  })),
+];
+
 export function assertApiErrorShape(payload, context) {
   const value = object(payload, context);
   literal(value.ok, false, `${context}.ok`);
@@ -561,6 +660,64 @@ export function assertEndpointCatalog() {
     if (seen.has(key)) fail(`duplicate endpoint catalog entry: ${key}`);
     seen.add(key);
   }
+}
+
+export function assertMessagingCoreBoundaryCatalog() {
+  const endpointKeys = new Set(endpointStabilityCatalog.map(endpointKey));
+  const boundaryKeys = new Set();
+  for (const entry of messagingCoreBoundaryCatalog) {
+    string(entry.method, "messagingCoreBoundary.method");
+    string(entry.path, "messagingCoreBoundary.path");
+    enumValue(
+      entry.boundary,
+      ["temporary-fallback", "temporary-call-fallback", "ready-for-removal"],
+      `messagingCoreBoundary(${entry.method} ${entry.path}).boundary`,
+    );
+    enumValue(
+      entry.diagnostics,
+      ["messagingCoreCutover", "proxy-metadata", "websocket-protocol"],
+      `messagingCoreBoundary(${entry.method} ${entry.path}).diagnostics`,
+    );
+    const key = endpointKey(entry);
+    if (boundaryKeys.has(key)) fail(`duplicate Messaging Core boundary entry: ${key}`);
+    boundaryKeys.add(key);
+    if (!endpointKeys.has(key)) {
+      fail(`Messaging Core boundary entry has no endpoint catalog route: ${key}`);
+    }
+  }
+
+  const missingBoundaries = endpointStabilityCatalog
+    .filter(isCoreOwnedVoyagerRoute)
+    .filter((endpoint) => !boundaryKeys.has(endpointKey(endpoint)))
+    .map(endpointKey);
+  if (missingBoundaries.length) {
+    fail(`Core-owned Voyager routes missing Messaging Core boundary classification: ${missingBoundaries.join(", ")}`);
+  }
+}
+
+function endpointKey(endpoint) {
+  return `${endpoint.method} ${endpoint.path}`;
+}
+
+function isCoreOwnedVoyagerRoute(endpoint) {
+  const path = endpoint.path;
+  return (
+    path === "/v1/sync" ||
+    path === "/v1/realtime" ||
+    path === "/v1/realtime/token" ||
+    path === "/v1/app/bootstrap" ||
+    path === "/v1/principals" ||
+    path.startsWith("/v1/principals/") ||
+    path.startsWith("/v1/devices/{deviceId}/key-packages") ||
+    path.startsWith("/v1/key-packages/") ||
+    path === "/v1/threads" ||
+    path.startsWith("/v1/rooms") ||
+    path.startsWith("/v1/room-invitations") ||
+    path.startsWith("/v1/attachments") ||
+    path.startsWith("/v1/calls") ||
+    path.startsWith("/v1/messaging-core") ||
+    path === "/v1/admin/messaging-core/backfill-readonly"
+  );
 }
 
 function assertAccount(value, context) {
