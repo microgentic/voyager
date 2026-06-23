@@ -4,7 +4,13 @@ const loginEmail = process.env.VOYAGER_LOGIN_EMAIL ?? "";
 const loginPassword = process.env.VOYAGER_LOGIN_PASSWORD ?? "";
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
 const exerciseRoomCutover = process.env.SMOKE_MESSAGING_CORE_ROOM_CUTOVER === "1";
+const exerciseRoomWriteCutover = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_CUTOVER === "1";
 const exerciseMessageWriteCutover = process.env.SMOKE_MESSAGING_CORE_WRITE_CUTOVER === "1";
+const roomWritePassword = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_PASSWORD ?? loginPassword ?? "";
+const roomWriteInviteeEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_INVITEE_EMAIL ?? "grace@example.com";
+const roomWriteTransferEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_TRANSFER_EMAIL ?? "alan@example.com";
+const roomWriteDeclineEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_DECLINE_EMAIL ?? "katherine@example.com";
+const roomWriteDirectEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_DIRECT_EMAIL ?? "dorothy@example.com";
 
 if (!voyagerBaseUrl) {
   throw new Error("Set VOYAGER_BASE_URL or BASE_URL to the Voyager API base URL.");
@@ -80,6 +86,7 @@ assertEqual(voyagerProxyRooms.rooms.length, coreRooms.rooms.length, "Voyager pro
 
 let proxiedRoomDetail = false;
 let proxiedRoomCutoverRead = false;
+let proxiedRoomCutoverWrites = false;
 let proxiedMessages = false;
 let proxiedMessageWrite = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
@@ -130,6 +137,13 @@ if (firstRoomId) {
     assertEqual(normalRoom.room?.roomId, firstRoomId, "normal Voyager room detail cutover roomId");
     assertArray(normalRoom.room?.members, "normal Voyager room detail cutover members");
     proxiedRoomCutoverRead = true;
+
+    if (exerciseRoomWriteCutover) {
+      proxiedRoomCutoverWrites = await runRoomWriteCutoverSmoke({
+        ownerToken: voyagerToken,
+        ownerPrincipalId: claims.principalId,
+      });
+    }
   }
 
   if (exerciseMessageWriteCutover) {
@@ -173,9 +187,221 @@ console.log(JSON.stringify({
   proxiedRooms: true,
   proxiedRoomDetail,
   proxiedRoomCutoverRead,
+  proxiedRoomCutoverWrites,
   proxiedMessages,
   proxiedMessageWrite,
 }, null, 2));
+
+async function runRoomWriteCutoverSmoke({ ownerToken, ownerPrincipalId }) {
+  if (!roomWritePassword) {
+    throw new Error("Set VOYAGER_LOGIN_PASSWORD or SMOKE_MESSAGING_CORE_ROOM_WRITE_PASSWORD for room write cutover smoke.");
+  }
+  const invitee = await loginSmokeAccount(roomWriteInviteeEmail, "Messaging Core room write invitee");
+  const transferTarget = await loginSmokeAccount(roomWriteTransferEmail, "Messaging Core room write transfer target");
+  const declineTarget = await loginSmokeAccount(roomWriteDeclineEmail, "Messaging Core room write decline target");
+  const directTarget = await loginSmokeAccount(roomWriteDirectEmail, "Messaging Core room write direct target");
+  const principals = await voyagerApi("/v1/principals", { token: ownerToken });
+  const agent = principals.principals?.find((principal) => principal.principalType === "agent");
+  if (!agent?.principalId) {
+    throw new Error("Room write cutover smoke requires an active agent principal from the seeded Voyager graph.");
+  }
+
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const directRoom = await voyagerApi("/v1/rooms/direct", {
+    method: "POST",
+    token: ownerToken,
+    json: {
+      principalIds: [directTarget.principal.principalId],
+      name: `Core cutover direct ${suffix}`,
+      description: "Direct room created through Messaging Core room write cutover",
+    },
+  });
+  assertEqual(directRoom.messagingCoreCutover?.route, "/rooms/direct", "normal Voyager direct room cutover route");
+  assertEqual(directRoom.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager direct room cutover upstream status");
+  assertEqual(directRoom.room?.type, "direct", "normal Voyager direct room cutover type");
+
+  const group = await voyagerApi("/v1/rooms/groups", {
+    method: "POST",
+    token: ownerToken,
+    json: {
+      name: `Core cutover group ${suffix}`,
+      description: "Group created through Messaging Core room write cutover",
+    },
+  });
+  assertEqual(group.messagingCoreCutover?.route, "/rooms/groups", "normal Voyager group create cutover route");
+  assertEqual(group.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager group create cutover upstream status");
+  assertEqual(group.room?.name, `Core cutover group ${suffix}`, "normal Voyager group create cutover name");
+  const roomId = group.room.roomId;
+  const encodedRoomId = encodeURIComponent(roomId);
+
+  const patched = await voyagerApi(`/v1/rooms/${encodedRoomId}`, {
+    method: "PATCH",
+    token: ownerToken,
+    json: {
+      name: `Core cutover group updated ${suffix}`,
+      description: "Updated through Messaging Core room write cutover",
+    },
+  });
+  assertEqual(patched.messagingCoreCutover?.route, `/rooms/${encodedRoomId}`, "normal Voyager room patch cutover route");
+  assertEqual(patched.room?.name, `Core cutover group updated ${suffix}`, "normal Voyager room patch cutover name");
+  assertEqual(patched.room?.description, "Updated through Messaging Core room write cutover", "normal Voyager room patch cutover description");
+
+  await expectFailure(`/v1/rooms/${encodedRoomId}/members`, {
+    method: "POST",
+    token: ownerToken,
+    json: { principalId: invitee.principal.principalId },
+  }, 400, "human_invitation_required");
+
+  const agentMember = await voyagerApi(`/v1/rooms/${encodedRoomId}/members`, {
+    method: "POST",
+    token: ownerToken,
+    json: { principalId: agent.principalId, role: "admin" },
+  });
+  assertEqual(agentMember.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/members`, "normal Voyager agent member cutover route");
+  assertEqual(agentMember.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager agent member cutover upstream status");
+  assertEqual(agentMember.member?.role, "agent", "normal Voyager agent member cutover role");
+
+  await expectFailure(`/v1/rooms/${encodedRoomId}/invitations`, {
+    method: "POST",
+    token: ownerToken,
+    json: { principalId: agent.principalId },
+  }, 400, "agent_invitation_not_supported");
+
+  const inviteeInvitation = await voyagerApi(`/v1/rooms/${encodedRoomId}/invitations`, {
+    method: "POST",
+    token: ownerToken,
+    json: { principalId: invitee.principal.principalId, role: "member", expiresInDays: 3 },
+  });
+  assertEqual(inviteeInvitation.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/invitations`, "normal Voyager invitation create cutover route");
+  assertEqual(inviteeInvitation.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager invitation create cutover upstream status");
+  assertEqual(inviteeInvitation.invitation?.status, "pending", "normal Voyager invitation create cutover status");
+
+  const inviteeInbox = await voyagerApi("/v1/room-invitations", { token: invitee.token });
+  assertEqual(inviteeInbox.messagingCoreCutover?.route, "/room-invitations", "normal Voyager invitation inbox cutover route");
+  if (!inviteeInbox.invitations.some((invitation) => invitation.roomInvitationId === inviteeInvitation.invitation.roomInvitationId)) {
+    throw new Error("normal Voyager room write cutover invitee inbox did not include pending invitation.");
+  }
+
+  const acceptedInvitation = await voyagerApi(`/v1/room-invitations/${encodeURIComponent(inviteeInvitation.invitation.roomInvitationId)}/accept`, {
+    method: "POST",
+    token: invitee.token,
+  });
+  assertEqual(acceptedInvitation.messagingCoreCutover?.route, `/room-invitations/${encodeURIComponent(inviteeInvitation.invitation.roomInvitationId)}/accept`, "normal Voyager invitation accept cutover route");
+  assertEqual(acceptedInvitation.invitation?.status, "accepted", "normal Voyager invitation accept cutover status");
+
+  const transferInvitation = await voyagerApi(`/v1/rooms/${encodedRoomId}/invitations`, {
+    method: "POST",
+    token: ownerToken,
+    json: { principalId: transferTarget.principal.principalId, role: "member", expiresInDays: 3 },
+  });
+  await voyagerApi(`/v1/room-invitations/${encodeURIComponent(transferInvitation.invitation.roomInvitationId)}/accept`, {
+    method: "POST",
+    token: transferTarget.token,
+  });
+
+  const declineInvitation = await voyagerApi(`/v1/rooms/${encodedRoomId}/invitations`, {
+    method: "POST",
+    token: ownerToken,
+    json: { principalId: declineTarget.principal.principalId, role: "member", expiresInDays: 3 },
+  });
+  const declined = await voyagerApi(`/v1/room-invitations/${encodeURIComponent(declineInvitation.invitation.roomInvitationId)}/decline`, {
+    method: "POST",
+    token: declineTarget.token,
+  });
+  assertEqual(declined.invitation?.status, "declined", "normal Voyager invitation decline cutover status");
+
+  const promoted = await voyagerApi(`/v1/rooms/${encodedRoomId}/members/${encodeURIComponent(invitee.principal.principalId)}/role`, {
+    method: "PATCH",
+    token: ownerToken,
+    json: { role: "admin" },
+  });
+  assertEqual(promoted.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/members/${encodeURIComponent(invitee.principal.principalId)}/role`, "normal Voyager member role cutover route");
+  assertEqual(promoted.member?.role, "admin", "normal Voyager member role cutover role");
+
+  await expectFailure(`/v1/rooms/${encodedRoomId}/members/${encodeURIComponent(invitee.principal.principalId)}/role`, {
+    method: "PATCH",
+    token: ownerToken,
+    json: { role: "agent" },
+  }, 400, "invalid_room_role");
+
+  await expectFailure(`/v1/rooms/${encodedRoomId}/ownership-transfers`, {
+    method: "POST",
+    token: ownerToken,
+    json: { toPrincipalId: agent.principalId },
+  }, 400, "invalid_owner_target");
+
+  const transfer = await voyagerApi(`/v1/rooms/${encodedRoomId}/ownership-transfers`, {
+    method: "POST",
+    token: ownerToken,
+    json: { toPrincipalId: transferTarget.principal.principalId },
+  });
+  assertEqual(transfer.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/ownership-transfers`, "normal Voyager ownership transfer cutover route");
+  assertEqual(transfer.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager ownership transfer cutover upstream status");
+  assertEqual(transfer.transfer?.status, "proposed", "normal Voyager ownership transfer proposed status");
+
+  const acceptedTransfer = await voyagerApi(`/v1/rooms/${encodedRoomId}/ownership-transfers/${encodeURIComponent(transfer.transfer.transferId)}/accept`, {
+    method: "POST",
+    token: transferTarget.token,
+  });
+  assertEqual(acceptedTransfer.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/ownership-transfers/${encodeURIComponent(transfer.transfer.transferId)}/accept`, "normal Voyager ownership transfer accept cutover route");
+  assertEqual(acceptedTransfer.transfer?.status, "completed", "normal Voyager ownership transfer completed status");
+
+  const removed = await voyagerApi(`/v1/rooms/${encodedRoomId}/members/${encodeURIComponent(invitee.principal.principalId)}`, {
+    method: "DELETE",
+    token: transferTarget.token,
+  });
+  assertEqual(removed.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/members/${encodeURIComponent(invitee.principal.principalId)}`, "normal Voyager member remove cutover route");
+  assertEqual(removed.ok, true, "normal Voyager member remove cutover ok");
+
+  const ownerLeft = await voyagerApi(`/v1/rooms/${encodedRoomId}/leave`, {
+    method: "POST",
+    token: ownerToken,
+  });
+  assertEqual(ownerLeft.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/leave`, "normal Voyager member leave cutover route");
+  assertEqual(ownerLeft.ok, true, "normal Voyager member leave cutover ok");
+
+  const afterLeave = await voyagerApi(`/v1/rooms/${encodedRoomId}`, { token: transferTarget.token });
+  const ownerMembership = afterLeave.room.members.find((member) => member.principalId === ownerPrincipalId);
+  if (!ownerMembership || ownerMembership.status !== "leaving") {
+    throw new Error(`normal Voyager member leave cutover did not expose leaving status: ${JSON.stringify(ownerMembership)}`);
+  }
+  const removedMembership = afterLeave.room.members.find((member) => member.principalId === invitee.principal.principalId);
+  if (!removedMembership || removedMembership.status !== "removed") {
+    throw new Error(`normal Voyager member remove cutover did not expose removed status: ${JSON.stringify(removedMembership)}`);
+  }
+
+  const archived = await voyagerApi(`/v1/rooms/${encodedRoomId}/archive`, {
+    method: "POST",
+    token: transferTarget.token,
+  });
+  assertEqual(archived.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/archive`, "normal Voyager archive cutover route");
+  assertEqual(archived.room?.status, "archived", "normal Voyager archive cutover status");
+  return true;
+}
+
+async function loginSmokeAccount(email, label) {
+  const result = await voyagerApi("/v1/auth/password/login", {
+    method: "POST",
+    auth: false,
+    json: {
+      email,
+      password: roomWritePassword,
+      device: {
+        platform: "smoke",
+        label,
+      },
+    },
+  });
+  if (!result.sessionToken || !result.principal?.principalId) {
+    throw new Error(`Room write cutover smoke login failed for ${email}: ${JSON.stringify(result)}`);
+  }
+  return {
+    token: result.sessionToken,
+    account: result.account,
+    principal: result.principal,
+    device: result.device,
+  };
+}
 
 async function voyagerApi(path, options = {}) {
   return requestJson(`${voyagerBaseUrl}${path}`, options);
@@ -186,6 +412,25 @@ async function coreApi(baseUrl, path, token) {
 }
 
 async function requestJson(url, options = {}) {
+  const { response, payload, text } = await requestRaw(url, options);
+  if (!response.ok) {
+    throw new Error(`${options.method ?? "GET"} ${url} failed ${response.status}: ${text}`);
+  }
+  return payload;
+}
+
+async function expectFailure(path, options, expectedStatus, expectedError) {
+  const { response, payload, text } = await requestRaw(`${voyagerBaseUrl}${path}`, options);
+  if (response.status !== expectedStatus) {
+    throw new Error(`${options.method ?? "GET"} ${path} expected ${expectedStatus} but got ${response.status}: ${text}`);
+  }
+  if (expectedError && payload?.error !== expectedError) {
+    throw new Error(`${options.method ?? "GET"} ${path} expected error ${expectedError} but got ${payload?.error}: ${text}`);
+  }
+  return payload;
+}
+
+async function requestRaw(url, options = {}) {
   const headers = new Headers(options.headers ?? {});
   const fetchOptions = { ...options };
   delete fetchOptions.json;
@@ -205,10 +450,7 @@ async function requestJson(url, options = {}) {
   });
   const text = await response.text();
   const payload = text ? JSON.parse(text) : null;
-  if (!response.ok) {
-    throw new Error(`${options.method ?? "GET"} ${url} failed ${response.status}: ${text}`);
-  }
-  return payload;
+  return { response, payload, text };
 }
 
 function decodeJwtPayload(token) {
