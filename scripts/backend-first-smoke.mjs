@@ -216,9 +216,18 @@ function assertMessagingCoreBridgeSession(session, identity, context) {
   if (!session.configured || !session.token) {
     throw new Error(`${context} expected configured messagingCore token bridge: ${JSON.stringify(session)}`);
   }
+  const identitySyncSource = session.identitySync?.source;
+  if (
+    identitySyncSource !== "unconfigured" &&
+    identitySyncSource !== "cache" &&
+    identitySyncSource !== "internal_service" &&
+    identitySyncSource !== "stale_cache"
+  ) {
+    throw new Error(`${context} messagingCore identity sync source is invalid: ${identitySyncSource}`);
+  }
   if (
     session.identitySync?.reason &&
-    !/^internal_service_(unconfigured|unavailable|timeout|http_\d{3})$/.test(session.identitySync.reason)
+    !/^(stale_cache_after_)?internal_service_(unconfigured|unavailable|timeout|http_\d{3})$/.test(session.identitySync.reason)
   ) {
     throw new Error(`${context} messagingCore identity sync reason is not sanitized: ${session.identitySync.reason}`);
   }

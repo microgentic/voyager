@@ -10,6 +10,7 @@ type MessagingCoreMode = "off" | "shadow" | "proxy";
 type PublicCoreMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 type PrincipalType = "human" | "agent" | "service";
 type IdentitySyncStep = "tenant" | "account" | "principal" | "device";
+type IdentitySyncSource = "unconfigured" | "cache" | "internal_service" | "stale_cache";
 type MessageCutoverResponseKind =
   | "messages"
   | "message"
@@ -29,8 +30,12 @@ const DEFAULT_TOKEN_ISSUER = "voyager";
 const DEFAULT_TOKEN_TTL_SECONDS = 15 * 60;
 const DEFAULT_INTERNAL_TOKEN_TTL_SECONDS = 5 * 60;
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
+const DEFAULT_IDENTITY_SYNC_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_IDENTITY_SYNC_STALE_GRACE_MS = 60 * 60 * 1000;
+const MAX_IDENTITY_SYNC_MEMORY_CACHE_ENTRIES = 1000;
 const CORE_MESSAGE_COMPAT_EXPIRES_AT = "9999-12-31T23:59:59.000Z";
 const encoder = new TextEncoder();
+const identitySyncMemoryCache = new Map<string, IdentitySyncCacheRow>();
 
 export interface MessagingCoreIdentity {
   account: AccountRow;
@@ -61,11 +66,14 @@ interface BridgeConfig {
   internalSecret: string | null;
   internalTtlSeconds: number;
   fetchTimeoutMs: number;
+  identitySyncTtlMs: number;
+  identitySyncStaleGraceMs: number;
 }
 
 interface IdentitySyncResult {
   attempted: boolean;
   ok: boolean;
+  source: IdentitySyncSource;
   reason: string | null;
   failedStep: IdentitySyncStep | null;
   tenantSynced: boolean;
@@ -78,6 +86,17 @@ interface ConfiguredMessagingCoreSession {
   session: JsonObject;
   token: string;
   sync: IdentitySyncResult;
+}
+
+interface IdentitySyncCacheRow {
+  synced_at: string;
+  expires_at: string;
+}
+
+interface IdentitySyncCacheLookup {
+  fresh: boolean;
+  staleUsable: boolean;
+  row: IdentitySyncCacheRow | null;
 }
 
 export function messagingCoreBridgeStatus(env: Env): JsonObject {
@@ -104,6 +123,8 @@ export function messagingCoreBridgeStatus(env: Env): JsonObject {
     identitySync: {
       available: Boolean((config.baseUrl || config.serviceBinding) && config.internalSecret),
       required: config.mode === "proxy",
+      ttlMs: config.identitySyncTtlMs,
+      staleGraceMs: config.identitySyncStaleGraceMs,
     },
     cutover: {
       allCoreMessaging: config.allCutoverEnabled,
@@ -1106,12 +1127,29 @@ async function syncMessagingCoreIdentity(
     return {
       attempted: false,
       ok: false,
+      source: "unconfigured",
       reason: "internal_service_unconfigured",
       failedStep: null,
       tenantSynced: false,
       accountSynced: false,
       principalSynced: false,
       deviceSynced: false,
+    };
+  }
+
+  const now = new Date();
+  const cache = await loadIdentitySyncCache(env, config, identity, now.getTime());
+  if (cache.fresh) {
+    return {
+      attempted: false,
+      ok: true,
+      source: "cache",
+      reason: null,
+      failedStep: null,
+      tenantSynced: true,
+      accountSynced: true,
+      principalSynced: true,
+      deviceSynced: true,
     };
   }
 
@@ -1180,9 +1218,11 @@ async function syncMessagingCoreIdentity(
       lastSeenAt: identity.device.last_seen_at,
     });
     deviceSynced = true;
+    await storeIdentitySyncCache(env, config, identity, now);
     return {
       attempted: true,
       ok: true,
+      source: "internal_service",
       reason: null,
       failedStep: null,
       tenantSynced,
@@ -1191,16 +1231,148 @@ async function syncMessagingCoreIdentity(
       deviceSynced,
     };
   } catch (error) {
+    const reason = publicIdentitySyncFailureReason(error);
+    if (cache.staleUsable) {
+      return {
+        attempted: true,
+        ok: true,
+        source: "stale_cache",
+        reason: `stale_cache_after_${reason}`,
+        failedStep,
+        tenantSynced: true,
+        accountSynced: true,
+        principalSynced: true,
+        deviceSynced: true,
+      };
+    }
     return {
       attempted: true,
       ok: false,
-      reason: publicIdentitySyncFailureReason(error),
+      source: "internal_service",
+      reason,
       failedStep,
       tenantSynced,
       accountSynced,
       principalSynced,
       deviceSynced,
     };
+  }
+}
+
+async function loadIdentitySyncCache(
+  env: Env,
+  config: BridgeConfig,
+  identity: MessagingCoreIdentity,
+  nowMs: number,
+): Promise<IdentitySyncCacheLookup> {
+  const cacheKey = identitySyncCacheKey(config, identity);
+  const memoryRow = identitySyncMemoryCache.get(cacheKey);
+  const memoryLookup = classifyIdentitySyncCache(memoryRow ?? null, config, nowMs);
+  if (memoryLookup.fresh) return memoryLookup;
+
+  try {
+    const row = await env.CONTROL_DB.prepare(
+      `SELECT synced_at, expires_at
+       FROM messaging_core_identity_sync_cache
+       WHERE tenant_id = ?
+         AND account_id = ?
+         AND principal_id = ?
+         AND device_id = ?`,
+    )
+      .bind(
+        config.tenantId,
+        identity.account.account_id,
+        identity.principal.principal_id,
+        identity.device.device_id,
+      )
+      .first<IdentitySyncCacheRow>();
+    const lookup = classifyIdentitySyncCache(row ?? null, config, nowMs);
+    if (lookup.fresh || lookup.staleUsable) {
+      rememberIdentitySyncCache(cacheKey, lookup.row, nowMs, config.identitySyncStaleGraceMs);
+    }
+    return lookup;
+  } catch {
+    return memoryLookup;
+  }
+}
+
+async function storeIdentitySyncCache(
+  env: Env,
+  config: BridgeConfig,
+  identity: MessagingCoreIdentity,
+  now: Date,
+): Promise<void> {
+  const syncedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + config.identitySyncTtlMs).toISOString();
+  const row = { synced_at: syncedAt, expires_at: expiresAt };
+  rememberIdentitySyncCache(identitySyncCacheKey(config, identity), row, now.getTime(), config.identitySyncStaleGraceMs);
+  try {
+    await env.CONTROL_DB.prepare(
+      `INSERT INTO messaging_core_identity_sync_cache
+         (tenant_id, account_id, principal_id, device_id, synced_at, expires_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tenant_id, account_id, principal_id, device_id)
+       DO UPDATE SET
+         synced_at = excluded.synced_at,
+         expires_at = excluded.expires_at,
+         updated_at = excluded.updated_at`,
+    )
+      .bind(
+        config.tenantId,
+        identity.account.account_id,
+        identity.principal.principal_id,
+        identity.device.device_id,
+        syncedAt,
+        expiresAt,
+        syncedAt,
+      )
+      .run();
+  } catch {
+    // Identity sync succeeded; a cache write failure should not fail the message path.
+  }
+}
+
+function identitySyncCacheKey(config: BridgeConfig, identity: MessagingCoreIdentity): string {
+  return [
+    config.tenantId,
+    identity.account.account_id,
+    identity.principal.principal_id,
+    identity.device.device_id,
+  ].join("\u001f");
+}
+
+function classifyIdentitySyncCache(
+  row: IdentitySyncCacheRow | null,
+  config: BridgeConfig,
+  nowMs: number,
+): IdentitySyncCacheLookup {
+  if (!row) return { fresh: false, staleUsable: false, row: null };
+  const expiresMs = Date.parse(row.expires_at);
+  if (!Number.isFinite(expiresMs)) return { fresh: false, staleUsable: false, row };
+  return {
+    fresh: expiresMs > nowMs,
+    staleUsable: expiresMs + config.identitySyncStaleGraceMs > nowMs,
+    row,
+  };
+}
+
+function rememberIdentitySyncCache(
+  key: string,
+  row: IdentitySyncCacheRow | null,
+  nowMs: number,
+  staleGraceMs: number,
+): void {
+  if (!row) return;
+  if (identitySyncMemoryCache.size >= MAX_IDENTITY_SYNC_MEMORY_CACHE_ENTRIES) {
+    for (const [candidateKey, candidate] of identitySyncMemoryCache) {
+      const expiresMs = Date.parse(candidate.expires_at);
+      if (!Number.isFinite(expiresMs) || expiresMs + staleGraceMs <= nowMs) {
+        identitySyncMemoryCache.delete(candidateKey);
+      }
+    }
+  }
+  if (identitySyncMemoryCache.size < MAX_IDENTITY_SYNC_MEMORY_CACHE_ENTRIES) {
+    identitySyncMemoryCache.set(key, row);
   }
 }
 
@@ -1596,6 +1768,11 @@ function resolveBridgeConfig(env: Env): BridgeConfig {
     internalSecret: trimmed(env.MESSAGING_CORE_INTERNAL_SERVICE_SECRET),
     internalTtlSeconds: positiveInteger(env.MESSAGING_CORE_INTERNAL_SERVICE_TTL_SECONDS, DEFAULT_INTERNAL_TOKEN_TTL_SECONDS),
     fetchTimeoutMs: positiveInteger(env.VOYAGER_MESSAGING_CORE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS),
+    identitySyncTtlMs: positiveInteger(env.VOYAGER_MESSAGING_CORE_IDENTITY_SYNC_TTL_MS, DEFAULT_IDENTITY_SYNC_TTL_MS),
+    identitySyncStaleGraceMs: positiveInteger(
+      env.VOYAGER_MESSAGING_CORE_IDENTITY_SYNC_STALE_GRACE_MS,
+      DEFAULT_IDENTITY_SYNC_STALE_GRACE_MS,
+    ),
   };
 }
 
