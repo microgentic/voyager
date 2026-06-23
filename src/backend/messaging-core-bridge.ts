@@ -239,6 +239,34 @@ export async function fetchMessagingCoreReadProxy(
   };
 }
 
+export async function fetchMessagingCoreRealtimeTokenProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+): Promise<JsonObject> {
+  const config = resolveBridgeConfig(env);
+  const base = messagingCoreBridgeStatus(env);
+  if (config.mode === "off" || !bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_proxy_unconfigured",
+      "Messaging Core proxy is not configured.",
+      { reason: bridgeStatusReason(config) },
+    );
+  }
+
+  const { session, token } = await createConfiguredMessagingCoreSession(env, config, base, identity);
+  const route = "/realtime/token";
+  const upstream = await publicCoreJson(config, token, "POST", route, {});
+  return {
+    messagingCore: session,
+    realtime: upstream.payload,
+    proxied: {
+      route,
+      upstreamStatus: upstream.status,
+    },
+  };
+}
+
 export function messagingCoreMessageCutoverEnabled(env: Env): boolean {
   const config = resolveBridgeConfig(env);
   return config.messageCutoverEnabled;

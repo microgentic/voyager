@@ -38,6 +38,7 @@ import {
   fetchMessagingCoreBootstrapProxy,
   fetchMessagingCoreMessageCutoverProxy,
   fetchMessagingCoreReadProxy,
+  fetchMessagingCoreRealtimeTokenProxy,
   fetchMessagingCoreRoomCutoverProxy,
   messagingCoreAttachmentAllocateBody,
   messagingCoreAttachmentCompleteBody,
@@ -266,6 +267,22 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return json({
       ok: true,
       ...(await fetchMessagingCoreBootstrapProxy(env, messagingCoreIdentity(auth)))
+    });
+  }
+
+  if (url.pathname === "/v1/messaging-core/sync") {
+    requireMethod(request, "GET");
+    return json({
+      ok: true,
+      ...(await fetchMessagingCoreReadProxy(env, messagingCoreIdentity(auth), "/sync", proxyQuery(url, ["limit"]))),
+    });
+  }
+
+  if (url.pathname === "/v1/messaging-core/realtime/token") {
+    requireMethod(request, "POST");
+    return json({
+      ok: true,
+      ...(await fetchMessagingCoreRealtimeTokenProxy(env, messagingCoreIdentity(auth))),
     });
   }
 
