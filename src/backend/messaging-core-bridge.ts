@@ -19,6 +19,7 @@ const DEFAULT_INTERNAL_TOKEN_TTL_SECONDS = 5 * 60;
 const DEFAULT_FETCH_TIMEOUT_MS = 3_000;
 const DEFAULT_BACKFILL_ROOM_LIMIT = 50;
 const DEFAULT_BACKFILL_MESSAGE_LIMIT = 200;
+const BACKFILL_IMPORT_TIMEOUT_MS = 30_000;
 const MAX_BACKFILL_BATCH_ITEMS = 500;
 const encoder = new TextEncoder();
 
@@ -261,6 +262,7 @@ export async function backfillMessagingCoreReadonly(
     token,
     `/internal/tenants/${encodeURIComponent(config.tenantId)}/imports/voyager-readonly`,
     snapshot,
+    Math.max(config.fetchTimeoutMs, BACKFILL_IMPORT_TIMEOUT_MS),
   );
 
   return {
@@ -420,6 +422,7 @@ async function postInternal(
   token: string,
   path: string,
   body: Record<string, unknown>,
+  timeoutMs = config.fetchTimeoutMs,
 ): Promise<unknown> {
   const request = new Request(messagingCoreUrl(config, path), {
     method: "POST",
@@ -428,7 +431,7 @@ async function postInternal(
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(config.fetchTimeoutMs),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
   if (!response.ok) {
