@@ -6,6 +6,7 @@ const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
 const exerciseRoomCutover = process.env.SMOKE_MESSAGING_CORE_ROOM_CUTOVER === "1";
 const exerciseRoomWriteCutover = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_CUTOVER === "1";
 const exerciseMessageWriteCutover = process.env.SMOKE_MESSAGING_CORE_WRITE_CUTOVER === "1";
+const exerciseRealtimeConnect = process.env.SMOKE_MESSAGING_CORE_REALTIME_CONNECT === "1";
 const roomWritePassword = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_PASSWORD ?? loginPassword ?? "";
 const roomWriteInviteeEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_INVITEE_EMAIL ?? "grace@example.com";
 const roomWriteTransferEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_TRANSFER_EMAIL ?? "alan@example.com";
@@ -109,6 +110,14 @@ assertEqual(voyagerProxyRealtimeToken.realtime?.protocol, coreRealtimeToken.prot
 assertEqual(voyagerProxyRealtimeToken.realtime?.connectPath, coreRealtimeToken.connectPath, "Voyager proxy realtime token connect path");
 if (!voyagerProxyRealtimeToken.realtime?.realtimeToken?.startsWith("mrt_")) {
   throw new Error(`Voyager proxy realtime token should expose Core token format under realtime: ${JSON.stringify(voyagerProxyRealtimeToken)}`);
+}
+let proxiedRealtimeConnect = false;
+if (exerciseRealtimeConnect) {
+  proxiedRealtimeConnect = await runCoreRealtimeConnectSmoke({
+    baseUrl: coreBaseUrl,
+    realtime: voyagerProxyRealtimeToken.realtime,
+    claims,
+  });
 }
 
 const coreRooms = await coreApi(coreBaseUrl, "/rooms", messagingCore.token);
@@ -238,6 +247,7 @@ console.log(JSON.stringify({
   proxiedBootstrap: true,
   proxiedSync: true,
   proxiedRealtimeToken: true,
+  proxiedRealtimeConnect,
   proxiedRooms: true,
   proxiedRoomDetail,
   proxiedRoomCutoverRead,
@@ -365,6 +375,74 @@ async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoo
   assertEqual(downloaded.buffer.toString("utf8"), body.toString("utf8"), "normal Voyager attachment download body");
 
   return true;
+}
+
+async function runCoreRealtimeConnectSmoke({ baseUrl, realtime, claims }) {
+  if (typeof WebSocket === "undefined") {
+    throw new Error("This Node runtime does not expose WebSocket; cannot run Messaging Core realtime connect smoke.");
+  }
+  const url = new URL(realtime.connectPath, baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("token", realtime.realtimeToken);
+
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, [realtime.protocol]);
+    const pingId = `core-realtime-smoke-${Date.now()}`;
+    let ready = false;
+    let pong = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      fail(new Error("timed out waiting for Messaging Core realtime ready/pong"));
+    }, fetchTimeoutMs);
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.close(1000, "smoke_done");
+      resolve(true);
+    }
+
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.close(1011, "smoke_failed");
+      reject(error);
+    }
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: "ping", id: pingId }));
+    };
+    socket.onerror = () => {
+      fail(new Error("Messaging Core realtime WebSocket errored before ready/pong"));
+    };
+    socket.onclose = () => {
+      if (!settled && (!ready || !pong)) {
+        fail(new Error("Messaging Core realtime WebSocket closed before ready/pong"));
+      }
+    };
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(String(event.data));
+        if (message.type === "ready") {
+          assertEqual(message.tenantId, claims.tenantId, "Core realtime ready tenantId");
+          assertEqual(message.accountId, claims.accountId, "Core realtime ready accountId");
+          assertEqual(message.principalId, claims.principalId, "Core realtime ready principalId");
+          assertEqual(message.deviceId, claims.deviceId, "Core realtime ready deviceId");
+          assertEqual(message.protocol, realtime.protocol, "Core realtime ready protocol");
+          ready = true;
+        }
+        if (message.type === "pong") {
+          assertEqual(message.id, pingId, "Core realtime pong id");
+          pong = true;
+        }
+        if (ready && pong) finish();
+      } catch (error) {
+        fail(error);
+      }
+    };
+  });
 }
 
 async function runRoomWriteCutoverSmoke({ ownerToken, ownerPrincipalId }) {

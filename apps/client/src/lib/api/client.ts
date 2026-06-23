@@ -1,4 +1,4 @@
-import { getApiBase } from '$lib/config';
+import { getApiBase, messagingCoreRealtimeEnabled } from '$lib/config';
 import { ApiError } from './errors';
 import type {
 	Account,
@@ -28,6 +28,7 @@ import type {
 	MeResult,
 	MessagingCoreBootstrapProxyResult,
 	MessagingCoreMessagesProxyResult,
+	MessagingCoreRealtimeTokenProxyResult,
 	MessagingCoreRoomProxyResult,
 	MessagingCoreRoomsProxyResult,
 	MessagingCoreSession,
@@ -53,6 +54,14 @@ import type {
 
 type Json = Record<string, unknown>;
 export const REALTIME_PROTOCOL = 'voyager.realtime.v1';
+export const MESSAGING_CORE_REALTIME_PROTOCOL = 'messaging.realtime.v1';
+
+export type RealtimeTransport = RealtimeTokenResult['transport'];
+
+export interface RealtimeSocketConnection {
+	socket: WebSocket;
+	transport: RealtimeTransport;
+}
 
 interface RequestOptions {
 	json?: Json;
@@ -74,13 +83,65 @@ export class VoyagerClient {
 		this.token = token;
 	}
 
-	async openRealtimeSocket(): Promise<WebSocket | null> {
+	async openRealtimeSocket(options: { transport?: 'auto' | RealtimeTransport } = {}): Promise<RealtimeSocketConnection | null> {
 		if (!this.token || typeof WebSocket === 'undefined') return null;
-		const { realtimeToken } = await this.createRealtimeToken();
+		const transport = options.transport ?? 'auto';
+		const token =
+			transport === 'messaging-core'
+				? await this.createMessagingCoreRealtimeToken()
+				: transport === 'voyager'
+					? await this.createRealtimeToken()
+					: await this.createPreferredRealtimeToken();
+		const url = realtimeSocketUrl(token.baseUrl, token.connectPath, token.transport, token.realtimeToken);
+		return {
+			socket: new WebSocket(url, realtimeSocketProtocols(token)),
+			transport: token.transport
+		};
+	}
+
+	private async createPreferredRealtimeToken(): Promise<RealtimeTokenResult> {
+		if (!messagingCoreRealtimeEnabled()) return this.createRealtimeToken();
+		try {
+			return await this.createMessagingCoreRealtimeToken();
+		} catch (error) {
+			console.warn('Messaging Core realtime token failed; falling back to Voyager realtime.', error);
+			return this.createRealtimeToken();
+		}
+	}
+
+	private async createMessagingCoreRealtimeToken(): Promise<RealtimeTokenResult> {
+		const res = await this.messagingCoreRealtimeToken();
+		if (!res.messagingCore.baseUrl || !res.realtime.realtimeToken || !res.realtime.protocol || !res.realtime.connectPath) {
+			throw new ApiError(
+				502,
+				'messaging_core_realtime_invalid_response',
+				'Messaging Core realtime token response is incomplete.'
+			);
+		}
+		return {
+			realtimeToken: res.realtime.realtimeToken,
+			expiresAt: res.realtime.expiresAt,
+			protocol: res.realtime.protocol,
+			connectPath: res.realtime.connectPath,
+			baseUrl: res.messagingCore.baseUrl,
+			transport: 'messaging-core'
+		};
+	}
+
+	async createRealtimeToken(): Promise<RealtimeTokenResult> {
+		const res = await this.request<Pick<RealtimeTokenResult, 'realtimeToken' | 'expiresAt'> & { ok: true }>(
+			'POST',
+			'/v1/realtime/token'
+		);
 		const origin = getApiBase() || (typeof location !== 'undefined' ? location.origin : 'http://localhost');
-		const url = new URL('/v1/realtime', origin);
-		url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-		return new WebSocket(url, [REALTIME_PROTOCOL, realtimeToken]);
+		return {
+			realtimeToken: res.realtimeToken,
+			expiresAt: res.expiresAt,
+			protocol: REALTIME_PROTOCOL,
+			connectPath: '/v1/realtime',
+			baseUrl: origin,
+			transport: 'voyager'
+		};
 	}
 
 	private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -201,11 +262,6 @@ export class VoyagerClient {
 		return this.request('POST', '/v1/auth/logout');
 	}
 
-	async createRealtimeToken(): Promise<RealtimeTokenResult> {
-		const res = await this.request<RealtimeTokenResult & { ok: true }>('POST', '/v1/realtime/token');
-		return { realtimeToken: res.realtimeToken, expiresAt: res.expiresAt };
-	}
-
 	async createMessagingCoreSession(): Promise<MessagingCoreSession> {
 		const res = await this.request<{ messagingCore: MessagingCoreSession }>(
 			'POST',
@@ -263,6 +319,18 @@ export class VoyagerClient {
 		return {
 			messagingCore: res.messagingCore,
 			messages: res.messages,
+			proxied: res.proxied
+		};
+	}
+
+	async messagingCoreRealtimeToken(): Promise<MessagingCoreRealtimeTokenProxyResult> {
+		const res = await this.request<MessagingCoreRealtimeTokenProxyResult & { ok: true }>(
+			'POST',
+			'/v1/messaging-core/realtime/token'
+		);
+		return {
+			messagingCore: res.messagingCore,
+			realtime: res.realtime,
 			proxied: res.proxied
 		};
 	}
@@ -932,4 +1000,23 @@ export class VoyagerClient {
 		});
 		return res.request;
 	}
+}
+
+function realtimeSocketUrl(
+	baseUrl: string,
+	connectPath: string,
+	transport: RealtimeTransport,
+	realtimeToken: string
+): URL {
+	const url = new URL(connectPath, baseUrl);
+	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+	if (transport === 'messaging-core') {
+		url.searchParams.set('token', realtimeToken);
+	}
+	return url;
+}
+
+function realtimeSocketProtocols(token: RealtimeTokenResult): string[] {
+	if (token.transport === 'messaging-core') return [token.protocol];
+	return [token.protocol, token.realtimeToken];
 }
