@@ -411,6 +411,8 @@ Realtime session responses may include:
 
 Attachment bytes are opaque private blobs from the backend perspective. R2 stores the objects; D1 stores lifecycle state, media metadata, and variant references. `GET /blob` and `PUT /blob` without a query parameter default to the `original` variant for backward compatibility. `expectedBytes` is the total byte budget for all uploaded variants combined, not a per-variant limit.
 
+For Messaging Core extraction compatibility, Voyager backfills existing rows into the single tenant `tenant_voyager_default`. Existing stored attachment R2 object keys are preserved as-is, while newly allocated attachment objects use tenant-prefixed private keys such as `tenants/tenant_voyager_default/rooms/{roomId}/attachments/{attachmentId}/original`.
+
 Attachment metadata is additive and client-supplied:
 
 ```json

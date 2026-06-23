@@ -1,4 +1,5 @@
 import { HttpError } from "../../http";
+import { tenantScopedAttachmentObjectKey } from "./object-keys";
 import type { AttachmentRow } from "./types";
 import { MEDIA_KINDS, VARIANTS, type AttachmentVariant } from "./types";
 
@@ -52,7 +53,12 @@ export function objectKeyForVariant(
       : attachment.thumbnail_object_key;
   if (existing) return existing;
   if (forUpload) {
-    return `attachments/${attachment.room_id}/${attachment.attachment_id}/${variant}`;
+    return tenantScopedAttachmentObjectKey({
+      tenantId: attachment.tenant_id,
+      roomId: attachment.room_id,
+      attachmentId: attachment.attachment_id,
+      variant,
+    });
   }
   throw new HttpError(
     404,

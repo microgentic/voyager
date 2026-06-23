@@ -18,6 +18,7 @@
     "smoke:backend": "node scripts/backend-first-smoke.mjs",
     "smoke:backend:local": "node scripts/run-local-backend-smoke.mjs",
     "smoke:backend:remote": "node scripts/remote-post-deploy-smoke.mjs",
+    "smoke:tenant-backfill": "node scripts/voyager-tenant-backfill-smoke.mjs",
     "wrangler": "wrangler"
   },
   "devDependencies": {

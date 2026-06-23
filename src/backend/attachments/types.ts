@@ -11,6 +11,7 @@ export const MAX_PENDING_ATTACHMENTS_PER_DEVICE = 25;
 export const DEFAULT_MAX_IMAGE_DIMENSION = 8192;
 
 export interface AttachmentRow {
+  tenant_id?: string | null;
   attachment_id: string;
   room_id: string;
   uploader_account_id: string;
