@@ -65,6 +65,8 @@ export function messagingCoreRealtimeEnabled(): boolean {
 	}
 	try {
 		const value = import.meta.env?.VITE_MESSAGING_CORE_REALTIME;
+		const allCoreValue = import.meta.env?.VITE_MESSAGING_CORE_ALL_CUTOVER;
+		if (allCoreValue === '1' || allCoreValue === 'true') return true;
 		return value === '1' || value === 'true';
 	} catch {
 		return false;

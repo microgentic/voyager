@@ -198,8 +198,9 @@ npm run smoke:messaging-core-parity
 ```
 
 To prove the guarded all-Core messaging mode, deploy Voyager with
-`VOYAGER_MESSAGING_CORE_ALL_CUTOVER=1` and a configured Messaging Core bridge,
-then run:
+`VOYAGER_MESSAGING_CORE_ALL_CUTOVER=1`, build the web client with
+`VITE_MESSAGING_CORE_ALL_CUTOVER=1` when testing the app UI, and keep the
+Messaging Core bridge configured. Then run:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \

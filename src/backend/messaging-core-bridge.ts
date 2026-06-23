@@ -340,6 +340,17 @@ export function messagingCoreSyncCutoverEnabled(env: Env): boolean {
   return config.syncCutoverEnabled;
 }
 
+export function messagingCoreCutoverFallbackDiagnostics(env: Env, fallbackReason: string): JsonObject {
+  const config = resolveBridgeConfig(env);
+  return {
+    source: "voyager_legacy",
+    fallbackReason,
+    route: null,
+    upstreamStatus: null,
+    flags: cutoverFlagSnapshot(config),
+  };
+}
+
 export function messagingCoreAttachmentAllocateBody(body: Record<string, unknown>): Record<string, unknown> {
   const expectedBytes = numberValue(body.expectedBytes);
   if (expectedBytes === null || !Number.isInteger(expectedBytes) || expectedBytes < 1) {
@@ -561,13 +572,17 @@ function cutoverDiagnostics(
     fallbackReason: options.fallbackReason ?? null,
     route: options.route,
     upstreamStatus: options.upstreamStatus,
-    flags: {
-      mode: config.mode,
-      allCoreMessaging: config.allCutoverEnabled,
-      roomRoutes: config.roomCutoverEnabled,
-      messageRoutes: config.messageCutoverEnabled,
-      syncRoute: config.syncCutoverEnabled,
-    },
+    flags: cutoverFlagSnapshot(config),
+  };
+}
+
+function cutoverFlagSnapshot(config: BridgeConfig): JsonObject {
+  return {
+    mode: config.mode,
+    allCoreMessaging: config.allCutoverEnabled,
+    roomRoutes: config.roomCutoverEnabled,
+    messageRoutes: config.messageCutoverEnabled,
+    syncRoute: config.syncCutoverEnabled,
   };
 }
 
