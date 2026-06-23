@@ -198,6 +198,7 @@ if (firstRoomId) {
     }
     assertEqual(normalSend.message.protocolType, "opaque-test", "normal Voyager message cutover protocol type");
     assertEqual(normalSend.message.ciphertext, `messaging-core-cutover-smoke-${idempotencyKey}`, "normal Voyager message cutover ciphertext");
+    assertEqual(normalSend.message.receiptSummary?.status, "sent", "normal Voyager message cutover receipt status");
     const duplicateSend = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
       method: "POST",
       token: voyagerToken,
@@ -231,8 +232,12 @@ if (firstRoomId) {
     assertEqual(normalList.messagingCoreCutover?.route, normalListRoute, "normal Voyager message list cutover route");
     assertEqual(normalList.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager message list cutover upstream status");
     assertArray(normalList.messages, "normal Voyager message list cutover messages");
-    if (!normalList.messages.some((message) => message.envelopeId === normalSend.message.envelopeId)) {
+    const listedNormalSend = normalList.messages.find((message) => message.envelopeId === normalSend.message.envelopeId);
+    if (!listedNormalSend) {
       throw new Error("normal Voyager message list cutover did not include the sent Core message.");
+    }
+    if (listedNormalSend.receiptSummary?.status !== "sent") {
+      throw new Error(`normal Voyager message list cutover dropped receipt status: ${JSON.stringify(listedNormalSend.receiptSummary)}`);
     }
     normalMessageWrite = true;
     normalThreadInbox = await runThreadInboxCutoverSmoke({
