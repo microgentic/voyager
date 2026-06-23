@@ -36,9 +36,13 @@ import {
   fetchMessagingCoreBootstrapProxy,
   fetchMessagingCoreMessageCutoverProxy,
   fetchMessagingCoreReadProxy,
+  fetchMessagingCoreRoomCutoverProxy,
   messagingCoreMessageCutoverEnabled,
+  messagingCoreRoomCutoverEnabled,
 } from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
+import { ROOM_INVITATION_DAYS } from "./backend/rooms/types";
+import { sqliteTimestamp } from "./backend/utils";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import { handleRealtimeConnect, REALTIME_PROTOCOL, RealtimeMailbox } from "./realtime";
@@ -294,6 +298,11 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
         `/rooms/${encodeURIComponent(messagingCoreRoomMatch[1])}`
       ))
     });
+  }
+
+  const messagingCoreRoomCutoverResponse = await handleMessagingCoreRoomCutover(request, env, url, auth);
+  if (messagingCoreRoomCutoverResponse) {
+    return messagingCoreRoomCutoverResponse;
   }
 
   const messagingCoreMessageCutoverResponse = await handleMessagingCoreMessageCutover(request, env, url, auth);
@@ -747,6 +756,272 @@ function stringArrayField(
 
 function clientIp(request: Request): string {
   return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+async function handleMessagingCoreRoomCutover(
+  request: Request,
+  env: Env,
+  url: URL,
+  auth: AuthContext,
+): Promise<Response | null> {
+  if (!messagingCoreRoomCutoverEnabled(env)) return null;
+
+  const route = await messagingCoreRoomCutoverRoute(request, url);
+  if (!route) return null;
+
+  const result = await fetchMessagingCoreRoomCutoverProxy(
+    env,
+    messagingCoreIdentity(auth),
+    route.method,
+    route.path,
+    {
+      body: route.body,
+      query: route.query,
+      responseKind: route.responseKind,
+      memberPrincipalId: route.memberPrincipalId,
+    },
+  );
+  return json(result.payload, { status: result.status });
+}
+
+async function messagingCoreRoomCutoverRoute(
+  request: Request,
+  url: URL,
+): Promise<{
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  path: string;
+  query?: URLSearchParams;
+  body?: Record<string, unknown>;
+  responseKind: "rooms" | "room" | "member" | "invitation" | "invitations" | "transfer" | "ok";
+  memberPrincipalId?: string;
+} | null> {
+  if (url.pathname === "/v1/rooms" && request.method === "GET") {
+    return { method: "GET", path: "/rooms", query: proxyQuery(url, ["limit", "cursor"]), responseKind: "rooms" };
+  }
+
+  if (url.pathname === "/v1/rooms/direct" && request.method === "POST") {
+    return {
+      method: "POST",
+      path: "/rooms/direct",
+      body: messagingCoreDirectRoomBody(await readJsonObject(request)),
+      responseKind: "room",
+    };
+  }
+
+  if (url.pathname === "/v1/rooms/groups" && request.method === "POST") {
+    return {
+      method: "POST",
+      path: "/rooms/groups",
+      body: messagingCoreGroupRoomBody(await readJsonObject(request)),
+      responseKind: "room",
+    };
+  }
+
+  const roomMatch = routeParams(/^\/v1\/rooms\/([^/]+)$/, url.pathname);
+  if (roomMatch) {
+    if (request.method === "GET") {
+      return { method: "GET", path: `/rooms/${roomMatch[1]}`, responseKind: "room" };
+    }
+    if (request.method === "PATCH") {
+      return {
+        method: "PATCH",
+        path: `/rooms/${roomMatch[1]}`,
+        body: messagingCoreRoomPatchBody(await readJsonObject(request)),
+        responseKind: "room",
+      };
+    }
+  }
+
+  const roomArchiveMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/archive$/, url.pathname);
+  if (request.method === "POST" && roomArchiveMatch) {
+    return { method: "POST", path: `/rooms/${roomArchiveMatch[1]}/archive`, responseKind: "room" };
+  }
+
+  const roomMembersMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members$/, url.pathname);
+  if (request.method === "POST" && roomMembersMatch) {
+    const body = await readJsonObject(request);
+    const principalId = requiredMessagingCoreBodyString(body, "principalId");
+    return {
+      method: "POST",
+      path: `/rooms/${roomMembersMatch[1]}/members`,
+      body,
+      responseKind: "member",
+      memberPrincipalId: principalId,
+    };
+  }
+
+  const roomInvitationsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/invitations$/, url.pathname);
+  if (request.method === "POST" && roomInvitationsMatch) {
+    return {
+      method: "POST",
+      path: `/rooms/${roomInvitationsMatch[1]}/invitations`,
+      body: messagingCoreInvitationBody(await readJsonObject(request)),
+      responseKind: "invitation",
+    };
+  }
+
+  if (url.pathname === "/v1/room-invitations" && request.method === "GET") {
+    const status = url.searchParams.get("status");
+    if (status && status !== "pending") return null;
+    return { method: "GET", path: "/room-invitations", responseKind: "invitations" };
+  }
+
+  const roomInvitationActionMatch = routeParams(/^\/v1\/room-invitations\/([^/]+)\/(accept|decline)$/, url.pathname);
+  if (request.method === "POST" && roomInvitationActionMatch) {
+    return {
+      method: "POST",
+      path: `/room-invitations/${roomInvitationActionMatch[1]}/${roomInvitationActionMatch[2]}`,
+      responseKind: "invitation",
+    };
+  }
+
+  const roomMemberRoleMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members\/([^/]+)\/role$/, url.pathname);
+  if (request.method === "PATCH" && roomMemberRoleMatch) {
+    return {
+      method: "PATCH",
+      path: `/rooms/${roomMemberRoleMatch[1]}/members/${roomMemberRoleMatch[2]}/role`,
+      body: await readJsonObject(request),
+      responseKind: "member",
+      memberPrincipalId: roomMemberRoleMatch[2],
+    };
+  }
+
+  const roomMemberRemoveMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/members\/([^/]+)$/, url.pathname);
+  if (request.method === "DELETE" && roomMemberRemoveMatch) {
+    return {
+      method: "DELETE",
+      path: `/rooms/${roomMemberRemoveMatch[1]}/members/${roomMemberRemoveMatch[2]}`,
+      responseKind: "ok",
+    };
+  }
+
+  const leaveRoomMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/leave$/, url.pathname);
+  if (request.method === "POST" && leaveRoomMatch) {
+    return { method: "POST", path: `/rooms/${leaveRoomMatch[1]}/leave`, responseKind: "ok" };
+  }
+
+  const proposeTransferMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/ownership-transfers$/, url.pathname);
+  if (request.method === "POST" && proposeTransferMatch) {
+    return {
+      method: "POST",
+      path: `/rooms/${proposeTransferMatch[1]}/ownership-transfers`,
+      body: await readJsonObject(request),
+      responseKind: "transfer",
+    };
+  }
+
+  const acceptTransferMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/ownership-transfers\/([^/]+)\/accept$/, url.pathname);
+  if (request.method === "POST" && acceptTransferMatch) {
+    return {
+      method: "POST",
+      path: `/rooms/${acceptTransferMatch[1]}/ownership-transfers/${acceptTransferMatch[2]}/accept`,
+      responseKind: "transfer",
+    };
+  }
+
+  return null;
+}
+
+function messagingCoreDirectRoomBody(body: Record<string, unknown>): Record<string, unknown> {
+  const principalIds = stringArrayField(body, "principalIds", { maxItems: 1, maxLength: 128 });
+  if (principalIds.length !== 1) {
+    throw new HttpError(
+      400,
+      "invalid_direct_room",
+      "Direct rooms require exactly two principals",
+    );
+  }
+  return {
+    principalId: principalIds[0],
+    title: optionalMessagingCoreBodyString(body, "name", { maxLength: 120 }),
+    description: optionalMessagingCoreBodyString(body, "description", { maxLength: 1000 }),
+  };
+}
+
+function messagingCoreGroupRoomBody(body: Record<string, unknown>): Record<string, unknown> {
+  const memberPrincipalIds = stringArrayField(body, "memberPrincipalIds", { maxItems: 200, maxLength: 128 });
+  if (memberPrincipalIds.length > 0) {
+    throw new HttpError(
+      400,
+      "initial_group_members_not_supported",
+      "Create the group first, then invite humans or add agents",
+    );
+  }
+  return {
+    title: requiredMessagingCoreBodyString(body, "name", { maxLength: 120 }),
+    description: optionalMessagingCoreBodyString(body, "description", { maxLength: 1000 }),
+  };
+}
+
+function messagingCoreRoomPatchBody(body: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (typeof body.name === "string") patch.title = validateMessagingCoreString(body.name.trim(), "name", { maxLength: 120 });
+  else if (body.name !== undefined && body.name !== null) {
+    throw new HttpError(400, "invalid_field", "Field must be a string or null: name");
+  }
+  if (typeof body.description === "string") {
+    patch.description = validateMessagingCoreString(body.description.trim(), "description", { maxLength: 1000 });
+  } else if (body.description !== undefined && body.description !== null) {
+    throw new HttpError(400, "invalid_field", "Field must be a string or null: description");
+  }
+  return patch;
+}
+
+function messagingCoreInvitationBody(body: Record<string, unknown>): Record<string, unknown> {
+  return {
+    principalId: requiredMessagingCoreBodyString(body, "principalId"),
+    role: optionalMessagingCoreBodyString(body, "role") ?? "member",
+    expiresAt: messagingCoreInvitationExpiresAt(body.expiresInDays),
+  };
+}
+
+function messagingCoreInvitationExpiresAt(value: unknown): string {
+  const days = typeof value === "number" && Number.isFinite(value)
+    ? Math.min(30, Math.max(1, Math.trunc(value)))
+    : ROOM_INVITATION_DAYS;
+  return sqliteTimestamp(Date.now() + days * 24 * 60 * 60 * 1000);
+}
+
+function requiredMessagingCoreBodyString(
+  body: Record<string, unknown>,
+  key: string,
+  options: { maxLength?: number } = {},
+): string {
+  const value = stringValue(body[key])?.trim();
+  if (!value) {
+    throw new HttpError(400, "invalid_field", `Field is required: ${key}`);
+  }
+  return validateMessagingCoreString(value, key, options);
+}
+
+function optionalMessagingCoreBodyString(
+  body: Record<string, unknown>,
+  key: string,
+  options: { maxLength?: number } = {},
+): string | null | undefined {
+  const value = body[key];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw new HttpError(400, "invalid_field", `Field must be a string or null: ${key}`);
+  }
+  const string = value.trim();
+  return string ? validateMessagingCoreString(string, key, options) : null;
+}
+
+function validateMessagingCoreString(
+  value: string,
+  key: string,
+  options: { maxLength?: number },
+): string {
+  if (options.maxLength !== undefined && value.length > options.maxLength) {
+    throw new HttpError(400, "invalid_field", `Field is too long: ${key}`);
+  }
+  return value;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 async function handleMessagingCoreMessageCutover(

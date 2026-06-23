@@ -1,6 +1,7 @@
 import { randomId } from "../crypto";
 import { HttpError } from "../http";
 import type { AccountRow, DeviceRow, Env, PolicyRow, PrincipalRow } from "../types";
+import { ROOM_INVITATION_DAYS } from "./rooms/types";
 import type { JsonObject } from "./shared/types";
 
 export const VOYAGER_DEFAULT_MESSAGING_TENANT_ID = "tenant_voyager_default";
@@ -34,6 +35,7 @@ export interface MessagingCoreIdentity {
 interface BridgeConfig {
   mode: MessagingCoreMode;
   invalidMode: string | null;
+  roomCutoverEnabled: boolean;
   messageCutoverEnabled: boolean;
   tenantId: string;
   tenantExternalRef: string;
@@ -83,6 +85,7 @@ interface VoyagerRoomBackfillRow {
   room_id: string;
   type: "direct" | "group" | "channel";
   name: string | null;
+  description: string | null;
   status: "active" | "archived" | "deleted";
   created_by_principal_id: string;
   version: number;
@@ -146,6 +149,7 @@ export function messagingCoreBridgeStatus(env: Env): JsonObject {
       required: config.mode === "proxy",
     },
     cutover: {
+      roomRoutes: config.roomCutoverEnabled,
       messageRoutes: config.messageCutoverEnabled,
     },
     reason: bridgeStatusReason(config),
@@ -228,6 +232,69 @@ export function messagingCoreMessageCutoverEnabled(env: Env): boolean {
   return config.messageCutoverEnabled;
 }
 
+export function messagingCoreRoomCutoverEnabled(env: Env): boolean {
+  const config = resolveBridgeConfig(env);
+  return config.roomCutoverEnabled;
+}
+
+type RoomCutoverResponseKind =
+  | "rooms"
+  | "room"
+  | "member"
+  | "invitation"
+  | "invitations"
+  | "transfer"
+  | "ok";
+
+export async function fetchMessagingCoreRoomCutoverProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+  method: PublicCoreMethod,
+  path: string,
+  options: {
+    body?: Record<string, unknown>;
+    query?: URLSearchParams;
+    responseKind: RoomCutoverResponseKind;
+    memberPrincipalId?: string;
+  },
+): Promise<{ status: number; payload: JsonObject }> {
+  const config = resolveBridgeConfig(env);
+  const base = messagingCoreBridgeStatus(env);
+  if (!config.roomCutoverEnabled || !bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_cutover_unconfigured",
+      "Messaging Core room cutover is not configured.",
+      { reason: bridgeStatusReason(config) ?? "room_cutover_disabled" },
+    );
+  }
+
+  const { token, sync } = await createConfiguredMessagingCoreSession(env, config, base, identity);
+  if (!sync.ok) {
+    throw new HttpError(
+      503,
+      "messaging_core_identity_sync_failed",
+      "Messaging Core identity sync failed",
+      { reason: sync.reason },
+    );
+  }
+
+  const route = appendQuery(path, options.query);
+  const upstream = await publicCoreJson(config, token, method, route, options.body, { preserveClientErrors: true });
+  const adapted = await adaptRoomCutoverPayload(env, config, token, upstream.payload, options);
+  return {
+    status: upstream.status,
+    payload: {
+      ok: true,
+      ...adapted,
+      messagingCoreCutover: {
+        route,
+        upstreamStatus: upstream.status,
+      },
+    },
+  };
+}
+
 export async function fetchMessagingCoreMessageCutoverProxy(
   env: Env,
   identity: MessagingCoreIdentity,
@@ -272,6 +339,291 @@ export async function fetchMessagingCoreMessageCutoverProxy(
       },
     },
   };
+}
+
+async function adaptRoomCutoverPayload(
+  env: Env,
+  config: BridgeConfig,
+  token: string,
+  payload: JsonObject,
+  options: {
+    responseKind: RoomCutoverResponseKind;
+    query?: URLSearchParams;
+    memberPrincipalId?: string;
+  },
+): Promise<JsonObject> {
+  if (options.responseKind === "rooms") {
+    const coreRooms = arrayField(payload, "rooms");
+    const page = roomCutoverPage(options.query);
+    const pagedCoreRooms = coreRooms.slice(page.offset, page.offset + page.limit);
+    const roomViews: JsonObject[] = [];
+    for (const coreRoom of pagedCoreRooms) {
+      const roomId = requiredCoreString(coreRoom, "roomId");
+      roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
+    }
+    return {
+      rooms: await adaptCoreRoomViews(env, roomViews),
+      nextCursor: pagedCoreRooms.length === page.limit ? String(page.offset + page.limit) : null,
+    };
+  }
+
+  if (options.responseKind === "room") {
+    const room = (await adaptCoreRoomViews(env, [payload]))[0];
+    return { room };
+  }
+
+  if (options.responseKind === "member") {
+    const room = (await adaptCoreRoomViews(env, [payload]))[0];
+    const member = room.members.find((candidate) => candidate.principalId === options.memberPrincipalId);
+    if (!member) {
+      throw new HttpError(
+        502,
+        "messaging_core_proxy_invalid_response",
+        "Messaging Core room response did not include the expected member.",
+        { principalId: options.memberPrincipalId },
+      );
+    }
+    return { member };
+  }
+
+  if (options.responseKind === "invitation") {
+    return { invitation: await adaptCoreInvitation(env, objectValue(payload.invitation) ?? payload) };
+  }
+
+  if (options.responseKind === "invitations") {
+    const invitations = await Promise.all(arrayField(payload, "invitations").map((invitation) => adaptCoreInvitation(env, invitation)));
+    return { invitations, nextCursor: null };
+  }
+
+  if (options.responseKind === "transfer") {
+    return { transfer: adaptCoreOwnershipTransfer(objectValue(payload.transfer) ?? payload) };
+  }
+
+  return {};
+}
+
+async function adaptCoreRoomViews(env: Env, roomViews: JsonObject[]): Promise<Array<JsonObject & { members: JsonObject[] }>> {
+  const rooms = roomViews.map((view) => objectField(view, "room"));
+  const membersByRoom = roomViews.map((view) => arrayField(view, "members"));
+  const principalIds = uniqueStrings([
+    ...rooms.map((room) => stringValue(room.createdByPrincipalId)),
+    ...membersByRoom.flat().map((member) => stringValue(member.principalId)),
+  ]);
+  const roomIds = rooms.map((room) => requiredCoreString(room, "roomId"));
+  const profiles = await loadVoyagerPrincipalProfiles(env, principalIds);
+  const pinnedSummaries = await loadVoyagerPinnedSummaries(env, roomIds);
+
+  return rooms.map((room, index) => {
+    const roomId = requiredCoreString(room, "roomId");
+    const createdByPrincipalId = requiredCoreString(room, "createdByPrincipalId");
+    const createdBy = profiles.get(createdByPrincipalId);
+    if (!createdBy) {
+      throw new HttpError(
+        502,
+        "messaging_core_proxy_invalid_response",
+        "Messaging Core room references a principal Voyager cannot resolve.",
+        { principalId: createdByPrincipalId },
+      );
+    }
+    const pinned = pinnedSummaries.get(roomId) ?? { pinnedMessageCount: 0, latestPinnedMessageId: null };
+    return {
+      roomId,
+      type: requiredCoreString(room, "type"),
+      name: stringValue(room.title),
+      description: stringValue(room.description),
+      status: requiredCoreString(room, "status"),
+      version: numberValue(room.version) ?? 1,
+      createdByAccountId: createdBy.accountId,
+      createdByPrincipalId,
+      createdAt: requiredCoreString(room, "createdAt"),
+      updatedAt: requiredCoreString(room, "updatedAt"),
+      archivedAt: stringValue(room.archivedAt),
+      pinnedMessageCount: pinned.pinnedMessageCount,
+      latestPinnedMessageId: pinned.latestPinnedMessageId,
+      members: membersByRoom[index].map((member) => adaptCoreRoomMember(roomId, member, profiles)),
+    };
+  });
+}
+
+function adaptCoreRoomMember(
+  roomId: string,
+  member: JsonObject,
+  profiles: Map<string, VoyagerPrincipalProfile>,
+): JsonObject {
+  const principalId = requiredCoreString(member, "principalId");
+  const profile = profiles.get(principalId);
+  if (!profile) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core room member references a principal Voyager cannot resolve.",
+      { principalId },
+    );
+  }
+  const state = requiredCoreString(member, "state");
+  return {
+    membershipId: `${roomId}:${principalId}`,
+    roomId,
+    accountId: profile.accountId,
+    principalId,
+    principalType: profile.principalType,
+    displayName: profile.displayName,
+    role: requiredCoreString(member, "role"),
+    status: state === "left" ? "removed" : state,
+    createdAt: requiredCoreString(member, "createdAt"),
+    updatedAt: requiredCoreString(member, "updatedAt"),
+    removedAt: state === "active" || state === "invited"
+      ? null
+      : stringValue(member.leftAt) ?? stringValue(member.updatedAt),
+  };
+}
+
+async function adaptCoreInvitation(env: Env, invitation: JsonObject): Promise<JsonObject> {
+  const invitedPrincipalId = requiredCoreString(invitation, "inviteePrincipalId");
+  const invitedByPrincipalId = requiredCoreString(invitation, "inviterPrincipalId");
+  const profiles = await loadVoyagerPrincipalProfiles(env, [invitedPrincipalId, invitedByPrincipalId]);
+  const invitee = profiles.get(invitedPrincipalId);
+  const inviter = profiles.get(invitedByPrincipalId);
+  if (!invitee || !inviter) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core room invitation references a principal Voyager cannot resolve.",
+      { invitedPrincipalId, invitedByPrincipalId },
+    );
+  }
+  return {
+    roomInvitationId: requiredCoreString(invitation, "roomInvitationId"),
+    roomId: requiredCoreString(invitation, "roomId"),
+    roomName: stringValue(invitation.roomTitle),
+    roomType: requiredCoreString(invitation, "roomType"),
+    invitedAccountId: invitee.accountId,
+    invitedPrincipalId,
+    invitedByAccountId: inviter.accountId,
+    invitedByPrincipalId,
+    invitedByDisplayName: inviter.displayName,
+    role: requiredCoreString(invitation, "role"),
+    status: requiredCoreString(invitation, "status"),
+    expiresAt: stringValue(invitation.expiresAt) ?? requiredCoreString(invitation, "createdAt"),
+    respondedAt: stringValue(invitation.respondedAt),
+    createdAt: requiredCoreString(invitation, "createdAt"),
+  };
+}
+
+function adaptCoreOwnershipTransfer(transfer: JsonObject): JsonObject {
+  return {
+    transferId: requiredCoreString(transfer, "ownershipTransferId"),
+    roomId: requiredCoreString(transfer, "roomId"),
+    fromPrincipalId: requiredCoreString(transfer, "fromPrincipalId"),
+    toPrincipalId: requiredCoreString(transfer, "toPrincipalId"),
+    status: voyagerOwnershipTransferStatus(requiredCoreString(transfer, "status")),
+    expiresAt: stringValue(transfer.expiresAt) ?? requiredCoreString(transfer, "createdAt"),
+    createdAt: requiredCoreString(transfer, "createdAt"),
+    respondedAt: stringValue(transfer.completedAt),
+  };
+}
+
+function roomCutoverPage(query: URLSearchParams | undefined): { limit: number; offset: number } {
+  const limit = numericRoomCutoverQuery(query, "limit", 1, 200, 50);
+  const cursor = query?.get("cursor");
+  if (!cursor) return { limit, offset: 0 };
+  const offset = Number(cursor);
+  if (!Number.isInteger(offset) || offset < 0 || offset > Number.MAX_SAFE_INTEGER) {
+    throw new HttpError(400, "invalid_cursor", "Cursor is invalid");
+  }
+  return { limit, offset };
+}
+
+function numericRoomCutoverQuery(
+  query: URLSearchParams | undefined,
+  key: string,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  const value = query?.get(key);
+  if (value === null || value === undefined || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new HttpError(400, "invalid_query", `Query parameter must be an integer between ${min} and ${max}: ${key}`);
+  }
+  return parsed;
+}
+
+interface VoyagerPrincipalProfile {
+  accountId: string;
+  principalType: "human" | "agent";
+  displayName: string;
+}
+
+async function loadVoyagerPrincipalProfiles(
+  env: Env,
+  principalIds: string[],
+): Promise<Map<string, VoyagerPrincipalProfile>> {
+  const rows = principalIds.length
+    ? await selectIn<PrincipalRow>(
+        env,
+        `SELECT principal_id, account_id, principal_type, display_name, avatar_ref, status, owner_principal_id, created_at, revoked_at
+         FROM principals
+         WHERE principal_id IN ({ids})
+         ORDER BY principal_id`,
+        principalIds,
+      )
+    : [];
+  const profiles = new Map<string, VoyagerPrincipalProfile>();
+  for (const row of rows) {
+    profiles.set(row.principal_id, {
+      accountId: row.account_id,
+      principalType: row.principal_type === "agent" ? "agent" : "human",
+      displayName: row.display_name,
+    });
+  }
+  return profiles;
+}
+
+async function loadVoyagerPinnedSummaries(
+  env: Env,
+  roomIds: string[],
+): Promise<Map<string, { pinnedMessageCount: number; latestPinnedMessageId: string | null }>> {
+  const rows = roomIds.length
+    ? await selectIn<{
+        room_id: string;
+        pinned_message_count: number;
+        latest_pinned_message_id: string | null;
+      }>(
+        env,
+        `SELECT mp.room_id,
+                COUNT(*) AS pinned_message_count,
+                (
+                  SELECT latest.envelope_id
+                  FROM message_pins latest
+                  WHERE latest.room_id = mp.room_id
+                    AND latest.unpinned_at IS NULL
+                  ORDER BY latest.pinned_at DESC
+                  LIMIT 1
+                ) AS latest_pinned_message_id
+         FROM message_pins mp
+         WHERE mp.room_id IN ({ids})
+           AND mp.unpinned_at IS NULL
+         GROUP BY mp.room_id`,
+        roomIds,
+      )
+    : [];
+  const summaries = new Map<string, { pinnedMessageCount: number; latestPinnedMessageId: string | null }>();
+  for (const row of rows) {
+    summaries.set(row.room_id, {
+      pinnedMessageCount: Number(row.pinned_message_count ?? 0),
+      latestPinnedMessageId: row.latest_pinned_message_id ?? null,
+    });
+  }
+  return summaries;
+}
+
+function voyagerOwnershipTransferStatus(status: string): string {
+  if (status === "pending") return "proposed";
+  if (status === "accepted") return "completed";
+  if (status === "declined") return "rejected";
+  return status;
 }
 
 export async function backfillMessagingCoreReadonly(
@@ -570,6 +922,7 @@ async function buildVoyagerReadonlySnapshot(
     `SELECT r.room_id,
             r.type,
             r.name,
+            r.description,
             r.status,
             r.created_by_principal_id,
             r.version,
@@ -823,6 +1176,7 @@ function importRoom(room: VoyagerRoomBackfillRow): JsonObject {
     roomId: room.room_id,
     type: room.type,
     title: room.name,
+    description: room.description,
     status: room.status,
     createdByPrincipalId: room.created_by_principal_id,
     ownerPrincipalId: room.owner_principal_id ?? room.created_by_principal_id,
@@ -906,8 +1260,43 @@ function objectField(value: JsonObject, key: string): JsonObject {
   return field as JsonObject;
 }
 
+function objectValue(value: unknown): JsonObject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as JsonObject;
+}
+
+function arrayField(value: JsonObject, key: string): JsonObject[] {
+  const field = value[key];
+  if (!Array.isArray(field) || field.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core proxy response is missing the expected array field.",
+      { field: key },
+    );
+  }
+  return field as JsonObject[];
+}
+
+function requiredCoreString(value: JsonObject, key: string): string {
+  const result = stringValue(value[key]);
+  if (result === null) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core proxy response is missing the expected string field.",
+      { field: key },
+    );
+  }
+  return result;
+}
+
 function stringValue(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function messagingCoreUrl(config: BridgeConfig, path: string): string {
@@ -1014,6 +1403,7 @@ function resolveBridgeConfig(env: Env): BridgeConfig {
   return {
     mode,
     invalidMode,
+    roomCutoverEnabled: booleanEnv(env.VOYAGER_MESSAGING_CORE_ROOM_CUTOVER),
     messageCutoverEnabled: booleanEnv(env.VOYAGER_MESSAGING_CORE_MESSAGE_CUTOVER),
     tenantId: env.MESSAGING_CORE_TENANT_ID?.trim() || VOYAGER_DEFAULT_MESSAGING_TENANT_ID,
     tenantExternalRef: env.MESSAGING_CORE_TENANT_EXTERNAL_REF?.trim() || DEFAULT_APP_ID,
