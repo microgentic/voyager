@@ -46,8 +46,10 @@ export interface MessagingCoreIdentity {
 interface BridgeConfig {
   mode: MessagingCoreMode;
   invalidMode: string | null;
+  allCutoverEnabled: boolean;
   roomCutoverEnabled: boolean;
   messageCutoverEnabled: boolean;
+  syncCutoverEnabled: boolean;
   tenantId: string;
   tenantExternalRef: string;
   tenantDisplayName: string;
@@ -161,8 +163,10 @@ export function messagingCoreBridgeStatus(env: Env): JsonObject {
       required: config.mode === "proxy",
     },
     cutover: {
+      allCoreMessaging: config.allCutoverEnabled,
       roomRoutes: config.roomCutoverEnabled,
       messageRoutes: config.messageCutoverEnabled,
+      syncRoute: config.syncCutoverEnabled,
     },
     reason: bridgeStatusReason(config),
   };
@@ -239,6 +243,60 @@ export async function fetchMessagingCoreReadProxy(
   };
 }
 
+export async function fetchMessagingCoreSyncCutoverProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+  query?: URLSearchParams,
+): Promise<{ status: number; payload: JsonObject }> {
+  const config = resolveBridgeConfig(env);
+  const base = messagingCoreBridgeStatus(env);
+  if (!config.syncCutoverEnabled || !bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_cutover_unconfigured",
+      "Messaging Core sync cutover is not configured.",
+      { reason: bridgeStatusReason(config) ?? "sync_cutover_disabled" },
+    );
+  }
+
+  const { token, sync } = await createConfiguredMessagingCoreSession(env, config, base, identity);
+  if (!sync.ok) {
+    throw new HttpError(
+      503,
+      "messaging_core_identity_sync_failed",
+      "Messaging Core identity sync failed",
+      { reason: sync.reason },
+    );
+  }
+
+  const route = appendQuery("/sync", query);
+  const upstream = await getPublicCoreJson(config, token, route);
+  const coreRooms = arrayField(upstream.payload, "rooms");
+  const roomViews: JsonObject[] = [];
+  for (const coreRoom of coreRooms) {
+    const roomId = requiredCoreString(coreRoom, "roomId");
+    roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
+  }
+  const rooms = await adaptCoreRoomViews(env, roomViews);
+  const pendingMessages = await adaptCoreMessages(env, arrayField(upstream.payload, "pendingMessages"));
+  return {
+    status: upstream.status,
+    payload: {
+      ok: true,
+      sync: {
+        rooms,
+        roomsNextCursor: stringValue(upstream.payload.roomsNextCursor),
+        pendingMessages,
+        serverTime: stringValue(upstream.payload.serverTime),
+      },
+      messagingCoreCutover: cutoverDiagnostics(config, {
+        route,
+        upstreamStatus: upstream.status,
+      }),
+    },
+  };
+}
+
 export async function fetchMessagingCoreRealtimeTokenProxy(
   env: Env,
   identity: MessagingCoreIdentity,
@@ -275,6 +333,11 @@ export function messagingCoreMessageCutoverEnabled(env: Env): boolean {
 export function messagingCoreRoomCutoverEnabled(env: Env): boolean {
   const config = resolveBridgeConfig(env);
   return config.roomCutoverEnabled;
+}
+
+export function messagingCoreSyncCutoverEnabled(env: Env): boolean {
+  const config = resolveBridgeConfig(env);
+  return config.syncCutoverEnabled;
 }
 
 export function messagingCoreAttachmentAllocateBody(body: Record<string, unknown>): Record<string, unknown> {
@@ -347,10 +410,10 @@ export async function fetchMessagingCoreRoomCutoverProxy(
     payload: {
       ok: true,
       ...adapted,
-      messagingCoreCutover: {
+      messagingCoreCutover: cutoverDiagnostics(config, {
         route,
         upstreamStatus: upstream.status,
-      },
+      }),
     },
   };
 }
@@ -396,10 +459,10 @@ export async function fetchMessagingCoreMessageCutoverProxy(
     payload: {
       ok: true,
       ...payload,
-      messagingCoreCutover: {
+      messagingCoreCutover: cutoverDiagnostics(config, {
         route,
         upstreamStatus: upstream.status,
-      },
+      }),
     },
   };
 }
@@ -431,10 +494,10 @@ export async function fetchMessagingCoreAttachmentUploadCutoverProxy(
     payload: {
       ok: true,
       ...adapted,
-      messagingCoreCutover: {
+      messagingCoreCutover: cutoverDiagnostics(config, {
         route,
         upstreamStatus: upstream.response.status,
-      },
+      }),
     },
   };
 }
@@ -483,6 +546,29 @@ async function requireMessageCutoverSession(
     );
   }
   return createConfiguredMessagingCoreSession(env, config, base, identity);
+}
+
+function cutoverDiagnostics(
+  config: BridgeConfig,
+  options: {
+    route: string;
+    upstreamStatus: number;
+    fallbackReason?: string | null;
+  },
+): JsonObject {
+  return {
+    source: "core",
+    fallbackReason: options.fallbackReason ?? null,
+    route: options.route,
+    upstreamStatus: options.upstreamStatus,
+    flags: {
+      mode: config.mode,
+      allCoreMessaging: config.allCutoverEnabled,
+      roomRoutes: config.roomCutoverEnabled,
+      messageRoutes: config.messageCutoverEnabled,
+      syncRoute: config.syncCutoverEnabled,
+    },
+  };
 }
 
 async function adaptRoomCutoverPayload(
@@ -1932,11 +2018,14 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 
 function resolveBridgeConfig(env: Env): BridgeConfig {
   const { mode, invalidMode } = bridgeMode(env.VOYAGER_MESSAGING_CORE_MODE);
+  const allCutoverEnabled = booleanEnv(env.VOYAGER_MESSAGING_CORE_ALL_CUTOVER);
   return {
     mode,
     invalidMode,
-    roomCutoverEnabled: booleanEnv(env.VOYAGER_MESSAGING_CORE_ROOM_CUTOVER),
-    messageCutoverEnabled: booleanEnv(env.VOYAGER_MESSAGING_CORE_MESSAGE_CUTOVER),
+    allCutoverEnabled,
+    roomCutoverEnabled: allCutoverEnabled || booleanEnv(env.VOYAGER_MESSAGING_CORE_ROOM_CUTOVER),
+    messageCutoverEnabled: allCutoverEnabled || booleanEnv(env.VOYAGER_MESSAGING_CORE_MESSAGE_CUTOVER),
+    syncCutoverEnabled: allCutoverEnabled || booleanEnv(env.VOYAGER_MESSAGING_CORE_SYNC_CUTOVER),
     tenantId: env.MESSAGING_CORE_TENANT_ID?.trim() || VOYAGER_DEFAULT_MESSAGING_TENANT_ID,
     tenantExternalRef: env.MESSAGING_CORE_TENANT_EXTERNAL_REF?.trim() || DEFAULT_APP_ID,
     tenantDisplayName: env.MESSAGING_CORE_TENANT_DISPLAY_NAME?.trim() || DEFAULT_TENANT_DISPLAY_NAME,

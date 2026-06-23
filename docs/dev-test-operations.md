@@ -197,6 +197,23 @@ SMOKE_MESSAGING_CORE_REALTIME_CONNECT=1 \
 npm run smoke:messaging-core-parity
 ```
 
+To prove the guarded all-Core messaging mode, deploy Voyager with
+`VOYAGER_MESSAGING_CORE_ALL_CUTOVER=1` and a configured Messaging Core bridge,
+then run:
+
+```bash
+BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
+VOYAGER_LOGIN_EMAIL=ada@example.com \
+VOYAGER_LOGIN_PASSWORD=voyager-demo-pass \
+SMOKE_MESSAGING_CORE_ALL_CUTOVER=1 \
+npm run smoke:messaging-core-parity
+```
+
+That smoke exercises normal Voyager login, Core session minting, bootstrap,
+room list/detail, room writes, message send/list, sync, attachment
+upload/download, thread inbox, Core realtime `ready`/`pong`, and Core
+`room.message` delivery for a message sent through the normal Voyager route.
+
 ## 6. Manual Cross-Client Checklist
 
 After this PR is deployed, manually verify:

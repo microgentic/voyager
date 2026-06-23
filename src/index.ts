@@ -40,10 +40,12 @@ import {
   fetchMessagingCoreReadProxy,
   fetchMessagingCoreRealtimeTokenProxy,
   fetchMessagingCoreRoomCutoverProxy,
+  fetchMessagingCoreSyncCutoverProxy,
   messagingCoreAttachmentAllocateBody,
   messagingCoreAttachmentCompleteBody,
   messagingCoreMessageCutoverEnabled,
   messagingCoreRoomCutoverEnabled,
+  messagingCoreSyncCutoverEnabled,
 } from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
 import { ROOM_INVITATION_DAYS } from "./backend/rooms/types";
@@ -335,6 +337,11 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   const messagingCoreMessageCutoverResponse = await handleMessagingCoreMessageCutover(request, env, url, auth);
   if (messagingCoreMessageCutoverResponse) {
     return messagingCoreMessageCutoverResponse;
+  }
+
+  const messagingCoreSyncCutoverResponse = await handleMessagingCoreSyncCutover(request, env, url, auth, authTimingMs);
+  if (messagingCoreSyncCutoverResponse) {
+    return messagingCoreSyncCutoverResponse;
   }
 
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
@@ -1401,6 +1408,28 @@ async function messagingCoreMessageCutoverRoute(
   }
 
   return null;
+}
+
+async function handleMessagingCoreSyncCutover(
+  request: Request,
+  env: Env,
+  url: URL,
+  auth: AuthContext,
+  authTimingMs: number,
+): Promise<Response | null> {
+  if (!messagingCoreSyncCutoverEnabled(env)) return null;
+  if (url.pathname !== "/v1/sync") return null;
+  requireMethod(request, "GET");
+  const startedAt = performance.now();
+  const result = await fetchMessagingCoreSyncCutoverProxy(
+    env,
+    messagingCoreIdentity(auth),
+    proxyQuery(url, ["limit"]),
+  );
+  return json(result.payload, {
+    status: result.status,
+    headers: readTimingHeaders("messagingCoreSync", authTimingMs, startedAt),
+  });
 }
 
 function readTimingHeaders(routeName: string, authMs: number, startedAt: number): Record<string, string> {

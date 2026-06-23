@@ -3,10 +3,12 @@ const sessionToken = process.env.VOYAGER_SESSION_TOKEN ?? "";
 const loginEmail = process.env.VOYAGER_LOGIN_EMAIL ?? "";
 const loginPassword = process.env.VOYAGER_LOGIN_PASSWORD ?? "";
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
-const exerciseRoomCutover = process.env.SMOKE_MESSAGING_CORE_ROOM_CUTOVER === "1";
-const exerciseRoomWriteCutover = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_CUTOVER === "1";
-const exerciseMessageWriteCutover = process.env.SMOKE_MESSAGING_CORE_WRITE_CUTOVER === "1";
-const exerciseRealtimeConnect = process.env.SMOKE_MESSAGING_CORE_REALTIME_CONNECT === "1";
+const exerciseAllCoreCutover = process.env.SMOKE_MESSAGING_CORE_ALL_CUTOVER === "1";
+const exerciseRoomCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_ROOM_CUTOVER === "1";
+const exerciseRoomWriteCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_CUTOVER === "1";
+const exerciseMessageWriteCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_WRITE_CUTOVER === "1";
+const exerciseSyncCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_SYNC_CUTOVER === "1";
+const exerciseRealtimeConnect = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_REALTIME_CONNECT === "1";
 const roomWritePassword = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_PASSWORD ?? loginPassword ?? "";
 const roomWriteInviteeEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_INVITEE_EMAIL ?? "grace@example.com";
 const roomWriteTransferEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_TRANSFER_EMAIL ?? "alan@example.com";
@@ -135,8 +137,10 @@ let proxiedRoomCutoverRead = false;
 let proxiedRoomCutoverWrites = false;
 let proxiedMessages = false;
 let proxiedMessageWrite = false;
+let proxiedSyncCutover = false;
 let proxiedThreadInbox = false;
 let proxiedAttachmentWrite = false;
+let proxiedRealtimeMessage = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
 if (!firstRoomId) {
   throw new Error("Core /rooms returned no rooms; run npm run messaging-core:backfill-readonly before parity smoke.");
@@ -171,6 +175,7 @@ if (firstRoomId) {
     const normalRooms = await voyagerApi("/v1/rooms", {
       token: voyagerToken,
     });
+    assertCoreCutoverDiagnostics(normalRooms.messagingCoreCutover, "/rooms", "normal Voyager room list cutover diagnostics");
     assertEqual(normalRooms.messagingCoreCutover?.route, "/rooms", "normal Voyager room list cutover route");
     assertEqual(normalRooms.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager room list cutover upstream status");
     assertArray(normalRooms.rooms, "normal Voyager room list cutover rooms");
@@ -180,6 +185,7 @@ if (firstRoomId) {
     const normalRoom = await voyagerApi(`/v1/rooms/${encodedRoomId}`, {
       token: voyagerToken,
     });
+    assertCoreCutoverDiagnostics(normalRoom.messagingCoreCutover, `/rooms/${encodedRoomId}`, "normal Voyager room detail cutover diagnostics");
     assertEqual(normalRoom.messagingCoreCutover?.route, `/rooms/${encodedRoomId}`, "normal Voyager room detail cutover route");
     assertEqual(normalRoom.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager room detail cutover upstream status");
     assertEqual(normalRoom.room?.roomId, firstRoomId, "normal Voyager room detail cutover roomId");
@@ -194,6 +200,19 @@ if (firstRoomId) {
     }
   }
 
+  if (exerciseSyncCutover) {
+    const normalSync = await voyagerApi("/v1/sync?limit=20", {
+      token: voyagerToken,
+    });
+    assertCoreCutoverDiagnostics(normalSync.messagingCoreCutover, "/sync?limit=20", "normal Voyager sync cutover diagnostics");
+    assertArray(normalSync.sync?.rooms, "normal Voyager sync cutover rooms");
+    assertArray(normalSync.sync?.pendingMessages, "normal Voyager sync cutover pendingMessages");
+    if (!normalSync.sync.rooms.some((room) => room.roomId === firstRoomId)) {
+      throw new Error("normal Voyager sync cutover did not include the seeded Core room.");
+    }
+    proxiedSyncCutover = true;
+  }
+
   if (exerciseMessageWriteCutover) {
     const idempotencyKey = `messaging-core-cutover-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const normalSend = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
@@ -205,6 +224,7 @@ if (firstRoomId) {
         ciphertext: `messaging-core-cutover-smoke-${idempotencyKey}`,
       },
     });
+    assertCoreCutoverDiagnostics(normalSend.messagingCoreCutover, `/rooms/${encodedRoomId}/messages`, "normal Voyager message cutover diagnostics");
     assertEqual(normalSend.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages`, "normal Voyager message cutover route");
     assertEqual(normalSend.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager message cutover upstream status");
     if (!normalSend.message?.envelopeId) {
@@ -215,6 +235,7 @@ if (firstRoomId) {
     const normalList = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages?limit=20`, {
       token: voyagerToken,
     });
+    assertCoreCutoverDiagnostics(normalList.messagingCoreCutover, `/rooms/${encodedRoomId}/messages?limit=20`, "normal Voyager message list cutover diagnostics");
     assertEqual(normalList.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages?limit=20`, "normal Voyager message list cutover route");
     assertEqual(normalList.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager message list cutover upstream status");
     assertArray(normalList.messages, "normal Voyager message list cutover messages");
@@ -233,6 +254,15 @@ if (firstRoomId) {
       roomId: firstRoomId,
       encodedRoomId,
     });
+
+    if (exerciseRealtimeConnect) {
+      proxiedRealtimeMessage = await runCoreRealtimeMessageDeliverySmoke({
+        baseUrl: coreBaseUrl,
+        token: voyagerToken,
+        encodedRoomId,
+        claims,
+      });
+    }
   }
 }
 
@@ -254,8 +284,10 @@ console.log(JSON.stringify({
   proxiedRoomCutoverWrites,
   proxiedMessages,
   proxiedMessageWrite,
+  proxiedSyncCutover,
   proxiedThreadInbox,
   proxiedAttachmentWrite,
+  proxiedRealtimeMessage,
 }, null, 2));
 
 async function runThreadInboxCutoverSmoke({ token, encodedRoomId, rootEnvelopeId }) {
@@ -270,11 +302,13 @@ async function runThreadInboxCutoverSmoke({ token, encodedRoomId, rootEnvelopeId
       ciphertext: `messaging-core-thread-reply-${suffix}`,
     },
   });
+  assertCoreCutoverDiagnostics(reply.messagingCoreCutover, `/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, "normal Voyager thread reply cutover diagnostics");
   assertEqual(reply.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, "normal Voyager thread reply cutover route");
   assertEqual(reply.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager thread reply cutover upstream status");
   assertEqual(reply.message?.threadRootEnvelopeId, rootEnvelopeId, "normal Voyager thread reply root");
 
   const inbox = await voyagerApi("/v1/threads?limit=20", { token });
+  assertCoreCutoverDiagnostics(inbox.messagingCoreCutover, "/threads?limit=20", "normal Voyager thread inbox cutover diagnostics");
   assertEqual(inbox.messagingCoreCutover?.route, "/threads?limit=20", "normal Voyager thread inbox cutover route");
   assertEqual(inbox.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager thread inbox cutover upstream status");
   assertArray(inbox.items, "normal Voyager thread inbox cutover items");
@@ -309,6 +343,7 @@ async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoo
       variantManifest: { smoke: "messaging-core-cutover" },
     },
   });
+  assertCoreCutoverDiagnostics(allocated.messagingCoreCutover, `/rooms/${encodedRoomId}/attachments`, "normal Voyager attachment allocate cutover diagnostics");
   assertEqual(allocated.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/attachments`, "normal Voyager attachment allocate cutover route");
   assertEqual(allocated.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager attachment allocate cutover upstream status");
   assertEqual(allocated.attachment?.roomId, roomId, "normal Voyager attachment allocate roomId");
@@ -326,6 +361,7 @@ async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoo
     headers: { "content-type": "audio/ogg" },
     body,
   });
+  assertCoreCutoverDiagnostics(uploaded.messagingCoreCutover, `/attachments/${encodedAttachmentId}/blob?variant=original`, "normal Voyager attachment upload cutover diagnostics");
   assertEqual(uploaded.messagingCoreCutover?.route, `/attachments/${encodedAttachmentId}/blob?variant=original`, "normal Voyager attachment upload cutover route");
   assertEqual(uploaded.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager attachment upload cutover upstream status");
   assertEqual(uploaded.attachment?.state, "uploaded", "normal Voyager attachment upload state");
@@ -340,6 +376,7 @@ async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoo
       variantManifest: { smoke: "messaging-core-cutover", completed: true },
     },
   });
+  assertCoreCutoverDiagnostics(completed.messagingCoreCutover, `/attachments/${encodedAttachmentId}/complete`, "normal Voyager attachment complete cutover diagnostics");
   assertEqual(completed.messagingCoreCutover?.route, `/attachments/${encodedAttachmentId}/complete`, "normal Voyager attachment complete cutover route");
   assertEqual(completed.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager attachment complete upstream status");
   assertEqual(completed.attachment?.state, "uploaded", "normal Voyager attachment complete compatibility state");
@@ -356,6 +393,7 @@ async function runAttachmentMessageWriteCutoverSmoke({ token, roomId, encodedRoo
       attachmentIds: [attachmentId],
     },
   });
+  assertCoreCutoverDiagnostics(sent.messagingCoreCutover, `/rooms/${encodedRoomId}/messages`, "normal Voyager attachment message cutover diagnostics");
   assertEqual(sent.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages`, "normal Voyager attachment message cutover route");
   assertEqual(sent.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager attachment message cutover upstream status");
   if (!sent.message?.envelopeId) {
@@ -438,6 +476,115 @@ async function runCoreRealtimeConnectSmoke({ baseUrl, realtime, claims }) {
           pong = true;
         }
         if (ready && pong) finish();
+      } catch (error) {
+        fail(error);
+      }
+    };
+  });
+}
+
+async function runCoreRealtimeMessageDeliverySmoke({ baseUrl, token, encodedRoomId, claims }) {
+  if (typeof WebSocket === "undefined") {
+    throw new Error("This Node runtime does not expose WebSocket; cannot run Messaging Core realtime message delivery smoke.");
+  }
+  const realtimeResponse = await voyagerApi("/v1/messaging-core/realtime/token", {
+    method: "POST",
+    token,
+    json: {},
+  });
+  assertEqual(realtimeResponse.realtime?.protocol, "messaging.realtime.v1", "Core realtime message smoke protocol");
+  const realtime = realtimeResponse.realtime;
+  const url = new URL(realtime.connectPath, baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("token", realtime.realtimeToken);
+
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, [realtime.protocol]);
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const roomMessageEvents = [];
+    let sentMessage = null;
+    let sendStarted = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      fail(new Error("timed out waiting for Messaging Core realtime room.message delivery"));
+    }, fetchTimeoutMs);
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.close(1000, "smoke_done");
+      resolve(true);
+    }
+
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.close(1011, "smoke_failed");
+      reject(error);
+    }
+
+    function checkDelivery() {
+      if (!sentMessage) return;
+      const delivery = roomMessageEvents.find((event) => event.envelopeId === sentMessage.envelopeId);
+      if (!delivery) return;
+      assertEqual(delivery.tenantId, claims.tenantId, "Core realtime room.message tenantId");
+      assertEqual(delivery.roomId, decodeURIComponent(encodedRoomId), "Core realtime room.message roomId");
+      assertEqual(delivery.serverSequence, sentMessage.serverSequence, "Core realtime room.message serverSequence");
+      assertEqual(delivery.senderPrincipalId, claims.principalId, "Core realtime room.message senderPrincipalId");
+      assertEqual(delivery.senderDeviceId, claims.deviceId, "Core realtime room.message senderDeviceId");
+      finish();
+    }
+
+    async function sendMessage() {
+      if (sendStarted) return;
+      sendStarted = true;
+      try {
+        const idempotencyKey = `messaging-core-realtime-cutover-${suffix}`;
+        const sent = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
+          method: "POST",
+          token,
+          json: {
+            idempotencyKey,
+            protocolType: "opaque-test",
+            ciphertext: `messaging-core-realtime-cutover-${suffix}`,
+          },
+        });
+        assertCoreCutoverDiagnostics(sent.messagingCoreCutover, `/rooms/${encodedRoomId}/messages`, "normal Voyager realtime message cutover diagnostics");
+        if (!sent.message?.envelopeId) {
+          throw new Error(`normal Voyager realtime message cutover did not return a message: ${JSON.stringify(sent)}`);
+        }
+        sentMessage = sent.message;
+        checkDelivery();
+      } catch (error) {
+        fail(error);
+      }
+    }
+
+    socket.onopen = () => {};
+    socket.onerror = () => {
+      fail(new Error("Messaging Core realtime WebSocket errored before room.message delivery"));
+    };
+    socket.onclose = () => {
+      if (!settled) {
+        fail(new Error("Messaging Core realtime WebSocket closed before room.message delivery"));
+      }
+    };
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(String(event.data));
+        if (message.type === "ready") {
+          assertEqual(message.tenantId, claims.tenantId, "Core realtime message smoke ready tenantId");
+          assertEqual(message.accountId, claims.accountId, "Core realtime message smoke ready accountId");
+          assertEqual(message.principalId, claims.principalId, "Core realtime message smoke ready principalId");
+          assertEqual(message.deviceId, claims.deviceId, "Core realtime message smoke ready deviceId");
+          void sendMessage();
+        }
+        if (message.type === "room.message") {
+          roomMessageEvents.push(message);
+          checkDelivery();
+        }
       } catch (error) {
         fail(error);
       }
@@ -749,6 +896,17 @@ function assertArray(value, context) {
   if (!Array.isArray(value)) {
     throw new Error(`${context} must be an array`);
   }
+}
+
+function assertCoreCutoverDiagnostics(value, expectedRoute, context) {
+  assertObject(value, context);
+  assertEqual(value.source, "core", `${context} source`);
+  assertEqual(value.fallbackReason ?? null, null, `${context} fallbackReason`);
+  assertEqual(value.route, expectedRoute, `${context} route`);
+  assertEqual(typeof value.upstreamStatus, "number", `${context} upstreamStatus type`);
+  assertObject(value.flags, `${context} flags`);
+  assertEqual(typeof value.flags.mode, "string", `${context} mode flag type`);
+  assertEqual(value.flags.allCoreMessaging || value.flags.roomRoutes || value.flags.messageRoutes || value.flags.syncRoute, true, `${context} enabled flag`);
 }
 
 function assertEqual(actual, expected, context) {
