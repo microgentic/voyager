@@ -107,6 +107,8 @@ export interface MessagingCoreSession {
 				attempted: boolean;
 				ok: boolean;
 				reason: string | null;
+				failedStep: 'tenant' | 'account' | 'principal' | 'device' | null;
+				tenantSynced: boolean;
 				accountSynced: boolean;
 				principalSynced: boolean;
 				deviceSynced: boolean;
