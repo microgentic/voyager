@@ -481,6 +481,10 @@ export function assertMessagingCoreSession(value, context) {
     boolean(identitySync.principalSynced, `${context}.identitySync.principalSynced`);
     boolean(identitySync.deviceSynced, `${context}.identitySync.deviceSynced`);
   }
+  if ("cutover" in session) {
+    const cutover = object(session.cutover, `${context}.cutover`);
+    boolean(cutover.messageRoutes, `${context}.cutover.messageRoutes`);
+  }
   nullableString(session.reason, `${context}.reason`);
   if (session.configured) {
     literal(session.tokenType, "Bearer", `${context}.tokenType`);

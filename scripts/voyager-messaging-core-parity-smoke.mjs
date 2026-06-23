@@ -3,6 +3,7 @@ const sessionToken = process.env.VOYAGER_SESSION_TOKEN ?? "";
 const loginEmail = process.env.VOYAGER_LOGIN_EMAIL ?? "";
 const loginPassword = process.env.VOYAGER_LOGIN_PASSWORD ?? "";
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
+const exerciseMessageWriteCutover = process.env.SMOKE_MESSAGING_CORE_WRITE_CUTOVER === "1";
 
 if (!voyagerBaseUrl) {
   throw new Error("Set VOYAGER_BASE_URL or BASE_URL to the Voyager API base URL.");
@@ -78,6 +79,7 @@ assertEqual(voyagerProxyRooms.rooms.length, coreRooms.rooms.length, "Voyager pro
 
 let proxiedRoomDetail = false;
 let proxiedMessages = false;
+let proxiedMessageWrite = false;
 const firstRoomId = coreRooms.rooms[0]?.roomId;
 if (!firstRoomId) {
   throw new Error("Core /rooms returned no rooms; run npm run messaging-core:backfill-readonly before parity smoke.");
@@ -107,6 +109,34 @@ if (firstRoomId) {
     assertEqual(voyagerProxyMessages.messages[0]?.envelopeId, coreMessages.messages[0].envelopeId, "Voyager proxy first message envelopeId");
   }
   proxiedMessages = true;
+
+  if (exerciseMessageWriteCutover) {
+    const idempotencyKey = `messaging-core-cutover-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const normalSend = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
+      method: "POST",
+      token: voyagerToken,
+      json: {
+        idempotencyKey,
+        protocolType: "opaque-test",
+        ciphertext: `messaging-core-cutover-smoke-${idempotencyKey}`,
+      },
+    });
+    assertEqual(normalSend.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages`, "normal Voyager message cutover route");
+    assertEqual(normalSend.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager message cutover upstream status");
+    if (!normalSend.message?.envelopeId) {
+      throw new Error(`normal Voyager message cutover did not return a message: ${JSON.stringify(normalSend)}`);
+    }
+    const normalList = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages?limit=20`, {
+      token: voyagerToken,
+    });
+    assertEqual(normalList.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages?limit=20`, "normal Voyager message list cutover route");
+    assertEqual(normalList.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager message list cutover upstream status");
+    assertArray(normalList.messages, "normal Voyager message list cutover messages");
+    if (!normalList.messages.some((message) => message.envelopeId === normalSend.message.envelopeId)) {
+      throw new Error("normal Voyager message list cutover did not include the sent Core message.");
+    }
+    proxiedMessageWrite = true;
+  }
 }
 
 console.log(JSON.stringify({
@@ -121,6 +151,7 @@ console.log(JSON.stringify({
   proxiedRooms: true,
   proxiedRoomDetail,
   proxiedMessages,
+  proxiedMessageWrite,
 }, null, 2));
 
 async function voyagerApi(path, options = {}) {

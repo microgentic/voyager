@@ -31,7 +31,13 @@ import {
   updateAccountPolicy
 } from "./db";
 import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
-import { createMessagingCoreSessionPayload, fetchMessagingCoreBootstrapProxy, fetchMessagingCoreReadProxy } from "./backend/messaging-core-bridge";
+import {
+  createMessagingCoreSessionPayload,
+  fetchMessagingCoreBootstrapProxy,
+  fetchMessagingCoreMessageCutoverProxy,
+  fetchMessagingCoreReadProxy,
+  messagingCoreMessageCutoverEnabled,
+} from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
@@ -288,6 +294,11 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
         `/rooms/${encodeURIComponent(messagingCoreRoomMatch[1])}`
       ))
     });
+  }
+
+  const messagingCoreMessageCutoverResponse = await handleMessagingCoreMessageCutover(request, env, url, auth);
+  if (messagingCoreMessageCutoverResponse) {
+    return messagingCoreMessageCutoverResponse;
   }
 
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
@@ -736,6 +747,163 @@ function stringArrayField(
 
 function clientIp(request: Request): string {
   return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+async function handleMessagingCoreMessageCutover(
+  request: Request,
+  env: Env,
+  url: URL,
+  auth: AuthContext,
+): Promise<Response | null> {
+  if (!messagingCoreMessageCutoverEnabled(env)) return null;
+
+  const route = await messagingCoreMessageCutoverRoute(request, url);
+  if (!route) return null;
+
+  const result = await fetchMessagingCoreMessageCutoverProxy(
+    env,
+    messagingCoreIdentity(auth),
+    route.method,
+    route.path,
+    { body: route.body, query: route.query, responseField: route.responseField },
+  );
+  return json(result.payload, { status: result.status });
+}
+
+async function messagingCoreMessageCutoverRoute(
+  request: Request,
+  url: URL,
+): Promise<{
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  path: string;
+  query?: URLSearchParams;
+  body?: Record<string, unknown>;
+  responseField?: string;
+} | null> {
+  const messagesMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages$/, url.pathname);
+  if (messagesMatch) {
+    const roomPath = `/rooms/${messagesMatch[1]}/messages`;
+    if (request.method === "GET") {
+      return { method: "GET", path: roomPath, query: proxyQuery(url, ["after", "limit"]) };
+    }
+    if (request.method === "POST") {
+      const body = await readJsonObject(request);
+      assertMessagingCoreSendBodySupported(body);
+      return { method: "POST", path: roomPath, body, responseField: "message" };
+    }
+  }
+
+  const deleteMessagesMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/delete$/, url.pathname);
+  if (request.method === "POST" && deleteMessagesMatch) {
+    return {
+      method: "POST",
+      path: `/rooms/${deleteMessagesMatch[1]}/messages/delete`,
+      body: await readJsonObject(request),
+      responseField: "deleted",
+    };
+  }
+
+  const messageMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)$/, url.pathname);
+  if (request.method === "PATCH" && messageMatch) {
+    const body = await readJsonObject(request);
+    assertMessagingCoreSendBodySupported(body);
+    return {
+      method: "PATCH",
+      path: `/rooms/${messageMatch[1]}/messages/${messageMatch[2]}`,
+      body,
+      responseField: "message",
+    };
+  }
+
+  const messageForwardMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/forward$/, url.pathname);
+  if (request.method === "POST" && messageForwardMatch) {
+    const body = await readJsonObject(request);
+    assertMessagingCoreSendBodySupported(body);
+    return {
+      method: "POST",
+      path: `/rooms/${messageForwardMatch[1]}/messages/${messageForwardMatch[2]}/forward`,
+      body,
+      responseField: "message",
+    };
+  }
+
+  const messageReactionsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/reactions$/, url.pathname);
+  if (request.method === "POST" && messageReactionsMatch) {
+    return {
+      method: "POST",
+      path: `/rooms/${messageReactionsMatch[1]}/messages/${messageReactionsMatch[2]}/reactions`,
+      body: await readJsonObject(request),
+      responseField: "message",
+    };
+  }
+
+  const messageReactionDeleteMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/reactions\/([^/]+)$/, url.pathname);
+  if (request.method === "DELETE" && messageReactionDeleteMatch) {
+    return {
+      method: "DELETE",
+      path: `/rooms/${messageReactionDeleteMatch[1]}/messages/${messageReactionDeleteMatch[2]}/reactions/${messageReactionDeleteMatch[3]}`,
+      responseField: "message",
+    };
+  }
+
+  const messagePinMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/pin$/, url.pathname);
+  if ((request.method === "POST" || request.method === "DELETE") && messagePinMatch) {
+    return {
+      method: request.method,
+      path: `/rooms/${messagePinMatch[1]}/messages/${messagePinMatch[2]}/pin`,
+      responseField: "message",
+    };
+  }
+
+  const ackMessageMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/ack$/, url.pathname);
+  if (request.method === "POST" && ackMessageMatch) {
+    return {
+      method: "POST",
+      path: `/rooms/${ackMessageMatch[1]}/messages/${ackMessageMatch[2]}/ack`,
+      body: await readJsonObject(request),
+      responseField: "receipt",
+    };
+  }
+
+  const threadMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread$/, url.pathname);
+  if (threadMatch) {
+    const threadPath = `/rooms/${threadMatch[1]}/messages/${threadMatch[2]}/thread`;
+    if (request.method === "GET") {
+      return { method: "GET", path: threadPath, query: proxyQuery(url, ["after", "limit"]), responseField: "thread" };
+    }
+  }
+
+  const threadReadMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread\/read$/, url.pathname);
+  if (request.method === "POST" && threadReadMatch) {
+    return {
+      method: "POST",
+      path: `/rooms/${threadReadMatch[1]}/messages/${threadReadMatch[2]}/thread/read`,
+      responseField: "threadState",
+    };
+  }
+
+  const threadSubscriptionMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/messages\/([^/]+)\/thread\/subscription$/, url.pathname);
+  if (request.method === "PATCH" && threadSubscriptionMatch) {
+    return {
+      method: "PATCH",
+      path: `/rooms/${threadSubscriptionMatch[1]}/messages/${threadSubscriptionMatch[2]}/thread/subscription`,
+      body: await readJsonObject(request),
+      responseField: "threadState",
+    };
+  }
+
+  return null;
+}
+
+function assertMessagingCoreSendBodySupported(body: Record<string, unknown>): void {
+  const attachmentIds = body.attachmentIds;
+  if (Array.isArray(attachmentIds) && attachmentIds.length > 0) {
+    throw new HttpError(
+      409,
+      "messaging_core_attachment_cutover_pending",
+      "Messaging Core message cutover does not support attachment-backed messages yet.",
+    );
+  }
 }
 
 function readTimingHeaders(routeName: string, authMs: number, startedAt: number): Record<string, string> {
