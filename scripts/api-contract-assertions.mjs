@@ -103,6 +103,7 @@ export const endpointStabilityCatalog = [
   { method: "GET", path: "/v1/admin/audit-events", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/rooms", stability: "admin/dev-only" },
   { method: "POST", path: "/v1/admin/devices/test-cleanup", stability: "admin/dev-only" },
+  { method: "POST", path: "/v1/admin/messaging-core/backfill-readonly", stability: "admin/dev-only" },
   { method: "GET", path: "/v1/admin/agent-requests", stability: "admin/dev-only" },
   { method: "PATCH", path: "/v1/admin/agent-requests/{requestId}", stability: "admin/dev-only" },
   { method: "POST", path: "/v1/admin/agents", stability: "future-sensitive" },
