@@ -16,6 +16,7 @@ type MessageCutoverResponseKind =
   | "deleted"
   | "receipt"
   | "thread"
+  | "threads"
   | "threadState"
   | "attachment"
   | "ok";
@@ -361,7 +362,7 @@ export async function fetchMessagingCoreMessageCutoverProxy(
 
   const route = appendQuery(path, options.query);
   const upstream = await publicCoreJson(config, token, method, route, options.body, { preserveClientErrors: true });
-  const payload = await adaptMessageCutoverPayload(env, upstream.payload, options.responseKind ?? "ok", options);
+  const payload = await adaptMessageCutoverPayload(env, config, token, upstream.payload, options.responseKind ?? "ok", options);
   return {
     status: upstream.status,
     payload: {
@@ -396,7 +397,7 @@ export async function fetchMessagingCoreAttachmentUploadCutoverProxy(
   const route = appendQuery(path, query);
   const upstream = await publicCoreRaw(config, token, "PUT", route, request, { preserveClientErrors: true });
   const payload = await parseJsonObjectResponse(upstream.response);
-  const adapted = await adaptMessageCutoverPayload(env, payload, "attachment");
+  const adapted = await adaptMessageCutoverPayload(env, config, token, payload, "attachment");
   return {
     status: upstream.response.status,
     payload: {
@@ -645,6 +646,8 @@ function adaptCoreOwnershipTransfer(transfer: JsonObject): JsonObject {
 
 async function adaptMessageCutoverPayload(
   env: Env,
+  config: BridgeConfig,
+  token: string,
   payload: JsonObject,
   responseKind: MessageCutoverResponseKind,
   context: { roomId?: string } = {},
@@ -670,6 +673,44 @@ async function adaptMessageCutoverPayload(
         replies: adapted.slice(1),
         olderCursor: stringValue(payload.olderCursor),
       },
+    };
+  }
+
+  if (responseKind === "threads") {
+    const coreItems = arrayField(payload, "items");
+    const roots = coreItems.map((item) => objectField(item, "root"));
+    const roomIds = uniqueStrings(roots.map((root) => stringValue(root.roomId)));
+    const roomViews: JsonObject[] = [];
+    for (const roomId of roomIds) {
+      roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
+    }
+    const rooms = new Map((await adaptCoreRoomViews(env, roomViews)).map((room) => [requiredCoreString(room, "roomId"), room]));
+    const adaptedRoots = await adaptCoreMessages(env, roots);
+    return {
+      items: coreItems.map((item, index) => {
+        const root = adaptedRoots[index];
+        const roomId = requiredCoreString(roots[index], "roomId");
+        const room = rooms.get(roomId);
+        if (!room) {
+          throw new HttpError(
+            502,
+            "messaging_core_proxy_invalid_response",
+            "Messaging Core thread inbox references a room Voyager cannot adapt.",
+            { roomId },
+          );
+        }
+        const subscriptionState = stringValue(item.subscriptionState);
+        return {
+          room,
+          root,
+          following: subscriptionState !== "muted",
+          muted: subscriptionState === "muted",
+          unreadCount: numberValue(item.unreadCount) ?? 0,
+          lastReadSequence: numberValue(item.lastReadReplySequence) ?? 0,
+          updatedAt: stringValue(item.updatedAt) ?? stringValue(roots[index].updatedAt) ?? requiredCoreString(roots[index], "createdAt"),
+        };
+      }),
+      nextCursor: stringValue(payload.nextCursor),
     };
   }
 
