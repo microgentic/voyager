@@ -6,6 +6,7 @@ import type { JsonObject } from "./shared/types";
 export const VOYAGER_DEFAULT_MESSAGING_TENANT_ID = "tenant_voyager_default";
 
 type MessagingCoreMode = "off" | "shadow" | "proxy";
+type PublicCoreMethod = "GET" | "POST" | "PATCH" | "DELETE";
 type PrincipalType = "human" | "agent" | "service";
 type IdentitySyncStep = "tenant" | "account" | "principal" | "device";
 
@@ -33,6 +34,7 @@ export interface MessagingCoreIdentity {
 interface BridgeConfig {
   mode: MessagingCoreMode;
   invalidMode: string | null;
+  messageCutoverEnabled: boolean;
   tenantId: string;
   tenantExternalRef: string;
   tenantDisplayName: string;
@@ -64,6 +66,7 @@ interface IdentitySyncResult {
 interface ConfiguredMessagingCoreSession {
   session: JsonObject;
   token: string;
+  sync: IdentitySyncResult;
 }
 
 type VoyagerReadonlyBackfillSnapshot = JsonObject & {
@@ -142,6 +145,9 @@ export function messagingCoreBridgeStatus(env: Env): JsonObject {
       available: Boolean((config.baseUrl || config.serviceBinding) && config.internalSecret),
       required: config.mode === "proxy",
     },
+    cutover: {
+      messageRoutes: config.messageCutoverEnabled,
+    },
     reason: bridgeStatusReason(config),
   };
 }
@@ -213,6 +219,57 @@ export async function fetchMessagingCoreReadProxy(
     proxied: {
       route,
       upstreamStatus: upstream.status,
+    },
+  };
+}
+
+export function messagingCoreMessageCutoverEnabled(env: Env): boolean {
+  const config = resolveBridgeConfig(env);
+  return config.messageCutoverEnabled && bridgeCanMintClientToken(config);
+}
+
+export async function fetchMessagingCoreMessageCutoverProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+  method: PublicCoreMethod,
+  path: string,
+  options: { body?: Record<string, unknown>; query?: URLSearchParams; responseField?: string } = {},
+): Promise<{ status: number; payload: JsonObject }> {
+  const config = resolveBridgeConfig(env);
+  const base = messagingCoreBridgeStatus(env);
+  if (!config.messageCutoverEnabled || !bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_cutover_unconfigured",
+      "Messaging Core message cutover is not configured.",
+      { reason: bridgeStatusReason(config) ?? "message_cutover_disabled" },
+    );
+  }
+
+  const { token, sync } = await createConfiguredMessagingCoreSession(env, config, base, identity);
+  if (!sync.ok) {
+    throw new HttpError(
+      503,
+      "messaging_core_identity_sync_failed",
+      "Messaging Core identity sync failed",
+      { reason: sync.reason },
+    );
+  }
+
+  const route = appendQuery(path, options.query);
+  const upstream = await publicCoreJson(config, token, method, route, options.body);
+  const payload = options.responseField && !(options.responseField in upstream.payload)
+    ? { [options.responseField]: upstream.payload }
+    : upstream.payload;
+  return {
+    status: upstream.status,
+    payload: {
+      ok: true,
+      ...payload,
+      messagingCoreCutover: {
+        route,
+        upstreamStatus: upstream.status,
+      },
     },
   };
 }
@@ -298,6 +355,7 @@ async function createConfiguredMessagingCoreSession(
   const { token, expiresAt, claims } = await mintScopedMessagingToken(config, identity);
   return {
     token,
+    sync,
     session: {
       ...base,
       configured: true,
@@ -446,13 +504,27 @@ async function getPublicCoreJson(
   token: string,
   path: string,
 ): Promise<{ status: number; payload: JsonObject }> {
-  const request = new Request(messagingCoreUrl(config, path), {
-    method: "GET",
-    headers: {
-      authorization: `Bearer ${token}`,
-    },
+  return publicCoreJson(config, token, "GET", path);
+}
+
+async function publicCoreJson(
+  config: BridgeConfig,
+  token: string,
+  method: PublicCoreMethod,
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<{ status: number; payload: JsonObject }> {
+  const headers = new Headers({ authorization: `Bearer ${token}` });
+  const init: RequestInit = {
+    method,
+    headers,
     signal: AbortSignal.timeout(config.fetchTimeoutMs),
-  });
+  };
+  if (body !== undefined) {
+    headers.set("content-type", "application/json");
+    init.body = JSON.stringify(body);
+  }
+  const request = new Request(messagingCoreUrl(config, path), init);
   const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
   const payload = await parseJsonObjectResponse(response);
   if (!response.ok) {
@@ -919,6 +991,7 @@ function resolveBridgeConfig(env: Env): BridgeConfig {
   return {
     mode,
     invalidMode,
+    messageCutoverEnabled: booleanEnv(env.VOYAGER_MESSAGING_CORE_MESSAGE_CUTOVER),
     tenantId: env.MESSAGING_CORE_TENANT_ID?.trim() || VOYAGER_DEFAULT_MESSAGING_TENANT_ID,
     tenantExternalRef: env.MESSAGING_CORE_TENANT_EXTERNAL_REF?.trim() || DEFAULT_APP_ID,
     tenantDisplayName: env.MESSAGING_CORE_TENANT_DISPLAY_NAME?.trim() || DEFAULT_TENANT_DISPLAY_NAME,
@@ -970,6 +1043,11 @@ function positiveInteger(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function booleanEnv(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 function trimmed(value: string | undefined): string | null {

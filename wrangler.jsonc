@@ -13,6 +13,7 @@
     "SCREEN_SHARE_ENABLED": "1",
     "CALLS_REALTIME_MEDIA_ENABLED": "1",
     "VOYAGER_MESSAGING_CORE_MODE": "shadow",
+    "VOYAGER_MESSAGING_CORE_MESSAGE_CUTOVER": "0",
     "VOYAGER_MESSAGING_CORE_TIMEOUT_MS": "5000",
     "MESSAGING_CORE_BASE_URL": "https://voyager-messaging-worker.microgentic-voyager.workers.dev",
     "MESSAGING_CORE_TENANT_ID": "tenant_voyager_default",
