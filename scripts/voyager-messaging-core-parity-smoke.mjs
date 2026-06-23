@@ -94,7 +94,7 @@ const coreRealtimeToken = await requestJson(`${coreBaseUrl}/realtime/token`, {
   json: {},
 });
 assertEqual(coreRealtimeToken.protocol, "messaging.realtime.v1", "Core realtime token protocol");
-assertEqual(coreRealtimeToken.connectPath, "/v1/realtime/connect", "Core realtime token connect path");
+assertEqual(coreRealtimeToken.connectPath, "/realtime/connect", "Core realtime token connect path");
 if (!coreRealtimeToken.realtimeToken?.startsWith("mrt_")) {
   throw new Error(`Core realtime token should use Messaging Core token format: ${JSON.stringify(coreRealtimeToken)}`);
 }
