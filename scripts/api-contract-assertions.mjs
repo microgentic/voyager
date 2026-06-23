@@ -59,6 +59,8 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
   { method: "POST", path: "/v1/messaging-core/session", stability: "future-sensitive" },
   { method: "GET", path: "/v1/messaging-core/bootstrap", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/messaging-core/sync", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/messaging-core/realtime/token", stability: "future-sensitive" },
   { method: "GET", path: "/v1/messaging-core/rooms", stability: "future-sensitive" },
   { method: "GET", path: "/v1/messaging-core/rooms/{roomId}", stability: "future-sensitive" },
   { method: "GET", path: "/v1/messaging-core/rooms/{roomId}/messages", stability: "future-sensitive" },

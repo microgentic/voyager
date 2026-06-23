@@ -74,6 +74,43 @@ assertEqual(voyagerProxyBootstrap.bootstrap.account?.accountId, coreBootstrap.bo
 assertEqual(voyagerProxyBootstrap.bootstrap.principal?.principalId, coreBootstrap.bootstrap.principal?.principalId, "Voyager proxy bootstrap principalId");
 assertEqual(voyagerProxyBootstrap.bootstrap.device?.deviceId, coreBootstrap.bootstrap.device?.deviceId, "Voyager proxy bootstrap deviceId");
 
+const coreSync = await coreApi(coreBaseUrl, "/sync?limit=20", messagingCore.token);
+assertArray(coreSync.rooms, "Core /sync rooms");
+assertArray(coreSync.pendingMessages, "Core /sync pendingMessages");
+const voyagerProxySync = await voyagerApi("/v1/messaging-core/sync?limit=20", {
+  token: voyagerToken,
+});
+assertEqual(voyagerProxySync.proxied?.route, "/sync?limit=20", "Voyager proxy sync route");
+assertEqual(voyagerProxySync.proxied?.upstreamStatus, 200, "Voyager proxy sync upstream status");
+assertArray(voyagerProxySync.rooms, "Voyager proxy sync rooms");
+assertArray(voyagerProxySync.pendingMessages, "Voyager proxy sync pendingMessages");
+assertEqual(voyagerProxySync.rooms.length, coreSync.rooms.length, "Voyager proxy sync rooms length");
+assertEqual(voyagerProxySync.roomsNextCursor ?? null, coreSync.roomsNextCursor ?? null, "Voyager proxy sync rooms cursor");
+assertEqual(typeof voyagerProxySync.serverTime, "string", "Voyager proxy sync serverTime");
+
+const coreRealtimeToken = await requestJson(`${coreBaseUrl}/realtime/token`, {
+  method: "POST",
+  token: messagingCore.token,
+  json: {},
+});
+assertEqual(coreRealtimeToken.protocol, "messaging.realtime.v1", "Core realtime token protocol");
+assertEqual(coreRealtimeToken.connectPath, "/v1/realtime/connect", "Core realtime token connect path");
+if (!coreRealtimeToken.realtimeToken?.startsWith("mrt_")) {
+  throw new Error(`Core realtime token should use Messaging Core token format: ${JSON.stringify(coreRealtimeToken)}`);
+}
+const voyagerProxyRealtimeToken = await voyagerApi("/v1/messaging-core/realtime/token", {
+  method: "POST",
+  token: voyagerToken,
+  json: {},
+});
+assertEqual(voyagerProxyRealtimeToken.proxied?.route, "/realtime/token", "Voyager proxy realtime token route");
+assertEqual(voyagerProxyRealtimeToken.proxied?.upstreamStatus, 201, "Voyager proxy realtime token upstream status");
+assertEqual(voyagerProxyRealtimeToken.realtime?.protocol, coreRealtimeToken.protocol, "Voyager proxy realtime token protocol");
+assertEqual(voyagerProxyRealtimeToken.realtime?.connectPath, coreRealtimeToken.connectPath, "Voyager proxy realtime token connect path");
+if (!voyagerProxyRealtimeToken.realtime?.realtimeToken?.startsWith("mrt_")) {
+  throw new Error(`Voyager proxy realtime token should expose Core token format under realtime: ${JSON.stringify(voyagerProxyRealtimeToken)}`);
+}
+
 const coreRooms = await coreApi(coreBaseUrl, "/rooms", messagingCore.token);
 assertArray(coreRooms.rooms, "Core /rooms rooms");
 const voyagerProxyRooms = await voyagerApi("/v1/messaging-core/rooms", {
@@ -199,6 +236,8 @@ console.log(JSON.stringify({
   principalId: claims.principalId,
   deviceId: claims.deviceId,
   proxiedBootstrap: true,
+  proxiedSync: true,
+  proxiedRealtimeToken: true,
   proxiedRooms: true,
   proxiedRoomDetail,
   proxiedRoomCutoverRead,
