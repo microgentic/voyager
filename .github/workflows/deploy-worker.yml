@@ -42,12 +42,15 @@ jobs:
 
       - name: Deploy Worker
         if: github.event_name != 'pull_request'
-        run: npm run deploy
+        run: npm run deploy:dev
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      - name: Remote post-deploy smoke
+      - name: Remote all-Core parity smoke
         if: github.event_name != 'pull_request'
-        run: npm run smoke:backend:remote
+        run: npm run smoke:messaging-core-parity
         env:
           BASE_URL: https://voyager-api-dev.microgentic-voyager.workers.dev
+          VOYAGER_LOGIN_EMAIL: ada@example.com
+          VOYAGER_LOGIN_PASSWORD: voyager-demo-pass
+          SMOKE_MESSAGING_CORE_ALL_CUTOVER: "1"

@@ -16,6 +16,7 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   VITE_API_BASE_URL: https://voyager-api-dev.microgentic-voyager.workers.dev
+  VITE_MESSAGING_CORE_ALL_CUTOVER: "1"
   PAGES_PROJECT_NAME: voyager-web
 
 jobs:
