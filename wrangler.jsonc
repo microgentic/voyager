@@ -40,6 +40,7 @@
       "tag": "v1-realtime-mailbox",
       "new_sqlite_classes": ["RealtimeMailbox"]
     },
+    // Retained as append-only Durable Object migration history; v4 deletes it from the current Voyager Worker.
     {
       "tag": "v2-conversation-coordinator",
       "new_sqlite_classes": ["ConversationCoordinator"]

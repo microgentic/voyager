@@ -73,7 +73,7 @@ Source organization is documented in `docs/backend-source-layout.md`. The active
 - The UI may open `GET /v1/realtime` for foreground near-realtime events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
 - Realtime WebSockets use `POST /v1/realtime/token` to mint a short-lived one-use socket token; clients pass that token as the WebSocket subprotocol instead of the long-lived session token.
 - Messaging Core coordinates message-send sequencing, idempotency, and room/membership mutations per room. Voyager no longer owns a local ConversationCoordinator for messaging.
-- Conversation-routed writes expose `Server-Timing` metrics for the Durable Object hop, queue wait, and operation time. The Worker also logs `conversation.do.message` and `conversation.do.mutation` entries with request id, room id, operation/result, and timings.
+- Conversation-routed messaging writes expose Durable Object timing and structured logs inside Messaging Core. Voyager no longer emits local conversation coordinator metrics for messaging writes.
 - Call endpoints expose durable lifecycle and participant state over HTTP. Realtime events are hints only; clients recover authoritative call state through call read endpoints. Realtime media endpoints keep provider secrets server-side, store provider metadata only, and return `configured: false` when Cloudflare Realtime is unavailable in the current environment.
 
 ## 5. Important Endpoint Groups
