@@ -75,6 +75,7 @@ interface IdentitySyncResult {
   ok: boolean;
   source: IdentitySyncSource;
   reason: string | null;
+  upstreamError?: JsonObject | null;
   failedStep: IdentitySyncStep | null;
   tenantSynced: boolean;
   accountSynced: boolean;
@@ -86,6 +87,17 @@ interface ConfiguredMessagingCoreSession {
   session: JsonObject;
   token: string;
   sync: IdentitySyncResult;
+}
+
+class MessagingCoreInternalHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly upstreamCode: string,
+    readonly upstreamMessage: string,
+    readonly path: string,
+  ) {
+    super(`internal_service_http_${status}`);
+  }
 }
 
 interface IdentitySyncCacheRow {
@@ -175,7 +187,8 @@ export async function fetchMessagingCoreAttachmentUsage(env: Env): Promise<JsonO
     return null;
   }
   const token = await mintInternalServiceToken(config, ["internal:usage"]);
-  const response = await fetch(
+  const response = await fetchMessagingCore(
+    config,
     new Request(
       messagingCoreUrl(
         config,
@@ -1288,7 +1301,7 @@ async function createConfiguredMessagingCoreSession(
       503,
       "messaging_core_identity_sync_failed",
       "Messaging Core identity sync failed",
-      { reason: sync.reason },
+      { reason: sync.reason, sync },
     );
   }
 
@@ -1396,12 +1409,14 @@ async function syncMessagingCoreIdentity(
     };
   } catch (error) {
     const reason = publicIdentitySyncFailureReason(error);
+    const upstreamError = internalSyncUpstreamError(error);
     if (cache.staleUsable) {
       return {
         attempted: true,
         ok: true,
         source: "stale_cache",
         reason: `stale_cache_after_${reason}`,
+        upstreamError,
         failedStep,
         tenantSynced: true,
         accountSynced: true,
@@ -1414,6 +1429,7 @@ async function syncMessagingCoreIdentity(
       ok: false,
       source: "internal_service",
       reason,
+      upstreamError,
       failedStep,
       tenantSynced,
       accountSynced,
@@ -1709,12 +1725,26 @@ async function postInternal(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const response = await fetch(request);
-  if (!response.ok) {
-    throw new Error(`internal_service_http_${response.status}`);
-  }
+  const response = await fetchMessagingCore(config, request);
   const contentType = response.headers.get("content-type") ?? "";
-  return contentType.includes("application/json") ? response.json() : response.text();
+  let payload: JsonObject | null = null;
+  let text: string | null = null;
+  if (contentType.includes("application/json")) {
+    const parsed = await response.json();
+    payload = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as JsonObject : null;
+  } else {
+    text = await response.text();
+  }
+  if (!response.ok) {
+    const upstream = payload
+      ? coreError(payload)
+      : {
+          code: `http_${response.status}`,
+          message: text?.slice(0, 240) || "Messaging Core internal service request failed.",
+        };
+    throw new MessagingCoreInternalHttpError(response.status, upstream.code, upstream.message, path);
+  }
+  return payload ?? text ?? null;
 }
 
 async function getPublicCoreJson(
@@ -1781,7 +1811,7 @@ async function publicCoreRaw(
 
 async function fetchPublicCore(config: BridgeConfig, request: Request): Promise<Response> {
   try {
-    return await fetch(request);
+    return await fetchMessagingCore(config, request);
   } catch (error) {
     if (isTimeoutError(error)) {
       throw new HttpError(
@@ -1793,6 +1823,10 @@ async function fetchPublicCore(config: BridgeConfig, request: Request): Promise<
     }
     throw error;
   }
+}
+
+function fetchMessagingCore(config: BridgeConfig, request: Request): Promise<Response> {
+  return config.serviceBinding ? config.serviceBinding.fetch(request) : fetch(request);
 }
 
 async function throwCoreResponseError(
@@ -2127,6 +2161,16 @@ function publicIdentitySyncFailureReason(error: unknown): string {
     if (/^internal_service_http_\d{3}$/.test(error.message)) return error.message;
   }
   return "internal_service_unavailable";
+}
+
+function internalSyncUpstreamError(error: unknown): JsonObject | null {
+  if (!(error instanceof MessagingCoreInternalHttpError)) return null;
+  return {
+    status: error.status,
+    code: error.upstreamCode,
+    message: error.upstreamMessage,
+    path: error.path,
+  };
 }
 
 function isTimeoutError(error: unknown): boolean {
