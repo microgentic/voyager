@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -8,8 +9,9 @@ import { fileURLToPath } from "node:url";
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
 const readyTimeoutMs = Number(process.env.SMOKE_READY_TIMEOUT_MS ?? 60_000);
 const smokeTimeoutMs = Number(process.env.SMOKE_TIMEOUT_MS ?? 120_000);
-const npx = process.platform === "win32" ? "npx.cmd" : "npx";
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+const localWrangler = join(projectRoot, "node_modules", ".bin", process.platform === "win32" ? "wrangler.cmd" : "wrangler");
+const wrangler = existsSync(localWrangler) ? localWrangler : (process.platform === "win32" ? "wrangler.cmd" : "wrangler");
 const messagingCoreRoot = process.env.MESSAGING_CORE_SERVICE_ROOT ?? "/Users/admin/messaging-core-service";
 const messagingCoreWranglerConfig = process.env.MESSAGING_CORE_WRANGLER_CONFIG ?? "apps/voyager-messaging-worker.example/wrangler.example.jsonc";
 const messagingCoreTokenSecret = process.env.MESSAGING_CORE_TOKEN_SECRET ?? "local-messaging-core-token-secret";
@@ -189,8 +191,7 @@ if (process.env.CLOUDFLARE_REALTIME_MOCK === "1") {
 }
 
 try {
-  await runCommand(npx, [
-    "wrangler",
+  await runCommand(wrangler, [
     "d1",
     "migrations",
     "apply",
@@ -205,8 +206,7 @@ try {
     commandTimeoutMs: 60_000
   });
 
-  messagingCoreWorker = spawnCommand(npx, [
-    "wrangler",
+  messagingCoreWorker = spawnCommand(wrangler, [
     "dev",
     "--config",
     messagingCoreWranglerConfig,
@@ -227,12 +227,11 @@ try {
   await waitForWorker(messagingCoreWorker, messagingCorePort);
   await waitForHealth(messagingCoreBaseUrl);
 
-  await runCommand(npx, ["wrangler", "d1", "migrations", "apply", "voyager-dev-control", "--local", "--persist-to", persistDir], {
+  await runCommand(wrangler, ["d1", "migrations", "apply", "voyager-dev-control", "--local", "--persist-to", persistDir], {
     commandTimeoutMs: 60_000
   });
 
-  worker = spawnCommand(npx, [
-    "wrangler",
+  worker = spawnCommand(wrangler, [
     "dev",
     "--local",
     "--ip",

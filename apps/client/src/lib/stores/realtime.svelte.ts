@@ -58,14 +58,14 @@ class RealtimeStore {
 		}
 	}
 
-	private async connect(forceTransport?: RealtimeTransport): Promise<void> {
+	private async connect(): Promise<void> {
 		if (!this.active || auth.status !== 'authed' || this.socket) return;
 		this.state = 'connecting';
 		this.lastError = null;
 
 		let connection: Awaited<ReturnType<typeof api.openRealtimeSocket>>;
 		try {
-			connection = await api.openRealtimeSocket({ transport: forceTransport ?? 'auto' });
+			connection = await api.openRealtimeSocket({ transport: 'messaging-core' });
 		} catch (error) {
 			this.lastError = (error as Error)?.message ?? 'Realtime token request failed';
 			if (!this.active || auth.status !== 'authed') return;
@@ -121,11 +121,7 @@ class RealtimeStore {
 			this.transport = null;
 			this.lastClosedAt = new Date();
 			if (!this.active) return;
-			if (!ready && transport === 'messaging-core') {
-				this.lastError = 'Messaging Core realtime connection failed; falling back to Voyager realtime';
-				void this.connect('voyager');
-				return;
-			}
+			if (!ready && transport === 'messaging-core') this.lastError = 'Messaging Core realtime connection failed';
 			this.scheduleReconnect();
 		};
 	}
