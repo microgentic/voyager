@@ -96,7 +96,7 @@ class RealtimeStore {
 					// The shared message handler ignores malformed frames.
 				}
 			}
-				this.handleMessage(event.data);
+			this.handleMessage(event.data);
 		};
 
 		socket.onerror = () => {

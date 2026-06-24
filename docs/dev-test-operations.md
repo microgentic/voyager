@@ -260,10 +260,9 @@ instead of `/`. The auth route guard must treat both paths as the root splash.
 If it only redirects authenticated users from `/`, a signed-in desktop launch can
 resolve auth successfully but remain on the root spinner forever.
 
-Desktop realtime also needs the Worker WebSocket origins in the Tauri CSP
-`connect-src`; allowing only the HTTPS API origin is not enough for the
-Messaging Core WebSocket path or the Voyager call WebSocket path
-`wss://.../v1/calls/realtime`.
+Desktop realtime also needs the Messaging Core WebSocket origin in the Tauri
+CSP `connect-src`; allowing only the HTTPS API origin is not enough for the Core
+WebSocket path returned by `/v1/messaging-core/realtime/token`.
 
 The macOS app uses a desktop-only Tauri drag strip above the web shell. Keep it
 out of web and mobile layouts so mobile safe-area behavior and browser spacing

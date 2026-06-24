@@ -71,7 +71,7 @@ Source organization is documented in `docs/backend-source-layout.md`. The active
 - Room membership authorization is enforced server-side for room reads, messages, attachments, and membership actions.
 - Admin endpoints are role-gated; `platform_owner` satisfies all admin role checks.
 - The UI opens Messaging Core realtime through `POST /v1/messaging-core/realtime/token` for foreground messaging events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
-- Call lifecycle hints use Voyager's call-only realtime boundary: `POST /v1/calls/realtime/token`, then `GET /v1/calls/realtime` with the short-lived token as a WebSocket subprotocol.
+- Call lifecycle hints use the same Messaging Core realtime lane as messaging hints. The old Voyager call-only socket routes now return `410 call_realtime_socket_retired`.
 - Messaging Core coordinates message-send sequencing, idempotency, and room/membership mutations per room. Voyager no longer owns a local ConversationCoordinator for messaging.
 - Conversation-routed messaging writes expose Durable Object timing and structured logs inside Messaging Core. Voyager no longer emits local conversation coordinator metrics for messaging writes.
 - Call endpoints expose durable lifecycle and participant state over HTTP. Realtime events are hints only; clients recover authoritative call state through call read endpoints. Realtime media endpoints keep provider secrets server-side, store provider metadata only, and return `configured: false` when Cloudflare Realtime is unavailable in the current environment.
@@ -128,8 +128,20 @@ Authenticated user:
 - `GET /v1/sync`
 - `POST /v1/messaging-core/realtime/token`
 - Messaging Core WebSocket upgrade through the returned Core `connectPath` for lightweight `room.message` event hints.
-- `POST /v1/calls/realtime/token`
-- `GET /v1/calls/realtime` WebSocket upgrade for lightweight `call.*` lifecycle hints.
+- `GET /v1/rooms/{room_id}/calls`
+- `POST /v1/rooms/{room_id}/calls`
+- `GET /v1/calls/{call_id}`
+- `POST /v1/calls/{call_id}/join`
+- `POST /v1/calls/{call_id}/leave`
+- `POST /v1/calls/{call_id}/decline`
+- `POST /v1/calls/{call_id}/mute`
+- `POST /v1/calls/{call_id}/unmute`
+- `PATCH /v1/calls/{call_id}/participants/me`
+- `POST /v1/calls/{call_id}/realtime/session`
+- `POST /v1/calls/{call_id}/realtime/tracks`
+- `POST /v1/calls/{call_id}/realtime/renegotiate`
+- `POST /v1/calls/{call_id}/realtime/tracks/close`
+- `POST /v1/calls/{call_id}/usage-report`
 - Attachment, call, sidebar collection, thread, and agent request endpoints are documented in `docs/api-contract.md`.
 
 Admin:

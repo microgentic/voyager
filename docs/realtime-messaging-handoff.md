@@ -1,6 +1,6 @@
 # Realtime Messaging Handoff
 
-Status: Messaging Core owns messaging realtime; Voyager owns call-only lifecycle hints
+Status: Messaging Core owns messaging and call lifecycle realtime hints
 Date: 2026-06-19
 Related docs:
 
@@ -71,13 +71,6 @@ Current server events:
 
 The event is a pointer, not the payload. Clients should treat it as "sync this room/account now" and fetch authoritative data through `/v1/sync` and `/v1/rooms/{roomId}/messages`.
 
-Call lifecycle hints use a separate Voyager call runtime socket:
-
-```text
-POST /v1/calls/realtime/token
-GET /v1/calls/realtime
-```
-
 Call clients use the same Core socket opened from `/v1/messaging-core/realtime/token` with `messaging.realtime.v1`. Core emits `call.invite`, `call.ringing`, `call.joined`, `call.left`, `call.ended`, and `call.updated` on that lane.
 
 Client keepalive:
@@ -94,8 +87,8 @@ Server response:
 
 ## 4. Client Implementation
 
-- `apps/client/src/lib/api/client.ts` opens Messaging Core realtime sockets against the Core base URL returned by `/v1/messaging-core/realtime/token`, and opens call sockets against the Voyager API base returned by `/v1/calls/realtime/token`.
-- `apps/client/src/lib/stores/realtime.svelte.ts` manages separate messaging and call socket lifecycles, reconnection backoff, heartbeat pings, and event handling.
+- `apps/client/src/lib/api/client.ts` opens Messaging Core realtime sockets against the Core base URL returned by `/v1/messaging-core/realtime/token`.
+- `apps/client/src/lib/stores/realtime.svelte.ts` manages one Core socket lifecycle for messaging and call hints, with reconnection backoff, heartbeat pings, and event handling.
 - `apps/client/src/routes/(app)/+layout.svelte` starts realtime beside the existing sync engine after the authenticated app shell mounts.
 - `sync.svelte.ts` remains active as both fallback polling and the durable recovery path. Realtime room events queue an immediate room fetch rather than mutating message state directly.
 
