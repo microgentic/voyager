@@ -56,6 +56,12 @@ node scripts/backend-abstraction-inventory.mjs
 - Current routes/modules/tables marked `DROP_FROM_CORE` should not be recreated in Messaging Core.
 - Current routes/modules/tables marked `PRODUCT_VOYAGER` may continue to exist in Voyager, but should interact with Messaging Core through scoped tokens or internal service routes later.
 
+## Post-Cleanup Runtime Boundary
+
+Voyager's rooms, messages, attachments, threads, sync, room realtime, identity bootstrap, and message sequencing paths are Core-owned at runtime. Voyager keeps product authentication, sessions, admin/product operations, sidebar collections, agent provisioning, and the token/session bridge that mints scoped Messaging Core tokens.
+
+Calls are the remaining explicit carveout from the Core-only Voyager messaging cleanup. Messaging Core owns the product-neutral call model and exposes call lifecycle/media/usage scopes and routes, and Voyager-minted Core tokens include those call scopes. The active Voyager web call surface still depends on the Voyager call realtime token/protocol, local call compatibility response wrappers, and call status/admin diagnostics, so deleting `src/backend/calls`, `src/backend/routing/call-routes.ts`, `src/realtime.ts` call sections, or the active `CALL_COORDINATOR` binding must be done only in a dedicated call-facade cutover PR that adapts the Voyager client to Core call responses and Core realtime semantics. Until that PR lands, this carveout is not a fallback path for rooms/messages/attachments/threads/sync and must not serve legacy-source messaging responses.
+
 ## Route Inventory
 
 | Method | Path | Category | Implemented in | Stability | Extraction target | Strategy ref | Rationale |

@@ -35,6 +35,7 @@ const DEFAULT_IDENTITY_SYNC_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_IDENTITY_SYNC_STALE_GRACE_MS = 60 * 60 * 1000;
 const MAX_IDENTITY_SYNC_MEMORY_CACHE_ENTRIES = 1000;
 const CORE_MESSAGE_COMPAT_EXPIRES_AT = "9999-12-31T23:59:59.000Z";
+const MIME_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 const encoder = new TextEncoder();
 const identitySyncMemoryCache = new Map<string, IdentitySyncCacheRow>();
 
@@ -310,7 +311,7 @@ export function messagingCoreAttachmentAllocateBody(body: Record<string, unknown
   const declaredMimeType = stringValue(body.declaredMimeType);
   const contentCategory = stringValue(body.contentCategory);
   return {
-    contentType: declaredMimeType ?? contentCategory ?? "application/octet-stream",
+    contentType: messagingCoreAttachmentContentType(declaredMimeType, contentCategory),
     byteSize: expectedBytes,
     metadata: voyagerAttachmentMetadata(body),
   };
@@ -1171,6 +1172,24 @@ function voyagerAttachmentMediaKind(value: string | null, contentType: string | 
   if (contentType?.startsWith("video/")) return "video";
   if (contentType?.startsWith("audio/")) return "audio";
   return "file";
+}
+
+function messagingCoreAttachmentContentType(declaredMimeType: string | null, contentCategory: string | null): string {
+  const declared = mimeTypeValue(declaredMimeType);
+  if (declared) return declared;
+
+  // Some older Voyager clients sent a MIME type in contentCategory; preserve only
+  // valid MIME-ish values. Category labels such as "image" are metadata, not R2
+  // content types.
+  const categoryMime = mimeTypeValue(contentCategory);
+  if (categoryMime) return categoryMime;
+
+  return "application/octet-stream";
+}
+
+function mimeTypeValue(value: string | null): string | null {
+  const normalized = value?.trim();
+  return normalized && MIME_TYPE_PATTERN.test(normalized) ? normalized : null;
 }
 
 function voyagerProtocolType(value: string | null): string {
@@ -2194,6 +2213,10 @@ function clientScopes(): string[] {
     "messaging:rooms:write",
     "messaging:messages:write",
     "messaging:key-packages:write",
+    "messaging:calls:read",
+    "messaging:calls:write",
+    "messaging:calls:media",
+    "messaging:calls:usage",
   ];
 }
 
