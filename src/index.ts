@@ -1312,13 +1312,6 @@ async function messagingCoreMessageCutoverRoute(
     }
     if (request.method === "POST") {
       const body = await readJsonObject(request);
-      if (body.alsoSendToRoom === true) {
-        throw new HttpError(
-          409,
-          "messaging_core_thread_broadcast_pending",
-          "Messaging Core message cutover does not support also-send-to-room thread replies yet.",
-        );
-      }
       return {
         kind: "json",
         method: "POST",

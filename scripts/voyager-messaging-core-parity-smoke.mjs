@@ -239,6 +239,36 @@ if (firstRoomId) {
     if (listedNormalSend.receiptSummary?.status !== "sent") {
       throw new Error(`normal Voyager message list cutover dropped receipt status: ${JSON.stringify(listedNormalSend.receiptSummary)}`);
     }
+    const deleteTargetKey = `messaging-core-cutover-delete-me-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const deleteTarget = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages`, {
+      method: "POST",
+      token: voyagerToken,
+      json: {
+        idempotencyKey: deleteTargetKey,
+        protocolType: "opaque-test",
+        ciphertext: `messaging-core-cutover-delete-me-${deleteTargetKey}`,
+      },
+    });
+    assertCoreCutoverDiagnostics(deleteTarget.messagingCoreCutover, `/rooms/${encodedRoomId}/messages`, "normal Voyager delete-for-me target send diagnostics");
+    const deleteTargetId = deleteTarget.message?.envelopeId;
+    if (!deleteTargetId) {
+      throw new Error(`normal Voyager delete-for-me target did not return a message: ${JSON.stringify(deleteTarget)}`);
+    }
+    const deleteForMe = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages/delete`, {
+      method: "POST",
+      token: voyagerToken,
+      json: { scope: "me", envelopeIds: [deleteTargetId] },
+    });
+    assertCoreCutoverDiagnostics(deleteForMe.messagingCoreCutover, `/rooms/${encodedRoomId}/messages/delete`, "normal Voyager delete-for-me cutover diagnostics");
+    assertEqual(deleteForMe.messagingCoreCutover?.upstreamStatus, 200, "normal Voyager delete-for-me upstream status");
+    const deleteListAfter = Math.max(0, Number(deleteTarget.message.serverSequence ?? 0) - 1);
+    const deleteListRoute = `/rooms/${encodedRoomId}/messages?after=${deleteListAfter}&limit=20`;
+    const afterDeleteForMe = await voyagerApi(`/v1${deleteListRoute}`, { token: voyagerToken });
+    assertCoreCutoverDiagnostics(afterDeleteForMe.messagingCoreCutover, deleteListRoute, "normal Voyager delete-for-me list diagnostics");
+    assertArray(afterDeleteForMe.messages, "normal Voyager delete-for-me list messages");
+    if (afterDeleteForMe.messages.some((message) => message.envelopeId === deleteTargetId)) {
+      throw new Error("normal Voyager delete-for-me cutover did not hide the message for the deleting account.");
+    }
     normalMessageWrite = true;
     normalThreadInbox = await runThreadInboxCutoverSmoke({
       token: voyagerToken,
@@ -306,6 +336,46 @@ async function runThreadInboxCutoverSmoke({ token, encodedRoomId, rootEnvelopeId
   assertEqual(reply.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, "normal Voyager thread reply cutover route");
   assertEqual(reply.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager thread reply cutover upstream status");
   assertEqual(reply.message?.threadRootEnvelopeId, rootEnvelopeId, "normal Voyager thread reply root");
+  assertEqual(reply.message?.alsoSentToRoom, false, "normal Voyager thread-only reply flag");
+
+  const broadcastReply = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, {
+    method: "POST",
+    token,
+    json: {
+      idempotencyKey: `messaging-core-thread-cutover-broadcast-${suffix}`,
+      protocolType: "opaque-test",
+      ciphertext: `messaging-core-thread-broadcast-reply-${suffix}`,
+      alsoSendToRoom: true,
+    },
+  });
+  assertCoreCutoverDiagnostics(
+    broadcastReply.messagingCoreCutover,
+    `/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`,
+    "normal Voyager thread broadcast reply cutover diagnostics"
+  );
+  assertEqual(broadcastReply.messagingCoreCutover?.route, `/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, "normal Voyager thread broadcast reply cutover route");
+  assertEqual(broadcastReply.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager thread broadcast reply cutover upstream status");
+  assertEqual(broadcastReply.message?.threadRootEnvelopeId, rootEnvelopeId, "normal Voyager thread broadcast reply root");
+  assertEqual(broadcastReply.message?.alsoSentToRoom, true, "normal Voyager thread broadcast reply flag");
+
+  const thread = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, { token });
+  assertCoreCutoverDiagnostics(thread.messagingCoreCutover, `/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, "normal Voyager thread read cutover diagnostics");
+  assertArray(thread.thread?.replies, "normal Voyager thread read cutover replies");
+  if (!thread.thread.replies.some((candidate) => candidate.envelopeId === reply.message.envelopeId)) {
+    throw new Error("normal Voyager thread read did not include the thread-only reply.");
+  }
+  if (!thread.thread.replies.some((candidate) => candidate.envelopeId === broadcastReply.message.envelopeId && candidate.alsoSentToRoom === true)) {
+    throw new Error("normal Voyager thread read did not include the also-send reply with its flag.");
+  }
+
+  const listAfter = Math.max(0, Number(broadcastReply.message.serverSequence ?? 0) - 1);
+  const listRoute = `/rooms/${encodedRoomId}/messages?after=${listAfter}&limit=20`;
+  const roomList = await voyagerApi(`/v1${listRoute}`, { token });
+  assertCoreCutoverDiagnostics(roomList.messagingCoreCutover, listRoute, "normal Voyager thread broadcast room list diagnostics");
+  assertArray(roomList.messages, "normal Voyager thread broadcast room list messages");
+  if (!roomList.messages.some((candidate) => candidate.envelopeId === broadcastReply.message.envelopeId && candidate.alsoSentToRoom === true)) {
+    throw new Error("normal Voyager room list did not include the also-send thread reply.");
+  }
 
   const inbox = await voyagerApi("/v1/threads?limit=20", { token });
   assertCoreCutoverDiagnostics(inbox.messagingCoreCutover, "/threads?limit=20", "normal Voyager thread inbox cutover diagnostics");
