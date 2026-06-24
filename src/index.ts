@@ -7,11 +7,9 @@ import {
   checkRateLimit,
   cleanupTestDevices,
   completeCredentialReset,
-  consumeCallRealtimeSocketToken,
   createDeviceForPrincipal,
   createCredentialReset,
   createInvitation,
-  createCallRealtimeSocketToken,
   getActiveAdminRoles,
   getAuditEvents,
   getAuthContext,
@@ -30,29 +28,28 @@ import {
   setAccountStatus,
   updateAccountPolicy
 } from "./db";
-import { CallCoordinator, handleBackendFirstRoutes } from "./backend";
+import { handleBackendFirstRoutes } from "./backend";
 import {
   createMessagingCoreSessionPayload,
   fetchMessagingCoreAttachmentUsage,
   fetchMessagingCoreAttachmentDownloadCutoverProxy,
   fetchMessagingCoreAttachmentUploadCutoverProxy,
+  fetchMessagingCoreCallCutoverProxy,
+  fetchMessagingCoreCallRealtimeStatus,
   fetchMessagingCoreMessageCutoverProxy,
   fetchMessagingCoreRealtimeTokenProxy,
   fetchMessagingCoreRoomCutoverProxy,
   fetchMessagingCoreSyncCutoverProxy,
   messagingCoreAttachmentAllocateBody,
   messagingCoreAttachmentCompleteBody,
+  revokeMessagingCoreDevice,
   syncMessagingCorePrincipal,
 } from "./backend/messaging-core-bridge";
-import { getCallRealtimeStatus } from "./backend/operations";
 import { ROOM_INVITATION_DAYS } from "./backend/rooms/types";
 import { sqliteTimestamp } from "./backend/utils";
 import { randomId } from "./crypto";
-import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
-import { CALL_REALTIME_PROTOCOL, handleCallRealtimeConnect, RealtimeMailbox } from "./realtime";
+import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, readOptionalJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
 import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow } from "./types";
-
-export { CallCoordinator, RealtimeMailbox };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_TEST_DEVICE_LABEL_MATCHERS = [
@@ -229,15 +226,11 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
 
   if (url.pathname === "/v1/calls/realtime") {
     requireMethod(request, "GET");
-    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-      return new Response("Expected WebSocket upgrade", { status: 426 });
-    }
-    const origin = request.headers.get("origin");
-    if (origin && !isAllowedOrigin(origin, env)) {
-      throw new HttpError(403, "origin_not_allowed", "Call realtime origin is not allowed");
-    }
-    const auth = await getCallRealtimeAuthContext(env, request);
-    return handleCallRealtimeConnect(request, env, auth);
+    throw new HttpError(
+      410,
+      "call_realtime_socket_retired",
+      "Voyager call realtime socket is retired. Messaging Core owns call state and media negotiation.",
+    );
   }
 
   const authStartedAt = performance.now();
@@ -246,20 +239,11 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
 
   if (url.pathname === "/v1/calls/realtime/token") {
     requireMethod(request, "POST");
-    await checkRateLimit(env, {
-      key: `call-realtime-token:${auth.account.account_id}:${auth.device.device_id}`,
-      action: "call-realtime-token",
-      limit: REALTIME_TOKEN_LIMIT,
-      windowSeconds: REALTIME_TOKEN_WINDOW_SECONDS
-    });
-    const token = await createCallRealtimeSocketToken(env, auth);
-    return json({
-      ok: true,
-      realtimeToken: token.token,
-      expiresAt: token.expiresAt,
-      protocol: CALL_REALTIME_PROTOCOL,
-      connectPath: "/v1/calls/realtime",
-    });
+    throw new HttpError(
+      410,
+      "call_realtime_socket_retired",
+      "Voyager call realtime token minting is retired. Use Messaging Core call routes for call state.",
+    );
   }
 
   if (url.pathname === "/v1/messaging-core/realtime/token") {
@@ -294,6 +278,11 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   const messagingCoreSyncCutoverResponse = await handleMessagingCoreSyncCutover(request, env, url, auth, authTimingMs);
   if (messagingCoreSyncCutoverResponse) {
     return messagingCoreSyncCutoverResponse;
+  }
+
+  const messagingCoreCallCutoverResponse = await handleMessagingCoreCallCutover(request, env, url, auth);
+  if (messagingCoreCallCutoverResponse) {
+    return messagingCoreCallCutoverResponse;
   }
 
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
@@ -400,6 +389,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     requireMethod(request, "POST");
     const body = await readJsonObject(request);
     await revokeOwnDevice(env, auth.account.account_id, deviceRevokeMatch[1], stringField(body, "reason", { max: 120 }) ?? "user_requested");
+    await revokeMessagingCoreDevice(env, deviceRevokeMatch[1]);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "device.revoke",
@@ -618,7 +608,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   if (url.pathname === "/v1/admin/calls/realtime-status") {
     requireMethod(request, "GET");
     requireAdmin(auth, ["quota_operator", "security_admin", "auditor"]);
-    return json({ ok: true, realtime: getCallRealtimeStatus(env) });
+    return json({ ok: true, realtime: await fetchMessagingCoreCallRealtimeStatus(env) });
   }
 
   if (url.pathname === "/v1/admin/audit-events") {
@@ -1480,6 +1470,141 @@ async function handleMessagingCoreSyncCutover(
   });
 }
 
+async function handleMessagingCoreCallCutover(
+  request: Request,
+  env: Env,
+  url: URL,
+  auth: AuthContext,
+): Promise<Response | null> {
+  const startedAt = performance.now();
+  const route = await messagingCoreCallCutoverRoute(request, url);
+  if (!route) return null;
+
+  const result = await fetchMessagingCoreCallCutoverProxy(
+    env,
+    messagingCoreIdentity(auth),
+    route.method,
+    route.path,
+    {
+      body: route.body,
+      query: route.query,
+      responseKind: route.responseKind,
+    },
+  );
+  return json(result.payload, {
+    status: result.status,
+    headers: coreProxyTimingHeaders(messagingCoreCallTimingMetric(route), startedAt),
+  });
+}
+
+async function messagingCoreCallCutoverRoute(
+  request: Request,
+  url: URL,
+): Promise<{
+  method: "GET" | "POST" | "PATCH";
+  path: string;
+  query?: URLSearchParams;
+  body?: Record<string, unknown>;
+  responseKind: "calls" | "call" | "realtime" | "usageReport";
+} | null> {
+  const roomCallsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/calls$/, url.pathname);
+  if (roomCallsMatch) {
+    if (request.method === "GET") {
+      return {
+        method: "GET",
+        path: `/rooms/${roomCallsMatch[1]}/calls`,
+        query: proxyQuery(url, ["limit", "cursor"]),
+        responseKind: "calls",
+      };
+    }
+    if (request.method === "POST") {
+      return {
+        method: "POST",
+        path: `/rooms/${roomCallsMatch[1]}/calls`,
+        body: await readJsonObject(request),
+        responseKind: "call",
+      };
+    }
+  }
+
+  const callUsageReportMatch = routeParams(/^\/v1\/calls\/([^/]+)\/usage-report$/, url.pathname);
+  if (callUsageReportMatch) {
+    requireMethod(request, "POST");
+    return {
+      method: "POST",
+      path: `/calls/${callUsageReportMatch[1]}/usage-report`,
+      body: await readJsonObject(request),
+      responseKind: "usageReport",
+    };
+  }
+
+  const callRealtimeRenegotiateMatch = routeParams(/^\/v1\/calls\/([^/]+)\/realtime\/renegotiate$/, url.pathname);
+  if (callRealtimeRenegotiateMatch) {
+    requireMethod(request, "POST");
+    return {
+      method: "POST",
+      path: `/calls/${callRealtimeRenegotiateMatch[1]}/realtime/renegotiate`,
+      body: await readOptionalJsonObject(request),
+      responseKind: "realtime",
+    };
+  }
+
+  const callRealtimeCloseTracksMatch = routeParams(/^\/v1\/calls\/([^/]+)\/realtime\/tracks\/close$/, url.pathname);
+  if (callRealtimeCloseTracksMatch) {
+    requireMethod(request, "POST");
+    return {
+      method: "POST",
+      path: `/calls/${callRealtimeCloseTracksMatch[1]}/realtime/tracks/close`,
+      body: await readOptionalJsonObject(request),
+      responseKind: "realtime",
+    };
+  }
+
+  const callRealtimeMatch = routeParams(/^\/v1\/calls\/([^/]+)\/realtime\/(session|tracks)$/, url.pathname);
+  if (callRealtimeMatch) {
+    requireMethod(request, "POST");
+    return {
+      method: "POST",
+      path: `/calls/${callRealtimeMatch[1]}/realtime/${callRealtimeMatch[2]}`,
+      body: await readOptionalJsonObject(request),
+      responseKind: "realtime",
+    };
+  }
+
+  const callParticipantMatch = routeParams(/^\/v1\/calls\/([^/]+)\/participants\/me$/, url.pathname);
+  if (callParticipantMatch) {
+    requireMethod(request, "PATCH");
+    return {
+      method: "PATCH",
+      path: `/calls/${callParticipantMatch[1]}/participants/me`,
+      body: await readJsonObject(request),
+      responseKind: "call",
+    };
+  }
+
+  const callActionMatch = routeParams(/^\/v1\/calls\/([^/]+)\/(join|leave|decline|mute|unmute)$/, url.pathname);
+  if (callActionMatch) {
+    requireMethod(request, "POST");
+    return {
+      method: "POST",
+      path: `/calls/${callActionMatch[1]}/${callActionMatch[2]}`,
+      responseKind: "call",
+    };
+  }
+
+  const callMatch = routeParams(/^\/v1\/calls\/([^/]+)$/, url.pathname);
+  if (callMatch) {
+    requireMethod(request, "GET");
+    return {
+      method: "GET",
+      path: `/calls/${callMatch[1]}`,
+      responseKind: "call",
+    };
+  }
+
+  return null;
+}
+
 function messagingCoreRoomTimingMetric(route: { method: string; path: string; responseKind: string }): string {
   if (route.method === "PATCH" && /^\/rooms\/[^/]+$/.test(route.path)) return "roomUpdate";
   if (route.method === "POST" && route.path.endsWith("/archive")) return "roomArchive";
@@ -1492,6 +1617,20 @@ function messagingCoreRoomTimingMetric(route: { method: string; path: string; re
   if (route.method === "POST" && route.path === "/rooms/direct") return "roomDirectCreate";
   if (route.method === "POST" && route.path === "/rooms/groups") return "roomGroupCreate";
   return route.responseKind === "rooms" ? "rooms" : "room";
+}
+
+function messagingCoreCallTimingMetric(route: { method: string; path: string; responseKind: string }): string {
+  if (route.responseKind === "calls") return "calls";
+  if (route.responseKind === "realtime") return "callRealtime";
+  if (route.responseKind === "usageReport") return "callUsageReport";
+  if (route.path.endsWith("/join")) return "callJoin";
+  if (route.path.endsWith("/leave")) return "callLeave";
+  if (route.path.endsWith("/decline")) return "callDecline";
+  if (route.path.endsWith("/mute")) return "callMute";
+  if (route.path.endsWith("/unmute")) return "callUnmute";
+  if (route.method === "POST" && /\/rooms\/[^/]+\/calls$/.test(route.path)) return "callCreate";
+  if (route.method === "PATCH") return "callParticipantUpdate";
+  return "call";
 }
 
 function messagingCoreMessageTimingMetric(route: { method: string; path: string; responseKind: string }): string {
@@ -1558,26 +1697,6 @@ function proxyQuery(url: URL, allowedKeys: string[]): URLSearchParams {
     if (value !== null) params.set(key, value);
   }
   return params;
-}
-
-async function getCallRealtimeAuthContext(env: Env, request: Request): Promise<AuthContext> {
-  const token = callRealtimeToken(request);
-  if (!token) {
-    throw new HttpError(401, "unauthorized", "Missing call realtime token");
-  }
-  return consumeCallRealtimeSocketToken(env, token);
-}
-
-function callRealtimeToken(request: Request): string | null {
-  const authorization = request.headers.get("authorization");
-  if (authorization?.startsWith("Bearer ")) {
-    return authorization.slice("Bearer ".length).trim();
-  }
-  const protocols = (request.headers.get("sec-websocket-protocol") ?? "")
-    .split(",")
-    .map((protocol) => protocol.trim())
-    .filter(Boolean);
-  return protocols.find((protocol) => protocol !== CALL_REALTIME_PROTOCOL && protocol.startsWith("vgr_")) ?? null;
 }
 
 // CORS. The app authenticates with Bearer tokens (no cookies), so credentialed

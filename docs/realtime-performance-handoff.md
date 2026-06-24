@@ -66,8 +66,8 @@ The client now:
 This optimization pass originally deferred Conversation Durable Object
 sequencing, idempotency ownership, membership mutation serialization, and D1/DO
 reconciliation. Those messaging responsibilities now live in Messaging Core,
-not in the Voyager Worker. Voyager keeps the Core token/session bridge and the
-call-only realtime boundary.
+not in the Voyager Worker. Voyager keeps the Core token/session bridge; calls
+also use Core routes and Core realtime hints.
 
 ## 6. Verification
 

@@ -1,6 +1,6 @@
 # Realtime Messaging Handoff
 
-Status: Messaging Core owns messaging realtime; Voyager owns call-only lifecycle hints
+Status: Messaging Core owns messaging and call lifecycle realtime hints
 Date: 2026-06-19
 Related docs:
 
@@ -17,17 +17,15 @@ The important boundary is that realtime is **not** a second message store and do
 
 This follows the master-plan direction: WebSockets provide the foreground realtime experience, while HTTP sync remains the recovery and source-of-truth path. Push notifications remain future wake-up infrastructure only.
 
-This is intentionally the **foreground mailbox/session layer**, not the read source or message store. Messaging Core owns conversation-level message ordering, room/membership mutations, and messaging realtime hints. Voyager's remaining realtime Durable Object is a call lifecycle boundary only; it must not emit room/message/thread events or act as a messaging fallback.
+This is intentionally the **foreground mailbox/session layer**, not the read source or message store. Messaging Core owns conversation-level message ordering, room/membership mutations, messaging realtime hints, and call lifecycle hints. Voyager does not keep a separate realtime Durable Object for calls.
 
 ## 2. Backend Implementation
 
 - Messaging Core binds its own realtime mailbox Durable Object and exposes `/realtime/token` plus `/realtime/connect`.
-- Voyager `wrangler.jsonc` still binds `REALTIME_MAILBOX` to `RealtimeMailbox` for call lifecycle hints and declares the Durable Object migration `v1-realtime-mailbox`.
-- `src/realtime.ts` owns the Voyager call realtime layer:
-  - `RealtimeMailbox` accepts hibernating WebSockets per account.
-  - `handleCallRealtimeConnect()` routes an authenticated account to its mailbox.
-  - `notifyRoomCallRealtime()` resolves active room account memberships and fan-outs `call.*` events to each non-null account mailbox.
-- `src/index.ts` exposes `GET /v1/calls/realtime` as the WebSocket upgrade endpoint for the Voyager call realtime boundary. Messaging realtime traffic uses Messaging Core via `/v1/messaging-core/realtime/token`.
+- Voyager `wrangler.jsonc` has no active realtime or call Durable Object bindings. Historical Durable Object migrations remain append-only and are followed by deletion migrations.
+- `src/index.ts` exposes `/v1/messaging-core/realtime/token` as the Voyager product bridge to the Core realtime token route.
+- `GET /v1/calls/realtime` and `POST /v1/calls/realtime/token` are retired and return `410 call_realtime_socket_retired`.
+- Messaging and call realtime traffic uses Messaging Core via `/v1/messaging-core/realtime/token`.
 - Normal message writes are proxied to Messaging Core. Core emits messaging realtime hints after durable writes; Voyager no longer owns a local message ConversationCoordinator.
 - Idempotent duplicate message sends return the existing message. Same-room duplicates also re-emit a lightweight realtime hint so a sender retry can recover if the first hint failed after the durable write.
 - Conversation-routed writes include `Server-Timing` metrics for the coordinator hop, queue wait, and operation time. The Worker logs `conversation.do.message` and `conversation.do.mutation` for development observability.
@@ -73,14 +71,7 @@ Current server events:
 
 The event is a pointer, not the payload. Clients should treat it as "sync this room/account now" and fetch authoritative data through `/v1/sync` and `/v1/rooms/{roomId}/messages`.
 
-Call lifecycle hints use a separate Voyager call runtime socket:
-
-```text
-POST /v1/calls/realtime/token
-GET /v1/calls/realtime
-```
-
-Call clients open the socket with `["voyager.call-realtime.v1", realtimeToken]`. That socket emits `call.invite`, `call.ringing`, `call.joined`, `call.left`, `call.ended`, and `call.updated` only.
+Call clients use the same Core socket opened from `/v1/messaging-core/realtime/token` with `messaging.realtime.v1`. Core emits `call.invite`, `call.ringing`, `call.joined`, `call.left`, `call.ended`, and `call.updated` on that lane.
 
 Client keepalive:
 
@@ -96,8 +87,8 @@ Server response:
 
 ## 4. Client Implementation
 
-- `apps/client/src/lib/api/client.ts` opens Messaging Core realtime sockets against the Core base URL returned by `/v1/messaging-core/realtime/token`, and opens call sockets against the Voyager API base returned by `/v1/calls/realtime/token`.
-- `apps/client/src/lib/stores/realtime.svelte.ts` manages separate messaging and call socket lifecycles, reconnection backoff, heartbeat pings, and event handling.
+- `apps/client/src/lib/api/client.ts` opens Messaging Core realtime sockets against the Core base URL returned by `/v1/messaging-core/realtime/token`.
+- `apps/client/src/lib/stores/realtime.svelte.ts` manages one Core socket lifecycle for messaging and call hints, with reconnection backoff, heartbeat pings, and event handling.
 - `apps/client/src/routes/(app)/+layout.svelte` starts realtime beside the existing sync engine after the authenticated app shell mounts.
 - `sync.svelte.ts` remains active as both fallback polling and the durable recovery path. Realtime room events queue an immediate room fetch rather than mutating message state directly.
 

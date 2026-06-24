@@ -77,9 +77,8 @@ One layout adapts by viewport (`ui.isWide`, ≥ 900px):
 ### State + sync
 
 Runes-based class stores. `realtime.svelte.ts` mints Messaging Core realtime
-tokens with `POST /v1/messaging-core/realtime/token`, opens the returned Core
-WebSocket path for lightweight `room.message` hints, and opens
-`/v1/calls/realtime` separately for `call.*` lifecycle hints. Messaging hints call
+tokens with `POST /v1/messaging-core/realtime/token` and opens the returned Core
+WebSocket path for lightweight `room.message` and `call.*` hints. Messaging hints call
 `sync.pokeNow()`; `sync.svelte.ts` still polls `GET /v1/sync` as the
 source-of-truth and recovery path, then pulls new messages for the open room.
 Sends are optimistic (`sending → sent/failed`, with retry) and reconciled by

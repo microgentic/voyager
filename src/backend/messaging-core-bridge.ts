@@ -1,7 +1,6 @@
 import { randomId } from "../crypto";
 import { HttpError } from "../http";
 import type { AccountRow, DeviceRow, Env, PrincipalRow } from "../types";
-import { endLiveCallsForArchivedRoom } from "./rooms/creation";
 import { ROOM_INVITATION_DAYS } from "./rooms/types";
 import type { JsonObject } from "./shared/types";
 
@@ -22,6 +21,7 @@ type MessageCutoverResponseKind =
   | "threadState"
   | "attachment"
   | "ok";
+type CallCutoverResponseKind = "calls" | "call" | "realtime" | "usageReport";
 
 const DEFAULT_APP_ID = "voyager";
 const DEFAULT_TENANT_DISPLAY_NAME = "Voyager";
@@ -303,6 +303,92 @@ export async function fetchMessagingCoreRealtimeTokenProxy(
   };
 }
 
+export async function fetchMessagingCoreCallCutoverProxy(
+  env: Env,
+  identity: MessagingCoreIdentity,
+  method: PublicCoreMethod,
+  path: string,
+  options: {
+    body?: Record<string, unknown>;
+    query?: URLSearchParams;
+    responseKind: CallCutoverResponseKind;
+  },
+): Promise<{ status: number; payload: JsonObject }> {
+  const config = resolveBridgeConfig(env);
+  const base = messagingCoreBridgeStatus(env);
+  if (!bridgeCanMintClientToken(config)) {
+    throw new HttpError(
+      503,
+      "messaging_core_unconfigured",
+      "Messaging Core is not configured.",
+      { reason: bridgeStatusReason(config) },
+    );
+  }
+
+  const { token, sync } = await createConfiguredMessagingCoreSession(env, config, base, identity);
+  if (!sync.ok) {
+    throw new HttpError(
+      503,
+      "messaging_core_identity_sync_failed",
+      "Messaging Core identity sync failed",
+      { reason: sync.reason },
+    );
+  }
+
+  const route = appendQuery(path, options.query);
+  const upstream = await publicCoreJson(config, token, method, route, options.body, {
+    preserveClientErrors: true,
+  });
+  return {
+    status: upstream.status,
+    payload: {
+      ok: true,
+      ...adaptCallCutoverPayload(upstream.payload, options.responseKind),
+      messagingCoreCutover: cutoverDiagnostics(config, {
+        route,
+        upstreamStatus: upstream.status,
+      }),
+    },
+  };
+}
+
+export async function fetchMessagingCoreCallRealtimeStatus(env: Env): Promise<JsonObject> {
+  const config = resolveBridgeConfig(env);
+  if (!config.baseUrl) {
+    return coreRealtimeStatusPayload({
+      features: {},
+      calls: {},
+      configured: false,
+      configurationStatus: "base_url_unconfigured",
+    });
+  }
+  const response = await fetchPublicCore(
+    config,
+    new Request(messagingCoreUrl(config, "/meta"), {
+      method: "GET",
+      signal: AbortSignal.timeout(config.fetchTimeoutMs),
+    }),
+  );
+  const payload = await parseJsonObjectResponse(response);
+  if (!response.ok) {
+    throwCorePayloadError(response.status, payload);
+  }
+  return coreRealtimeStatusPayload(payload);
+}
+
+export async function revokeMessagingCoreDevice(env: Env, deviceId: string): Promise<JsonObject | null> {
+  const config = resolveBridgeConfig(env);
+  if (!config.baseUrl || !config.internalSecret) return null;
+  const token = await mintInternalServiceToken(config, ["internal:devices:upsert"]);
+  const payload = await postInternal(
+    config,
+    token,
+    `/internal/tenants/${encodeURIComponent(config.tenantId)}/devices/${encodeURIComponent(deviceId)}/revoke`,
+    {},
+  );
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? payload as JsonObject : null;
+}
+
 export function messagingCoreAttachmentAllocateBody(body: Record<string, unknown>): Record<string, unknown> {
   const expectedBytes = numberValue(body.expectedBytes);
   if (expectedBytes === null || !Number.isInteger(expectedBytes) || expectedBytes < 1) {
@@ -375,7 +461,6 @@ export async function fetchMessagingCoreRoomCutoverProxy(
   if (options.responseKind === "invitation") {
     await syncVoyagerRoomShadowForInvitation(env, config, token, adapted);
   }
-  await applyCoreRoomSideEffects(env, method, path);
   return {
     status: upstream.status,
     payload: {
@@ -666,14 +751,6 @@ async function adaptCoreRoomViews(env: Env, roomViews: JsonObject[]): Promise<Ar
   });
 }
 
-async function applyCoreRoomSideEffects(env: Env, method: PublicCoreMethod, path: string): Promise<void> {
-  if (method !== "POST") return;
-  const archiveMatch = /^\/rooms\/([^/]+)\/archive$/.exec(path);
-  if (archiveMatch) {
-    await endLiveCallsForArchivedRoom(env, decodeURIComponent(archiveMatch[1] ?? ""));
-  }
-}
-
 async function syncVoyagerRoomShadows(env: Env, payload: JsonObject | JsonObject[]): Promise<void> {
   const rooms = Array.isArray(payload)
     ? payload
@@ -865,6 +942,109 @@ function adaptCoreOwnershipTransfer(transfer: JsonObject): JsonObject {
     expiresAt: stringValue(transfer.expiresAt) ?? requiredCoreString(transfer, "createdAt"),
     createdAt: requiredCoreString(transfer, "createdAt"),
     respondedAt: stringValue(transfer.completedAt),
+  };
+}
+
+function adaptCallCutoverPayload(payload: JsonObject, responseKind: CallCutoverResponseKind): JsonObject {
+  if (responseKind === "calls") {
+    return {
+      calls: arrayField(payload, "calls"),
+      nextCursor: stringValue(payload.nextCursor),
+    };
+  }
+  if (responseKind === "call") {
+    return { call: objectValue(payload.call) ?? payload };
+  }
+  if (responseKind === "realtime") {
+    return { realtime: adaptCallRealtimePayload(payload) };
+  }
+  return { usageReport: objectValue(payload.usageReport) ?? payload };
+}
+
+function adaptCallRealtimePayload(payload: JsonObject): JsonObject {
+  const realtime = objectValue(payload.realtime) ?? payload;
+  const features = objectValue(realtime.features);
+  const message = stringValue(realtime.message) ?? coreCallRealtimeMessage(realtime);
+  const session = adaptCallRealtimeSession(objectValue(realtime.session));
+  if (!features) {
+    return {
+      ...realtime,
+      message,
+      ...(session ? { session } : {}),
+    };
+  }
+  return {
+    ...realtime,
+    message,
+    ...(session ? { session } : {}),
+    features: coreCallFeatureFlags(features),
+  };
+}
+
+function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
+  const features = objectValue(payload.features) ?? {};
+  const calls = objectValue(payload.calls) ?? {};
+  const realtimeMediaEnabled = Boolean(features.realtimeMedia);
+  const configured = Boolean(calls.realtimeMediaConfigured);
+  const mock = Boolean(calls.mockEnabled);
+  const configurationStatus = stringValue(payload.configurationStatus)
+    ?? (realtimeMediaEnabled ? (configured ? "configured" : "not_configured") : "disabled");
+  return {
+    provider: "cloudflare_realtime",
+    configured,
+    configurationStatus,
+    status: configurationStatus,
+    configurationCheckedAt: new Date().toISOString(),
+    providerHealthStatus: "not_checked",
+    providerHealthCheckedAt: null,
+    mock,
+    apiBase: "managed-by-messaging-core",
+    turnConfigured: Boolean(calls.turnConfigured),
+    lastProviderCheckAt: null,
+    lastProviderCheckStatus: "not_checked",
+    estimatedSfuTurnEgressStatus: "owned_by_messaging_core",
+    features: coreCallFeatureFlags(features),
+    credentialState: {
+      appIdConfigured: configured && !mock,
+      appSecretConfigured: configured && !mock,
+      turnCredentialsConfigured: Boolean(calls.turnConfigured),
+    },
+    messagingCore: {
+      source: "core",
+      serviceName: stringValue(payload.serviceName),
+      routePrefix: stringValue(payload.routePrefix),
+    },
+  };
+}
+
+function coreCallFeatureFlags(features: JsonObject): JsonObject {
+  return {
+    callsEnabled: Boolean(features.callsEnabled ?? features.calls),
+    audioCallsEnabled: Boolean(features.audioCallsEnabled ?? features.audioCalls),
+    videoCallsEnabled: Boolean(features.videoCallsEnabled ?? features.videoCalls),
+    screenShareEnabled: Boolean(features.screenShareEnabled ?? features.screenShare),
+    realtimeMediaEnabled: Boolean(features.realtimeMediaEnabled ?? features.realtimeMedia),
+  };
+}
+
+function coreCallRealtimeMessage(realtime: JsonObject): string {
+  if (!Boolean(realtime.configured)) {
+    return "Cloudflare Realtime is not configured by Messaging Core.";
+  }
+  if (Boolean(realtime.mock)) {
+    return "Cloudflare Realtime mock is configured by Messaging Core.";
+  }
+  return "Cloudflare Realtime is configured by Messaging Core.";
+}
+
+function adaptCallRealtimeSession(session: JsonObject | null): JsonObject | null {
+  if (!session) return null;
+  const providerSessionId = stringValue(session.providerSessionId);
+  if (!providerSessionId) return session;
+  return {
+    ...session,
+    coreSessionId: stringValue(session.sessionId),
+    sessionId: providerSessionId,
   };
 }
 
@@ -1818,19 +1998,25 @@ async function publicCoreRaw(
   if (upstreamRequest) {
     const contentType = upstreamRequest.headers.get("content-type");
     if (contentType) headers.set("content-type", contentType);
-    init.body = upstreamRequest.body;
+    init.body = await upstreamRequest.arrayBuffer();
   }
   const request = new Request(messagingCoreUrl(config, path), init);
-  const response = await fetchPublicCore(config, request);
+  const response = await fetchPublicCore(config, request, {
+    forceNetwork: Boolean(upstreamRequest && isLocalMessagingCoreUrl(config.baseUrl)),
+  });
   if (!response.ok && method !== "GET") {
     await throwCoreResponseError(response, options);
   }
   return { response };
 }
 
-async function fetchPublicCore(config: BridgeConfig, request: Request): Promise<Response> {
+async function fetchPublicCore(
+  config: BridgeConfig,
+  request: Request,
+  options: { forceNetwork?: boolean } = {},
+): Promise<Response> {
   try {
-    return await fetchMessagingCore(config, request);
+    return await fetchMessagingCore(config, request, options.forceNetwork === true);
   } catch (error) {
     if (isTimeoutError(error)) {
       throw new HttpError(
@@ -1844,8 +2030,8 @@ async function fetchPublicCore(config: BridgeConfig, request: Request): Promise<
   }
 }
 
-function fetchMessagingCore(config: BridgeConfig, request: Request): Promise<Response> {
-  return config.serviceBinding ? config.serviceBinding.fetch(request) : fetch(request);
+function fetchMessagingCore(config: BridgeConfig, request: Request, forceNetwork = false): Promise<Response> {
+  return !forceNetwork && config.serviceBinding ? config.serviceBinding.fetch(request) : fetch(request);
 }
 
 async function throwCoreResponseError(
@@ -2041,6 +2227,16 @@ function messagingCoreUrl(config: BridgeConfig, path: string): string {
   }
   const base = config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`;
   return new URL(path.replace(/^\/+/, ""), base).toString();
+}
+
+function isLocalMessagingCoreUrl(baseUrl: string | null): boolean {
+  if (!baseUrl) return false;
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
 }
 
 function appendQuery(path: string, query?: URLSearchParams): string {

@@ -144,7 +144,7 @@ Login accepts `email`, `password`, and an optional `device` object. Existing-dev
 
 The dedicated `/v1/messaging-core/session`, `/v1/messaging-core/bootstrap`, `/v1/messaging-core/sync`, `/v1/messaging-core/rooms`, `/v1/messaging-core/rooms/{roomId}`, and `/v1/messaging-core/rooms/{roomId}/messages` validation proxies were removed after the all-Core dev cutover proof. Cutover validation now uses the normal Voyager app routes plus direct Messaging Core reads from the `messagingCore` session payload included in login and `/v1/me`.
 
-The web client uses the Messaging Core realtime transport for messaging. It requests `/v1/messaging-core/realtime/token`, opens the returned Core `connectPath` on `messagingCore.baseUrl`, sends the `mrt_...` token as a query parameter, and uses the returned `messaging.realtime.v1` protocol. Voyager no longer exposes generic `/v1/realtime/token` or `/v1/realtime` messaging fallback routes. Call lifecycle hints use the explicit call runtime routes `/v1/calls/realtime/token` and `/v1/calls/realtime`.
+The web client uses the Messaging Core realtime transport for messaging and call lifecycle hints. It requests `/v1/messaging-core/realtime/token`, opens the returned Core `connectPath` on `messagingCore.baseUrl`, sends the `mrt_...` token as a query parameter, and uses the returned `messaging.realtime.v1` protocol. Voyager no longer exposes generic `/v1/realtime/token` or `/v1/realtime` messaging fallback routes; the old `/v1/calls/realtime/token` and `/v1/calls/realtime` socket routes are retired and return `410 call_realtime_socket_retired`.
 
 Normal Voyager room routes proxy to the matching Core public room routes and return Voyager-compatible response envelopes. The facade adapts Core-neutral room, member, invitation, and ownership-transfer shapes back to existing Voyager client fields, including account/principal display enrichment from Voyager identity rows. JSON Core-runtime responses include `messagingCoreCutover` diagnostics with `source: "core"`, `fallbackReason: null`, the Core route, upstream status, and a sanitized always-on Core snapshot. This covers room list/detail/create/update/archive, membership add/role/remove/leave, invitation list/create/respond, and ownership transfer propose/accept.
 
@@ -154,9 +154,9 @@ Legacy Voyager-only hidden-message rows, legacy Voyager-only attachment rows, an
 
 Normal `GET /v1/sync` calls Core `/sync`, expands Core room summaries through Core room detail, adapts rooms and pending messages back to Voyager-compatible shapes, and returns the existing `{ ok, sync }` envelope plus `messagingCoreCutover` diagnostics. Normal `GET /v1/app/bootstrap` keeps Voyager product identity/session fields but sources rooms and pending messages through the same Core sync bridge.
 
-Current boundary classification: room/message/attachment/thread/sync and app-bootstrap routes are `core-runtime`; messaging identity/key-package routes are `product-token-bridge`; call lifecycle/media routes are `call-runtime`; `/v1/calls/realtime/token` and `/v1/calls/realtime` are `call-realtime-runtime`; Voyager admin, auth, account/device-management, sidebar, agent provisioning/review, and product usage/audit routes are `product-only`. Default responses must not emit `messagingCoreCutover.source: "voyager_legacy"`.
+Current boundary classification: room/message/attachment/thread/sync, app-bootstrap, and call lifecycle/media routes are `core-runtime`; messaging identity/key-package routes are `product-token-bridge`; `/v1/calls/realtime/token` and `/v1/calls/realtime` are retired; Voyager admin, auth, account/device-management, sidebar, agent provisioning/review, and product usage/audit routes are `product-only`. Default responses must not emit `messagingCoreCutover.source: "voyager_legacy"`.
 
-The executable boundary inventory lives in `messagingCoreBoundaryCatalog` in `scripts/api-contract-assertions.mjs`. `node scripts/route-inventory-check.mjs` validates that every Core-owned Voyager route in the endpoint catalog is classified as Core runtime, product token bridge, call runtime, call realtime runtime, or active Core facade, which keeps new legacy ownership from appearing silently.
+The executable boundary inventory lives in `messagingCoreBoundaryCatalog` in `scripts/api-contract-assertions.mjs`. `node scripts/route-inventory-check.mjs` validates that every Core-owned Voyager route in the endpoint catalog is classified as Core runtime, product token bridge, or active Core facade, which keeps new legacy ownership from appearing silently.
 
 The platform-owner-only `/v1/admin/messaging-core/backfill-readonly` cutover utility was removed after the Core dev deployment was populated and remote all-Core proof passed. New dev parity data should be created through normal Core/Voyager write paths or Core maintenance tooling, not by re-importing readonly Voyager history.
 
@@ -329,9 +329,9 @@ Room invitations are the human membership path. Reused, expired, declined, or re
 
 ### Calls
 
-Call endpoints are a shared foundation for audio and video. The current call surface combines durable call lifecycle, participants, events, room authorization, `CallCoordinator` serialization, and Cloudflare Realtime session/track negotiation for microphone, camera, and screen tracks. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
+Call endpoints are a shared foundation for audio and video. Messaging Core owns durable call lifecycle, participants, events, room authorization, serialized call mutations, and Cloudflare Realtime session/track negotiation for microphone, camera, and screen tracks. Voyager only authenticates the product session, mints scoped Messaging Core credentials, and proxies the normal app routes to Core. Media still flows through WebRTC, not D1 or WebSockets, and the backend stores only provider session/track metadata.
 
-Provider HTTP negotiation can happen outside the Durable Object, but durable D1 media commits are coordinator-owned. Session upsert, track upsert, track close, provider-unavailable/failure records, and renegotiation records are serialized through `CallCoordinator` after provider calls return. This keeps slow provider requests out of the DO queue while preserving serialized authoritative state mutation.
+Provider HTTP negotiation can happen outside Core's serialized mutation path, but durable D1 media commits are Core-owned. Session upsert, track upsert, track close, provider-unavailable/failure records, renegotiation records, room-archive call endings, and device-revoke call leaves are performed in Messaging Core.
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -561,14 +561,19 @@ Core realtime tokens are one-use, short-lived socket credentials bound to the sc
 
 Realtime token minting is rate-limited per account/device. Token expiration is checked when opening the socket; an already-open socket may remain connected after the token's `expiresAt`.
 
-Call lifecycle hints use Voyager's explicit call runtime socket, not the messaging realtime lane:
+Call lifecycle hints use the same Messaging Core realtime lane as room/message/thread hints. The old Voyager call socket endpoints are intentionally retired:
 
 ```http
 POST /v1/calls/realtime/token
 Authorization: Bearer <sessionToken>
 ```
 
-Clients open `GET /v1/calls/realtime` with WebSocket subprotocols `["voyager.call-realtime.v1", realtimeToken]`. This call socket emits only `call.*` lifecycle events. It does not emit room/message/thread realtime events and must not be used as a messaging fallback.
+```http
+HTTP/1.1 410 Gone
+{ "ok": false, "error": "call_realtime_socket_retired", ... }
+```
+
+Clients open the Core `connectPath` from `/v1/messaging-core/realtime/token` with subprotocol `messaging.realtime.v1`. That socket emits room/message/thread hints and call lifecycle hints such as `call.invite`, `call.joined`, `call.left`, `call.ended`, and `call.updated`.
 
 Ready event:
 

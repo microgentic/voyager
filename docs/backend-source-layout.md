@@ -26,14 +26,13 @@ clearer home than the former single large `src/backend.ts` file.
   sequencing are handled by Messaging Core. Voyager keeps only the Core facade
   and product-owned bridge code in `src/index.ts` and
   `src/backend/messaging-core-bridge.ts`.
-- `src/backend/call-coordinator.ts` is a compatibility barrel for
-  `src/backend/calls/coordinator.ts`, which contains the `CallCoordinator`
-  Durable Object.
+- Voyager no longer contains a call coordinator barrel or call Durable Object.
+  Call lifecycle/media/usage routes are proxied through
+  `src/backend/messaging-core-bridge.ts` to Messaging Core.
 - `src/backend/internal-types.ts` is a compatibility type barrel for
   Voyager-owned backend domains. Backend modules should import from the owning
   domain type modules instead: `src/backend/shared/types.ts`,
-  `src/backend/identity/types.ts`, `src/backend/rooms/types.ts`, and
-  `src/backend/calls/types.ts`.
+  `src/backend/identity/types.ts`, and `src/backend/rooms/types.ts`.
 - `src/backend/operations.ts` is a compatibility barrel for Voyager-owned
   operations. New route-group modules should import from the owning domain
   modules instead of this all-domain barrel.
@@ -43,16 +42,9 @@ clearer home than the former single large `src/backend.ts` file.
   membership, human room invitations, ownership transfers, quota checks, and
   room member serialization helpers. `src/backend/rooms.ts` remains a
   compatibility barrel.
-- The old Voyager-owned messaging, thread, sync, attachment, and
+- The old Voyager-owned messaging, thread, sync, attachment, call, and
   ConversationCoordinator modules have been removed. Normal app traffic for
   those capabilities goes through the Messaging Core facade in `src/index.ts`.
-- `src/backend/calls/` contains call lifecycle, read, Realtime config/session/
-  track, Realtime provider client/mock helpers, media mutation, usage,
-  participant-state, event, serialization, and Durable Object coordinator
-  modules. `src/backend/calls/core.ts` remains the internal lifecycle/media
-  orchestration module for coupled call flows; stable helper layers live in the
-  smaller sibling modules. `src/backend/calls.ts` remains a compatibility
-  barrel.
 - `src/backend/sidebar.ts` contains sidebar collection and collection-item
   operations.
 - `src/backend/agents.ts` contains agent request review and agent principal
@@ -62,8 +54,7 @@ clearer home than the former single large `src/backend.ts` file.
   attachment cleanup.
 - `src/backend/serializers.ts` is a compatibility serializer barrel. Public
   API response serializers live with their owning domains:
-  `src/backend/shared/serializers.ts`, `src/backend/rooms/serializers.ts`,
-  and `src/backend/calls/serializers.ts`.
+  `src/backend/shared/serializers.ts` and `src/backend/rooms/serializers.ts`.
 - `src/backend/utils.ts` contains validation, pagination, timing, counted-write,
   JSON, timestamp, and string helper utilities.
 

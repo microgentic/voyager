@@ -8,42 +8,28 @@ import { sync } from './sync.svelte';
 import { threads } from './threads.svelte';
 
 type RealtimeState = 'idle' | 'connecting' | 'connected' | 'retrying';
-type RealtimeChannel = 'messaging' | 'call';
 
 class RealtimeStore {
 	active = $state(false);
 	state = $state<RealtimeState>('idle');
 	connected = $state(false);
-	callState = $state<RealtimeState>('idle');
-	callConnected = $state(false);
 	lastEventAt = $state<Date | null>(null);
 	lastReadyAt = $state<Date | null>(null);
 	lastPongAt = $state<Date | null>(null);
 	lastConnectedAt = $state<Date | null>(null);
 	lastClosedAt = $state<Date | null>(null);
-	lastCallReadyAt = $state<Date | null>(null);
-	lastCallPongAt = $state<Date | null>(null);
-	lastCallConnectedAt = $state<Date | null>(null);
-	lastCallClosedAt = $state<Date | null>(null);
 	lastRoomMessageAt = $state<Date | null>(null);
 	lastRoomId = $state<string | null>(null);
 	lastEnvelopeId = $state<string | null>(null);
 	lastServerSequence = $state<number | null>(null);
 	lastError = $state<string | null>(null);
-	lastCallError = $state<string | null>(null);
 	reconnectCount = $state(0);
-	callReconnectCount = $state(0);
 	transport = $state<RealtimeTransport | null>(null);
-	callTransport = $state<RealtimeTransport | null>(null);
 
 	private messagingSocket: WebSocket | null = null;
-	private callSocket: WebSocket | null = null;
 	private messagingReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	private callReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private messagingHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
-	private callHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 	private messagingAttempts = 0;
-	private callAttempts = 0;
 
 	constructor() {
 		auth.onSignOut(() => this.stop());
@@ -53,21 +39,15 @@ class RealtimeStore {
 		if (this.active) return;
 		this.active = true;
 		void this.connectMessaging();
-		void this.connectCall();
 	}
 
 	stop(): void {
 		this.active = false;
 		this.state = 'idle';
 		this.connected = false;
-		this.callState = 'idle';
-		this.callConnected = false;
 		this.transport = null;
-		this.callTransport = null;
 		this.clearMessagingReconnect();
-		this.clearCallReconnect();
 		this.closeMessagingSocket();
-		this.closeCallSocket();
 	}
 
 	private async connectMessaging(): Promise<void> {
@@ -116,7 +96,7 @@ class RealtimeStore {
 					// The shared message handler ignores malformed frames.
 				}
 			}
-			this.handleMessage(event.data, 'messaging');
+			this.handleMessage(event.data);
 		};
 
 		socket.onerror = () => {
@@ -135,72 +115,7 @@ class RealtimeStore {
 		};
 	}
 
-	private async connectCall(): Promise<void> {
-		if (!this.active || auth.status !== 'authed' || this.callSocket) return;
-		this.callState = 'connecting';
-		this.lastCallError = null;
-
-		let connection: Awaited<ReturnType<typeof api.openRealtimeSocket>>;
-		try {
-			connection = await api.openRealtimeSocket({ transport: 'call-runtime' });
-		} catch (error) {
-			this.lastCallError = (error as Error)?.message ?? 'Call realtime token request failed';
-			if (!this.active || auth.status !== 'authed') return;
-			this.scheduleCallReconnect();
-			return;
-		}
-
-		if (!this.active || auth.status !== 'authed') {
-			connection?.socket.close(1000, 'client_stop');
-			return;
-		}
-		if (!connection) {
-			this.scheduleCallReconnect();
-			return;
-		}
-
-		const { socket, transport } = connection;
-		let ready = false;
-		this.callSocket = socket;
-		this.callTransport = transport;
-
-		socket.onopen = () => {
-			this.callConnected = true;
-			this.callState = 'connected';
-			this.callTransport = transport;
-			this.callAttempts = 0;
-			this.lastCallConnectedAt = new Date();
-			this.startCallHeartbeat();
-		};
-
-		socket.onmessage = (event) => {
-			if (typeof event.data === 'string') {
-				try {
-					ready = (JSON.parse(event.data) as { type?: string }).type === 'ready' || ready;
-				} catch {
-					// The shared message handler ignores malformed frames.
-				}
-			}
-			this.handleMessage(event.data, 'call');
-		};
-
-		socket.onerror = () => {
-			this.lastCallError = 'Call realtime connection failed';
-		};
-
-		socket.onclose = () => {
-			this.clearCallHeartbeat();
-			this.callSocket = null;
-			this.callConnected = false;
-			this.callTransport = null;
-			this.lastCallClosedAt = new Date();
-			if (!this.active) return;
-			if (!ready) this.lastCallError = 'Call realtime connection failed';
-			this.scheduleCallReconnect();
-		};
-	}
-
-	private handleMessage(data: unknown, channel: RealtimeChannel): void {
+	private handleMessage(data: unknown): void {
 		if (typeof data !== 'string') return;
 		let event: RealtimeEvent;
 		try {
@@ -209,17 +124,13 @@ class RealtimeStore {
 			return;
 		}
 		if (event.type === 'ready') {
-			if (channel === 'call') this.lastCallReadyAt = new Date();
-			else this.lastReadyAt = new Date();
+			this.lastReadyAt = new Date();
 			return;
 		}
 		if (event.type === 'pong') {
-			if (channel === 'call') this.lastCallPongAt = new Date();
-			else this.lastPongAt = new Date();
+			this.lastPongAt = new Date();
 			return;
 		}
-		if (channel !== 'messaging' && event.type.startsWith('room.')) return;
-		if (channel !== 'call' && event.type.startsWith('call.')) return;
 		if (event.type === 'room.message' && event.roomId) {
 			this.lastEventAt = new Date();
 			this.lastRoomMessageAt = this.lastEventAt;
@@ -270,18 +181,6 @@ class RealtimeStore {
 		}, delay);
 	}
 
-	private scheduleCallReconnect(): void {
-		this.clearCallReconnect();
-		this.callState = 'retrying';
-		this.callReconnectCount += 1;
-		const delay = Math.min(30_000, 500 * 2 ** Math.min(this.callAttempts, 6)) + Math.floor(Math.random() * 250);
-		this.callAttempts += 1;
-		this.callReconnectTimer = setTimeout(() => {
-			this.callReconnectTimer = null;
-			void this.connectCall();
-		}, delay);
-	}
-
 	private startMessagingHeartbeat(): void {
 		this.clearMessagingHeartbeat();
 		this.messagingHeartbeatTimer = setInterval(() => {
@@ -291,33 +190,14 @@ class RealtimeStore {
 		}, 25_000);
 	}
 
-	private startCallHeartbeat(): void {
-		this.clearCallHeartbeat();
-		this.callHeartbeatTimer = setInterval(() => {
-			if (this.callSocket?.readyState === WebSocket.OPEN) {
-				this.callSocket.send(JSON.stringify({ type: 'ping', id: crypto.randomUUID() }));
-			}
-		}, 25_000);
-	}
-
 	private clearMessagingReconnect(): void {
 		if (this.messagingReconnectTimer) clearTimeout(this.messagingReconnectTimer);
 		this.messagingReconnectTimer = null;
 	}
 
-	private clearCallReconnect(): void {
-		if (this.callReconnectTimer) clearTimeout(this.callReconnectTimer);
-		this.callReconnectTimer = null;
-	}
-
 	private clearMessagingHeartbeat(): void {
 		if (this.messagingHeartbeatTimer) clearInterval(this.messagingHeartbeatTimer);
 		this.messagingHeartbeatTimer = null;
-	}
-
-	private clearCallHeartbeat(): void {
-		if (this.callHeartbeatTimer) clearInterval(this.callHeartbeatTimer);
-		this.callHeartbeatTimer = null;
 	}
 
 	private closeMessagingSocket(): void {
@@ -329,17 +209,6 @@ class RealtimeStore {
 		this.messagingSocket.onclose = null;
 		this.messagingSocket.close(1000, 'client_stop');
 		this.messagingSocket = null;
-	}
-
-	private closeCallSocket(): void {
-		this.clearCallHeartbeat();
-		if (!this.callSocket) return;
-		this.callSocket.onopen = null;
-		this.callSocket.onmessage = null;
-		this.callSocket.onerror = null;
-		this.callSocket.onclose = null;
-		this.callSocket.close(1000, 'client_stop');
-		this.callSocket = null;
 	}
 }
 

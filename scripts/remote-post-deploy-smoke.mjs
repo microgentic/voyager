@@ -391,7 +391,7 @@ async function runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders) 
   }
   assertServerTiming(
     created.response.headers.get("server-timing") ?? "",
-    ["callCreate", "callDo", "callQueue", "callOperation"],
+    ["callCreate"],
     "POST /v1/rooms/{roomId}/calls remote smoke"
   );
   assertCallResponse(created.payload, "POST /v1/rooms/{roomId}/calls remote smoke");

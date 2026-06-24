@@ -1,29 +1,29 @@
 # Call Media Coordination
 
-Status: implementation contract for audio/video call media coordination.
-Date: 2026-06-22
+Status: Messaging Core implementation contract for audio/video call media coordination.
+Date: 2026-06-24
 
 ## Coordination Model
 
-Voyager uses one shared call model for audio and video. The `CallCoordinator` Durable Object serializes authoritative call lifecycle and durable media metadata writes. Cloudflare Realtime remains the media provider, and media bytes never enter D1, R2, or Voyager WebSocket messages.
+Messaging Core uses one shared call model for audio and video. Core serializes authoritative call lifecycle and durable media metadata writes. Cloudflare Realtime remains the media provider, and media bytes never enter D1, R2, or Voyager WebSocket messages.
 
 The split is intentional:
 
-- Cloudflare Realtime HTTP calls may run outside `CallCoordinator` so a slow provider request does not hold the Durable Object queue.
-- Durable D1 session, track, media-state, provider-failure, unavailable, and renegotiation records are committed through `CallCoordinator`.
+- Cloudflare Realtime HTTP calls may run outside the serialized mutation path so a slow provider request does not block unrelated Core work.
+- Durable D1 session, track, media-state, provider-failure, unavailable, and renegotiation records are committed in Messaging Core.
 - Clients treat realtime events as hints and recover authoritative call state through call HTTP reads.
 
 ## Realtime Endpoint Flow
 
-`POST /v1/calls/{callId}/realtime/session` validates the caller and participant, calls the provider when configured, then commits `call.media.session.upsert` through `CallCoordinator`. Repeated session requests for the same active participant return the existing active session when no new offer is supplied. If a repeated request includes a new `sessionDescription`, the endpoint renegotiates against the existing provider session and returns a fresh answer instead of silently returning a ready session with no SDP.
+`POST /v1/calls/{callId}/realtime/session` validates the caller and participant, calls the provider when configured, then commits the Core session metadata. Repeated session requests for the same active participant return the existing active session when no new offer is supplied. If a repeated request includes a new `sessionDescription`, the endpoint renegotiates against the existing provider session and returns a fresh answer instead of silently returning a ready session with no SDP.
 
-`POST /v1/calls/{callId}/realtime/tracks` validates session ownership and track shape, calls the provider for requested track changes, then commits `call.media.tracks.upsert` through `CallCoordinator`. Track rows are unique by session, provider track name, and location, so duplicate local publication updates the existing row.
+`POST /v1/calls/{callId}/realtime/tracks` validates session ownership and track shape, calls the provider for requested track changes, then commits the Core track metadata. Track rows are unique by session, provider track name, and location, so duplicate local publication updates the existing row.
 
-`POST /v1/calls/{callId}/realtime/tracks/close` calls the provider close path when configured, then commits `call.media.tracks.close` through `CallCoordinator`. Closing an already closed track is safe; participant audio/video/screen flags are recalculated from remaining active local tracks.
+`POST /v1/calls/{callId}/realtime/tracks/close` calls the provider close path when configured, then closes the Core track metadata. Closing an already closed track is safe; participant audio/video/screen flags are recalculated from remaining active local tracks.
 
 `POST /v1/calls/{callId}/realtime/renegotiate` keeps provider negotiation outside the Durable Object, then commits `call.media.renegotiate.record` to refresh liveness and record the metadata-only event.
 
-When provider credentials are absent or a provider request fails, the endpoint commits a metadata-only failure/unavailable event through `CallCoordinator` and returns the documented configured-false or provider-error response.
+When provider credentials are absent or a provider request fails, Core commits a metadata-only failure/unavailable event and returns the documented configured-false or provider-error response.
 
 ## Race And Idempotency Rules
 
