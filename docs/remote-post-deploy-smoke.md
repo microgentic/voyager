@@ -136,11 +136,11 @@ If the WebSocket checks fail while HTTP checks pass, inspect:
   `messaging.realtime.v1`.
 - Durable Object deployment/binding health in the Worker deploy logs.
 
-## Conversation Durable Object Sequencing
+## Messaging Core Sequencing
 
 This smoke makes the deployed realtime and message path safer to operate.
-Conversation Durable Objects now coordinate message sends and room/membership
-mutations. The current coordinator does not store a second durable room state;
-D1 remains the reconciliation source. This remote smoke is the first deployed
-guard that the write path, realtime hint, idempotency retry, and HTTP recovery
-reads all still agree after deploy.
+Messaging Core Durable Objects coordinate message sends and room/membership
+mutations. Core does not store a second durable room state; D1 remains the
+reconciliation source. This remote smoke is the deployed guard that the Core
+write path, realtime hint, idempotency retry, and HTTP recovery reads all still
+agree after deploy.

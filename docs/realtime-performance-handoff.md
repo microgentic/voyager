@@ -61,11 +61,13 @@ The client now:
 - Fetches new messages for that room directly with `GET /v1/rooms/{roomId}/messages?after=...`.
 - Keeps the existing full `/v1/sync` polling path for recovery, cold starts, hidden tabs, and non-room-specific events.
 
-## 5. What This Does Not Do
+## 5. Historical Note
 
-This PR did **not** implement Conversation Durable Object sequencing, idempotency ownership, membership mutation serialization, or D1/DO reconciliation.
-
-That was left as a separate architecture follow-up because the measurements showed that the existing D1 path had obvious sequential work to remove first.
+This optimization pass originally deferred Conversation Durable Object
+sequencing, idempotency ownership, membership mutation serialization, and D1/DO
+reconciliation. Those messaging responsibilities now live in Messaging Core,
+not in the Voyager Worker. Voyager keeps the Core token/session bridge and the
+call-only realtime boundary.
 
 ## 6. Verification
 
