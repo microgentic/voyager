@@ -31,8 +31,26 @@ jobs:
       - name: Type check
         run: npm run check
 
+      - name: Checkout Messaging Core
+        uses: actions/checkout@v4
+        with:
+          repository: microgentic/messaging-core-service
+          ref: main
+          path: messaging-core-service
+          ssh-key: ${{ secrets.MESSAGING_CORE_SERVICE_DEPLOY_KEY }}
+
+      - name: Install Messaging Core dependencies
+        run: npm ci
+        working-directory: messaging-core-service
+
+      - name: Build Messaging Core package
+        run: npm run build
+        working-directory: messaging-core-service
+
       - name: Backend smoke
         run: npm run smoke:backend:local
+        env:
+          MESSAGING_CORE_SERVICE_ROOT: ${{ github.workspace }}/messaging-core-service
 
       - name: Apply D1 migrations
         if: github.event_name != 'pull_request'

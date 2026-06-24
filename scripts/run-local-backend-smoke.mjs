@@ -1,21 +1,26 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
 const readyTimeoutMs = Number(process.env.SMOKE_READY_TIMEOUT_MS ?? 60_000);
 const smokeTimeoutMs = Number(process.env.SMOKE_TIMEOUT_MS ?? 120_000);
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
-const localWrangler = join(projectRoot, "node_modules", ".bin", process.platform === "win32" ? "wrangler.cmd" : "wrangler");
-const wrangler = existsSync(localWrangler) ? localWrangler : (process.platform === "win32" ? "wrangler.cmd" : "wrangler");
+const npx = process.platform === "win32" ? "npx.cmd" : "npx";
 const messagingCoreRoot = process.env.MESSAGING_CORE_SERVICE_ROOT ?? "/Users/admin/messaging-core-service";
 const messagingCoreWranglerConfig = process.env.MESSAGING_CORE_WRANGLER_CONFIG ?? "apps/voyager-messaging-worker.example/wrangler.example.jsonc";
 const messagingCoreTokenSecret = process.env.MESSAGING_CORE_TOKEN_SECRET ?? "local-messaging-core-token-secret";
 const messagingCoreInternalServiceSecret = process.env.MESSAGING_CORE_INTERNAL_SERVICE_SECRET ?? "local-messaging-core-internal-service-secret";
+const pathEnvKey = process.platform === "win32" ? "Path" : "PATH";
+const smokePath = [
+  join(projectRoot, "node_modules", ".bin"),
+  join(messagingCoreRoot, "node_modules", ".bin"),
+  process.env[pathEnvKey] ?? process.env.PATH ?? ""
+].filter(Boolean).join(delimiter);
 
 function spawnCommand(command, args, options = {}) {
   const { env, cwd = projectRoot, ...spawnOptions } = options;
@@ -26,6 +31,7 @@ function spawnCommand(command, args, options = {}) {
       CI: "true",
       NO_COLOR: "1",
       WRANGLER_SEND_METRICS: "false",
+      [pathEnvKey]: smokePath,
       ...env
     },
     ...spawnOptions
@@ -61,6 +67,15 @@ async function runCommand(command, args, options = {}) {
       reject(new Error(`${command} ${args.join(" ")} exited with ${code ?? signal}`));
     });
   });
+}
+
+function assertDirectory(path, label) {
+  if (!existsSync(path)) {
+    throw new Error(`${label} not found at ${path}. Set MESSAGING_CORE_SERVICE_ROOT or checkout messaging-core-service before running smoke.`);
+  }
+  if (!statSync(path).isDirectory()) {
+    throw new Error(`${label} is not a directory: ${path}`);
+  }
 }
 
 async function freePort() {
@@ -191,7 +206,10 @@ if (process.env.CLOUDFLARE_REALTIME_MOCK === "1") {
 }
 
 try {
-  await runCommand(wrangler, [
+  assertDirectory(messagingCoreRoot, "Messaging Core service root");
+
+  await runCommand(npx, [
+    "wrangler",
     "d1",
     "migrations",
     "apply",
@@ -206,7 +224,8 @@ try {
     commandTimeoutMs: 60_000
   });
 
-  messagingCoreWorker = spawnCommand(wrangler, [
+  messagingCoreWorker = spawnCommand(npx, [
+    "wrangler",
     "dev",
     "--config",
     messagingCoreWranglerConfig,
@@ -227,11 +246,12 @@ try {
   await waitForWorker(messagingCoreWorker, messagingCorePort);
   await waitForHealth(messagingCoreBaseUrl);
 
-  await runCommand(wrangler, ["d1", "migrations", "apply", "voyager-dev-control", "--local", "--persist-to", persistDir], {
+  await runCommand(npx, ["wrangler", "d1", "migrations", "apply", "voyager-dev-control", "--local", "--persist-to", persistDir], {
     commandTimeoutMs: 60_000
   });
 
-  worker = spawnCommand(wrangler, [
+  worker = spawnCommand(npx, [
+    "wrangler",
     "dev",
     "--local",
     "--ip",
