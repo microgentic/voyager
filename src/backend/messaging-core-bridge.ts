@@ -1,12 +1,13 @@
 import { randomId } from "../crypto";
 import { HttpError } from "../http";
 import type { AccountRow, DeviceRow, Env, PrincipalRow } from "../types";
+import { endLiveCallsForArchivedRoom } from "./rooms/creation";
 import { ROOM_INVITATION_DAYS } from "./rooms/types";
 import type { JsonObject } from "./shared/types";
 
 export const VOYAGER_DEFAULT_MESSAGING_TENANT_ID = "tenant_voyager_default";
 
-type MessagingCoreMode = "off" | "shadow" | "proxy";
+type MessagingCoreMode = "proxy";
 type PublicCoreMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 type PrincipalType = "human" | "agent" | "service";
 type IdentitySyncStep = "tenant" | "account" | "principal" | "device";
@@ -46,7 +47,6 @@ export interface MessagingCoreIdentity {
 
 interface BridgeConfig {
   mode: MessagingCoreMode;
-  invalidMode: string | null;
   allCutoverEnabled: boolean;
   roomCutoverEnabled: boolean;
   messageCutoverEnabled: boolean;
@@ -102,7 +102,7 @@ interface IdentitySyncCacheLookup {
 export function messagingCoreBridgeStatus(env: Env): JsonObject {
   const config = resolveBridgeConfig(env);
   return {
-    enabled: config.mode !== "off",
+    enabled: true,
     mode: config.mode,
     configured: bridgeCanMintClientToken(config),
     tenantId: config.tenantId,
@@ -121,8 +121,8 @@ export function messagingCoreBridgeStatus(env: Env): JsonObject {
       ttlSeconds: config.internalTtlSeconds,
     },
     identitySync: {
-      available: Boolean((config.baseUrl || config.serviceBinding) && config.internalSecret),
-      required: config.mode === "proxy",
+      available: Boolean(config.baseUrl && config.internalSecret),
+      required: true,
       ttlMs: config.identitySyncTtlMs,
       staleGraceMs: config.identitySyncStaleGraceMs,
     },
@@ -142,11 +142,68 @@ export async function createMessagingCoreSessionPayload(
 ): Promise<JsonObject> {
   const config = resolveBridgeConfig(env);
   const base = messagingCoreBridgeStatus(env);
-  if (config.mode === "off" || !bridgeCanMintClientToken(config)) {
+  if (!bridgeCanMintClientToken(config)) {
     return base;
   }
 
   return (await createConfiguredMessagingCoreSession(env, config, base, identity)).session;
+}
+
+export async function syncMessagingCorePrincipal(env: Env, principalId: string): Promise<void> {
+  const config = resolveBridgeConfig(env);
+  if (!config.baseUrl || !config.internalSecret) {
+    throw new HttpError(
+      503,
+      "messaging_core_unconfigured",
+      "Messaging Core is not configured.",
+      { reason: bridgeStatusReason(config) },
+    );
+  }
+
+  const identity = await loadVoyagerPrincipalIdentity(env, principalId);
+  const token = await mintInternalServiceToken(config, [
+    "internal:tenants:upsert",
+    "internal:accounts:upsert",
+    "internal:principals:upsert",
+  ]);
+  await syncMessagingCoreTenantAccountPrincipal(env, config, token, identity.account, identity.principal);
+}
+
+export async function fetchMessagingCoreAttachmentUsage(env: Env): Promise<JsonObject | null> {
+  const config = resolveBridgeConfig(env);
+  if (!config.baseUrl || !config.internalSecret) {
+    return null;
+  }
+  const token = await mintInternalServiceToken(config, ["internal:usage"]);
+  const response = await fetch(
+    new Request(
+      messagingCoreUrl(
+        config,
+        `/internal/usage?tenantId=${encodeURIComponent(config.tenantId)}&limit=1`,
+      ),
+      {
+        method: "GET",
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(config.fetchTimeoutMs),
+      },
+    ),
+  );
+  const payload = await parseJsonObjectResponse(response);
+  if (!response.ok) {
+    throw new HttpError(
+      502,
+      "messaging_core_usage_unavailable",
+      "Messaging Core usage summary is unavailable.",
+      { upstreamStatus: response.status, upstreamError: stringValue(payload.error) },
+    );
+  }
+  const usage = objectField(payload, "attachmentUsage");
+  return {
+    activeAttachmentCount: requiredCoreNumber(usage, "activeAttachmentCount"),
+    activeExpectedBytes: requiredCoreNumber(usage, "activeExpectedBytes"),
+    allocatedExpectedBytesLast24h: requiredCoreNumber(usage, "allocatedExpectedBytesLast24h"),
+    uploadedStoredBytes: requiredCoreNumber(usage, "uploadedStoredBytes"),
+  };
 }
 
 export async function fetchMessagingCoreSyncCutoverProxy(
@@ -156,12 +213,12 @@ export async function fetchMessagingCoreSyncCutoverProxy(
 ): Promise<{ status: number; payload: JsonObject }> {
   const config = resolveBridgeConfig(env);
   const base = messagingCoreBridgeStatus(env);
-  if (!config.syncCutoverEnabled || !bridgeCanMintClientToken(config)) {
+  if (!bridgeCanMintClientToken(config)) {
     throw new HttpError(
       503,
-      "messaging_core_cutover_unconfigured",
-      "Messaging Core sync cutover is not configured.",
-      { reason: bridgeStatusReason(config) ?? "sync_cutover_disabled" },
+      "messaging_core_unconfigured",
+      "Messaging Core is not configured.",
+      { reason: bridgeStatusReason(config) },
     );
   }
 
@@ -184,6 +241,7 @@ export async function fetchMessagingCoreSyncCutoverProxy(
     roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
   }
   const rooms = await adaptCoreRoomViews(env, roomViews);
+  await syncVoyagerRoomShadows(env, rooms);
   const pendingMessages = await adaptCoreMessages(env, arrayField(upstream.payload, "pendingMessages"));
   return {
     status: upstream.status,
@@ -209,7 +267,7 @@ export async function fetchMessagingCoreRealtimeTokenProxy(
 ): Promise<JsonObject> {
   const config = resolveBridgeConfig(env);
   const base = messagingCoreBridgeStatus(env);
-  if (config.mode === "off" || !bridgeCanMintClientToken(config)) {
+  if (!bridgeCanMintClientToken(config)) {
     throw new HttpError(
       503,
       "messaging_core_proxy_unconfigured",
@@ -228,32 +286,6 @@ export async function fetchMessagingCoreRealtimeTokenProxy(
       route,
       upstreamStatus: upstream.status,
     },
-  };
-}
-
-export function messagingCoreMessageCutoverEnabled(env: Env): boolean {
-  const config = resolveBridgeConfig(env);
-  return config.messageCutoverEnabled;
-}
-
-export function messagingCoreRoomCutoverEnabled(env: Env): boolean {
-  const config = resolveBridgeConfig(env);
-  return config.roomCutoverEnabled;
-}
-
-export function messagingCoreSyncCutoverEnabled(env: Env): boolean {
-  const config = resolveBridgeConfig(env);
-  return config.syncCutoverEnabled;
-}
-
-export function messagingCoreCutoverFallbackDiagnostics(env: Env, fallbackReason: string): JsonObject {
-  const config = resolveBridgeConfig(env);
-  return {
-    source: "voyager_legacy",
-    fallbackReason,
-    route: null,
-    upstreamStatus: null,
-    flags: cutoverFlagSnapshot(config),
   };
 }
 
@@ -300,12 +332,12 @@ export async function fetchMessagingCoreRoomCutoverProxy(
 ): Promise<{ status: number; payload: JsonObject }> {
   const config = resolveBridgeConfig(env);
   const base = messagingCoreBridgeStatus(env);
-  if (!config.roomCutoverEnabled || !bridgeCanMintClientToken(config)) {
+  if (!bridgeCanMintClientToken(config)) {
     throw new HttpError(
       503,
-      "messaging_core_cutover_unconfigured",
-      "Messaging Core room cutover is not configured.",
-      { reason: bridgeStatusReason(config) ?? "room_cutover_disabled" },
+      "messaging_core_unconfigured",
+      "Messaging Core is not configured.",
+      { reason: bridgeStatusReason(config) },
     );
   }
 
@@ -320,8 +352,16 @@ export async function fetchMessagingCoreRoomCutoverProxy(
   }
 
   const route = appendQuery(path, options.query);
-  const upstream = await publicCoreJson(config, token, method, route, options.body, { preserveClientErrors: true });
+  const upstream = await publicCoreJson(config, token, method, route, options.body, {
+    preserveClientErrors: true,
+    voyagerMessageCompatibility: true,
+  });
   const adapted = await adaptRoomCutoverPayload(env, config, token, upstream.payload, options);
+  await syncVoyagerRoomShadows(env, adapted);
+  if (options.responseKind === "invitation") {
+    await syncVoyagerRoomShadowForInvitation(env, config, token, adapted);
+  }
+  await applyCoreRoomSideEffects(env, method, path);
   return {
     status: upstream.status,
     payload: {
@@ -349,12 +389,12 @@ export async function fetchMessagingCoreMessageCutoverProxy(
 ): Promise<{ status: number; payload: JsonObject }> {
   const config = resolveBridgeConfig(env);
   const base = messagingCoreBridgeStatus(env);
-  if (!config.messageCutoverEnabled || !bridgeCanMintClientToken(config)) {
+  if (!bridgeCanMintClientToken(config)) {
     throw new HttpError(
       503,
-      "messaging_core_cutover_unconfigured",
-      "Messaging Core message cutover is not configured.",
-      { reason: bridgeStatusReason(config) ?? "message_cutover_disabled" },
+      "messaging_core_unconfigured",
+      "Messaging Core is not configured.",
+      { reason: bridgeStatusReason(config) },
     );
   }
 
@@ -369,7 +409,10 @@ export async function fetchMessagingCoreMessageCutoverProxy(
   }
 
   const route = appendQuery(path, options.query);
-  const upstream = await publicCoreJson(config, token, method, route, options.body, { preserveClientErrors: true });
+  const upstream = await publicCoreJson(config, token, method, route, options.body, {
+    preserveClientErrors: true,
+    voyagerMessageCompatibility: true,
+  });
   const payload = await adaptMessageCutoverPayload(env, config, token, upstream.payload, options.responseKind ?? "ok", options);
   return {
     status: upstream.status,
@@ -403,7 +446,10 @@ export async function fetchMessagingCoreAttachmentUploadCutoverProxy(
   }
 
   const route = appendQuery(path, query);
-  const upstream = await publicCoreRaw(config, token, "PUT", route, request, { preserveClientErrors: true });
+  const upstream = await publicCoreRaw(config, token, "PUT", route, request, {
+    preserveClientErrors: true,
+    voyagerMessageCompatibility: true,
+  });
   const payload = await parseJsonObjectResponse(upstream.response);
   const adapted = await adaptMessageCutoverPayload(env, config, token, payload, "attachment");
   return {
@@ -437,9 +483,15 @@ export async function fetchMessagingCoreAttachmentDownloadCutoverProxy(
   }
 
   const route = appendQuery(path, query);
-  const upstream = await publicCoreRaw(config, token, "GET", route, undefined, { preserveClientErrors: true });
+  const upstream = await publicCoreRaw(config, token, "GET", route, undefined, {
+    preserveClientErrors: true,
+    voyagerMessageCompatibility: true,
+  });
   if (!upstream.response.ok) {
-    await throwCoreResponseError(upstream.response, { preserveClientErrors: true });
+    await throwCoreResponseError(upstream.response, {
+      preserveClientErrors: true,
+      voyagerMessageCompatibility: true,
+    });
   }
   return new Response(upstream.response.body, {
     status: upstream.response.status,
@@ -454,12 +506,12 @@ async function requireMessageCutoverSession(
   identity: MessagingCoreIdentity,
 ): Promise<{ token: string; sync: IdentitySyncResult }> {
   const base = messagingCoreBridgeStatus(env);
-  if (!config.messageCutoverEnabled || !bridgeCanMintClientToken(config)) {
+  if (!bridgeCanMintClientToken(config)) {
     throw new HttpError(
       503,
-      "messaging_core_cutover_unconfigured",
-      "Messaging Core message cutover is not configured.",
-      { reason: bridgeStatusReason(config) ?? "message_cutover_disabled" },
+      "messaging_core_unconfigured",
+      "Messaging Core is not configured.",
+      { reason: bridgeStatusReason(config) },
     );
   }
   return createConfiguredMessagingCoreSession(env, config, base, identity);
@@ -576,7 +628,11 @@ async function adaptCoreRoomViews(env: Env, roomViews: JsonObject[]): Promise<Ar
         { principalId: createdByPrincipalId },
       );
     }
-    const pinned = pinnedSummaries.get(roomId) ?? { pinnedMessageCount: 0, latestPinnedMessageId: null };
+    const corePinnedCount = numberValue(room.pinnedMessageCount);
+    const coreLatestPinnedMessageId = stringValue(room.latestPinnedMessageId);
+    const pinned = corePinnedCount !== null || coreLatestPinnedMessageId !== null
+      ? { pinnedMessageCount: corePinnedCount ?? 0, latestPinnedMessageId: coreLatestPinnedMessageId }
+      : (pinnedSummaries.get(roomId) ?? { pinnedMessageCount: 0, latestPinnedMessageId: null });
     return {
       roomId,
       type: requiredCoreString(room, "type"),
@@ -594,6 +650,125 @@ async function adaptCoreRoomViews(env: Env, roomViews: JsonObject[]): Promise<Ar
       members: membersByRoom[index].map((member) => adaptCoreRoomMember(roomId, member, profiles)),
     };
   });
+}
+
+async function applyCoreRoomSideEffects(env: Env, method: PublicCoreMethod, path: string): Promise<void> {
+  if (method !== "POST") return;
+  const archiveMatch = /^\/rooms\/([^/]+)\/archive$/.exec(path);
+  if (archiveMatch) {
+    await endLiveCallsForArchivedRoom(env, decodeURIComponent(archiveMatch[1] ?? ""));
+  }
+}
+
+async function syncVoyagerRoomShadows(env: Env, payload: JsonObject | JsonObject[]): Promise<void> {
+  const rooms = Array.isArray(payload)
+    ? payload
+    : [
+        ...jsonObjectArrayValue(payload.rooms),
+        ...jsonObjectArrayValue(payload.room ? [payload.room] : []),
+      ];
+  for (const room of rooms) {
+    await upsertVoyagerRoomShadow(env, room);
+  }
+}
+
+async function syncVoyagerRoomShadowForInvitation(
+  env: Env,
+  config: BridgeConfig,
+  token: string,
+  payload: JsonObject,
+): Promise<void> {
+  const invitation = objectValue(payload.invitation);
+  const roomId = invitation ? stringValue(invitation.roomId) : null;
+  const status = invitation ? stringValue(invitation.status) : null;
+  if (!roomId || (status !== "pending" && status !== "accepted")) return;
+
+  const roomView = await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`);
+  const room = (await adaptCoreRoomViews(env, [roomView.payload]))[0];
+  await syncVoyagerRoomShadows(env, { room });
+}
+
+async function upsertVoyagerRoomShadow(env: Env, room: JsonObject): Promise<void> {
+  const roomId = requiredCoreString(room, "roomId");
+  const type = requiredCoreString(room, "type");
+  const createdByAccountId = requiredCoreString(room, "createdByAccountId");
+  const createdByPrincipalId = requiredCoreString(room, "createdByPrincipalId");
+  const status = requiredCoreString(room, "status");
+  const version = numberValue(room.version) ?? 1;
+  const createdAt = requiredCoreString(room, "createdAt");
+  const updatedAt = requiredCoreString(room, "updatedAt");
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO rooms (
+       room_id, type, name, description, created_by_account_id,
+       created_by_principal_id, status, version, created_at, updated_at, archived_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(room_id) DO UPDATE SET
+       type = excluded.type,
+       name = excluded.name,
+       description = excluded.description,
+       status = excluded.status,
+       version = excluded.version,
+       updated_at = excluded.updated_at,
+       archived_at = excluded.archived_at`,
+  )
+    .bind(
+      roomId,
+      type,
+      stringValue(room.name),
+      stringValue(room.description),
+      createdByAccountId,
+      createdByPrincipalId,
+      status,
+      version,
+      createdAt,
+      updatedAt,
+      stringValue(room.archivedAt),
+    )
+    .run();
+
+  for (const member of jsonObjectArrayValue(room.members)) {
+    await upsertVoyagerMembershipShadow(env, roomId, member, createdByPrincipalId);
+  }
+}
+
+async function upsertVoyagerMembershipShadow(
+  env: Env,
+  roomId: string,
+  member: JsonObject,
+  fallbackInviterPrincipalId: string,
+): Promise<void> {
+  const membershipId = stringValue(member.membershipId) ?? randomId("mem");
+  const accountId = requiredCoreString(member, "accountId");
+  const principalId = requiredCoreString(member, "principalId");
+  const role = requiredCoreString(member, "role");
+  const status = requiredCoreString(member, "status");
+  const createdAt = requiredCoreString(member, "createdAt");
+  const updatedAt = requiredCoreString(member, "updatedAt");
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO room_memberships (
+       membership_id, room_id, account_id, principal_id, role, status,
+       invited_by_principal_id, created_at, updated_at, removed_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(room_id, principal_id) DO UPDATE SET
+       account_id = excluded.account_id,
+       role = excluded.role,
+       status = excluded.status,
+       updated_at = excluded.updated_at,
+       removed_at = excluded.removed_at`,
+  )
+    .bind(
+      membershipId,
+      roomId,
+      accountId,
+      principalId,
+      role,
+      status,
+      fallbackInviterPrincipalId,
+      createdAt,
+      updatedAt,
+      stringValue(member.removedAt),
+    )
+    .run();
 }
 
 function adaptCoreRoomMember(
@@ -738,7 +913,7 @@ async function adaptMessageCutoverPayload(
         return {
           room,
           root,
-          following: subscriptionState !== "muted",
+          following: subscriptionState === "following",
           muted: subscriptionState === "muted",
           unreadCount: numberValue(item.unreadCount) ?? 0,
           lastReadSequence: numberValue(item.lastReadReplySequence) ?? 0,
@@ -792,6 +967,7 @@ function adaptCoreMessage(
   }
   const ciphertext = stringValue(message.bodyCiphertext) ?? "deleted-for-everyone";
   const deletedAt = stringValue(message.deletedAt);
+  const deletedForEveryone = objectValue(message.deletedForEveryone);
   const receipt = objectValue(message.receiptSummary) ?? {};
   const receiptStatus = coreReceiptStatus(receipt);
   return {
@@ -814,9 +990,9 @@ function adaptCoreMessage(
     forwardedFrom: adaptCoreForwardedFrom(objectValue(message.forwardedFrom)),
     deletedForEveryone: {
       deleted: requiredCoreString(message, "status") === "deleted_for_everyone",
-      deletedAt,
-      deletedByPrincipalId: null,
-      reason: null,
+      deletedAt: stringValue(deletedForEveryone?.deletedAt) ?? deletedAt,
+      deletedByPrincipalId: stringValue(deletedForEveryone?.deletedByPrincipalId),
+      reason: stringValue(deletedForEveryone?.reason),
     },
     threadRootEnvelopeId: stringValue(message.rootEnvelopeId),
     alsoSentToRoom: Boolean(message.alsoSentToRoom),
@@ -895,7 +1071,7 @@ function adaptCoreThreadState(state: JsonObject, roomId: string | undefined): Js
   return {
     rootEnvelopeId: requiredCoreString(state, "rootEnvelopeId"),
     roomId: roomId ?? stringValue(state.roomId) ?? "",
-    following: subscriptionState !== "muted",
+    following: subscriptionState === "following",
     muted: subscriptionState === "muted",
     lastReadSequence: numberValue(state.lastReadReplySequence) ?? 0,
     updatedAt: requiredCoreString(state, "updatedAt"),
@@ -1181,39 +1357,13 @@ async function syncMessagingCoreIdentity(
   let deviceSynced = false;
 
   try {
-    await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/bootstrap`, {
-      externalTenantRef: config.tenantExternalRef,
-      displayName: config.tenantDisplayName,
-      status: "active",
-      policies: [
-        {
-          policyId: identity.account.policy_id,
-          name: identity.account.policy_id,
-          policyJson: { source: "voyager" },
-        },
-      ],
-    });
+    await syncMessagingCoreTenant(env, config, token, identity.account);
     tenantSynced = true;
     failedStep = "account";
-    await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/accounts/upsert`, {
-      accountId: identity.account.account_id,
-      externalSubjectId: identity.account.account_id,
-      displayName: identity.account.display_name,
-      status: publicCoreAccountStatus(identity.account),
-      policyId: identity.account.policy_id,
-    });
+    await syncMessagingCoreAccount(config, token, identity.account);
     accountSynced = true;
     failedStep = "principal";
-    await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/principals/upsert`, {
-      principalId: identity.principal.principal_id,
-      accountId: identity.account.account_id,
-      type: publicCorePrincipalType(identity.principal.principal_type),
-      externalPrincipalRef: identity.principal.principal_id,
-      displayName: identity.principal.display_name,
-      avatarRef: identity.principal.avatar_ref,
-      status: publicCorePrincipalStatus(identity.principal),
-      ownerPrincipalId: identity.principal.owner_principal_id,
-    });
+    await syncMessagingCorePrincipalRecord(config, token, identity.principal, identity.account);
     principalSynced = true;
     failedStep = "device";
     await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/devices/upsert`, {
@@ -1271,6 +1421,159 @@ async function syncMessagingCoreIdentity(
       deviceSynced,
     };
   }
+}
+
+async function syncMessagingCoreTenantAccountPrincipal(
+  env: Env,
+  config: BridgeConfig,
+  token: string,
+  account: AccountRow,
+  principal: PrincipalRow,
+): Promise<void> {
+  await syncMessagingCoreTenant(env, config, token, account);
+  await syncMessagingCoreAccount(config, token, account);
+  await syncMessagingCorePrincipalRecord(config, token, principal, account);
+}
+
+async function syncMessagingCoreTenant(
+  _env: Env,
+  config: BridgeConfig,
+  token: string,
+  account: AccountRow,
+): Promise<void> {
+  await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/bootstrap`, {
+    externalTenantRef: config.tenantExternalRef,
+    displayName: config.tenantDisplayName,
+    status: "active",
+    policies: [
+      {
+        policyId: account.policy_id,
+        name: account.policy_id,
+        policyJson: { source: "voyager" },
+      },
+    ],
+  });
+}
+
+async function syncMessagingCoreAccount(
+  config: BridgeConfig,
+  token: string,
+  account: AccountRow,
+): Promise<void> {
+  await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/accounts/upsert`, {
+    accountId: account.account_id,
+    externalSubjectId: account.account_id,
+    displayName: account.display_name,
+    status: publicCoreAccountStatus(account),
+    policyId: account.policy_id,
+  });
+}
+
+async function syncMessagingCorePrincipalRecord(
+  config: BridgeConfig,
+  token: string,
+  principal: PrincipalRow,
+  account: AccountRow,
+): Promise<void> {
+  await postInternal(config, token, `/internal/tenants/${encodeURIComponent(config.tenantId)}/principals/upsert`, {
+    principalId: principal.principal_id,
+    accountId: account.account_id,
+    type: publicCorePrincipalType(principal.principal_type),
+    externalPrincipalRef: principal.principal_id,
+    displayName: principal.display_name,
+    avatarRef: principal.avatar_ref,
+    status: publicCorePrincipalStatus(principal),
+    ownerPrincipalId: principal.owner_principal_id,
+  });
+}
+
+async function loadVoyagerPrincipalIdentity(
+  env: Env,
+  principalId: string,
+): Promise<{ account: AccountRow; principal: PrincipalRow }> {
+  const row = await env.CONTROL_DB.prepare(
+    `SELECT
+       a.account_id AS account_id,
+       a.status AS account_status,
+       a.display_name AS account_display_name,
+       a.email AS account_email,
+       a.phone AS account_phone,
+       a.policy_id AS account_policy_id,
+       a.default_principal_id AS account_default_principal_id,
+       a.activated_at AS account_activated_at,
+       a.suspended_at AS account_suspended_at,
+       a.deletion_state AS account_deletion_state,
+       a.created_at AS account_created_at,
+       a.updated_at AS account_updated_at,
+       p.principal_id,
+       p.account_id AS principal_account_id,
+       p.principal_type,
+       p.display_name AS principal_display_name,
+       p.avatar_ref,
+       p.status AS principal_status,
+       p.owner_principal_id,
+       p.created_at AS principal_created_at,
+       p.revoked_at
+     FROM principals p
+     INNER JOIN accounts a ON a.account_id = p.account_id
+     WHERE p.principal_id = ?`,
+  )
+    .bind(principalId)
+    .first<VoyagerPrincipalIdentityRow>();
+  if (!row) {
+    throw new HttpError(404, "principal_not_found", "Principal was not found");
+  }
+  return {
+    account: {
+      account_id: row.account_id,
+      status: row.account_status,
+      display_name: row.account_display_name,
+      email: row.account_email,
+      phone: row.account_phone,
+      policy_id: row.account_policy_id,
+      default_principal_id: row.account_default_principal_id,
+      activated_at: row.account_activated_at,
+      suspended_at: row.account_suspended_at,
+      deletion_state: row.account_deletion_state,
+      created_at: row.account_created_at,
+      updated_at: row.account_updated_at,
+    },
+    principal: {
+      principal_id: row.principal_id,
+      account_id: row.principal_account_id,
+      principal_type: row.principal_type,
+      display_name: row.principal_display_name,
+      avatar_ref: row.avatar_ref,
+      status: row.principal_status,
+      owner_principal_id: row.owner_principal_id,
+      created_at: row.principal_created_at,
+      revoked_at: row.revoked_at,
+    },
+  };
+}
+
+interface VoyagerPrincipalIdentityRow {
+  account_id: string;
+  account_status: AccountRow["status"];
+  account_display_name: string;
+  account_email: string | null;
+  account_phone: string | null;
+  account_policy_id: string;
+  account_default_principal_id: string | null;
+  account_activated_at: string | null;
+  account_suspended_at: string | null;
+  account_deletion_state: string | null;
+  account_created_at: string;
+  account_updated_at: string;
+  principal_id: string;
+  principal_account_id: string;
+  principal_type: PrincipalRow["principal_type"];
+  principal_display_name: string;
+  avatar_ref: string | null;
+  principal_status: PrincipalRow["status"];
+  owner_principal_id: string | null;
+  principal_created_at: string;
+  revoked_at: string | null;
 }
 
 async function loadIdentitySyncCache(
@@ -1406,7 +1709,7 @@ async function postInternal(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const response = config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
+  const response = await fetch(request);
   if (!response.ok) {
     throw new Error(`internal_service_http_${response.status}`);
   }
@@ -1428,7 +1731,7 @@ async function publicCoreJson(
   method: PublicCoreMethod,
   path: string,
   body?: Record<string, unknown>,
-  options: { preserveClientErrors?: boolean } = {},
+  options: { preserveClientErrors?: boolean; voyagerMessageCompatibility?: boolean } = {},
 ): Promise<{ status: number; payload: JsonObject }> {
   const headers = new Headers({ authorization: `Bearer ${token}` });
   const init: RequestInit = {
@@ -1455,7 +1758,7 @@ async function publicCoreRaw(
   method: PublicCoreMethod,
   path: string,
   upstreamRequest?: Request,
-  options: { preserveClientErrors?: boolean } = {},
+  options: { preserveClientErrors?: boolean; voyagerMessageCompatibility?: boolean } = {},
 ): Promise<{ response: Response }> {
   const headers = new Headers({ authorization: `Bearer ${token}` });
   const init: RequestInit = {
@@ -1478,7 +1781,7 @@ async function publicCoreRaw(
 
 async function fetchPublicCore(config: BridgeConfig, request: Request): Promise<Response> {
   try {
-    return config.serviceBinding ? await config.serviceBinding.fetch(request) : await fetch(request);
+    return await fetch(request);
   } catch (error) {
     if (isTimeoutError(error)) {
       throw new HttpError(
@@ -1494,7 +1797,7 @@ async function fetchPublicCore(config: BridgeConfig, request: Request): Promise<
 
 async function throwCoreResponseError(
   response: Response,
-  options: { preserveClientErrors?: boolean } = {},
+  options: { preserveClientErrors?: boolean; voyagerMessageCompatibility?: boolean } = {},
 ): Promise<never> {
   const payload = await parseJsonObjectResponse(response);
   throwCorePayloadError(response.status, payload, options);
@@ -1503,10 +1806,18 @@ async function throwCoreResponseError(
 function throwCorePayloadError(
   status: number,
   payload: JsonObject,
-  options: { preserveClientErrors?: boolean } = {},
+  options: { preserveClientErrors?: boolean; voyagerMessageCompatibility?: boolean } = {},
 ): never {
   if (options.preserveClientErrors && status >= 400 && status < 500) {
     const upstreamError = coreError(payload);
+    if (options.voyagerMessageCompatibility && status === 404 && upstreamError.code === "room_not_found") {
+      throw new HttpError(
+        403,
+        "room_membership_required",
+        "Active room membership required",
+        { upstreamStatus: status },
+      );
+    }
     throw new HttpError(
       status,
       upstreamError.code,
@@ -1630,6 +1941,19 @@ function stringValue(value: unknown): string | null {
 
 function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function requiredCoreNumber(value: JsonObject, key: string): number {
+  const result = numberValue(value[key]);
+  if (result === null) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core proxy response is missing the expected numeric field.",
+      { field: key },
+    );
+  }
+  return result;
 }
 
 function voyagerAttachmentMetadata(body: Record<string, unknown>): JsonObject {
@@ -1758,15 +2082,12 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 }
 
 function resolveBridgeConfig(env: Env): BridgeConfig {
-  const { mode, invalidMode } = bridgeMode(env.VOYAGER_MESSAGING_CORE_MODE);
-  const allCutoverEnabled = booleanEnv(env.VOYAGER_MESSAGING_CORE_ALL_CUTOVER);
   return {
-    mode,
-    invalidMode,
-    allCutoverEnabled,
-    roomCutoverEnabled: allCutoverEnabled || booleanEnv(env.VOYAGER_MESSAGING_CORE_ROOM_CUTOVER),
-    messageCutoverEnabled: allCutoverEnabled || booleanEnv(env.VOYAGER_MESSAGING_CORE_MESSAGE_CUTOVER),
-    syncCutoverEnabled: allCutoverEnabled || booleanEnv(env.VOYAGER_MESSAGING_CORE_SYNC_CUTOVER),
+    mode: "proxy",
+    allCutoverEnabled: true,
+    roomCutoverEnabled: true,
+    messageCutoverEnabled: true,
+    syncCutoverEnabled: true,
     tenantId: env.MESSAGING_CORE_TENANT_ID?.trim() || VOYAGER_DEFAULT_MESSAGING_TENANT_ID,
     tenantExternalRef: env.MESSAGING_CORE_TENANT_EXTERNAL_REF?.trim() || DEFAULT_APP_ID,
     tenantDisplayName: env.MESSAGING_CORE_TENANT_DISPLAY_NAME?.trim() || DEFAULT_TENANT_DISPLAY_NAME,
@@ -1790,22 +2111,11 @@ function resolveBridgeConfig(env: Env): BridgeConfig {
   };
 }
 
-function bridgeMode(value: string | undefined): { mode: MessagingCoreMode; invalidMode: string | null } {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized) return { mode: "off", invalidMode: null };
-  if (normalized === "off" || normalized === "shadow" || normalized === "proxy") {
-    return { mode: normalized, invalidMode: null };
-  }
-  return { mode: "off", invalidMode: normalized };
-}
-
 function bridgeCanMintClientToken(config: BridgeConfig): boolean {
-  return config.mode !== "off" && Boolean(config.baseUrl && config.tokenSecret && !config.invalidMode);
+  return Boolean(config.baseUrl && config.tokenSecret);
 }
 
 function bridgeStatusReason(config: BridgeConfig): string | null {
-  if (config.invalidMode) return "invalid_mode";
-  if (config.mode === "off") return "bridge_disabled";
   if (!config.baseUrl) return "base_url_unconfigured";
   if (!config.tokenSecret) return "token_secret_unconfigured";
   return null;
@@ -1827,11 +2137,6 @@ function positiveInteger(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function booleanEnv(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 function trimmed(value: string | undefined): string | null {

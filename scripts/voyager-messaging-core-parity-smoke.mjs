@@ -3,12 +3,12 @@ const sessionToken = process.env.VOYAGER_SESSION_TOKEN ?? "";
 const loginEmail = process.env.VOYAGER_LOGIN_EMAIL ?? "";
 const loginPassword = process.env.VOYAGER_LOGIN_PASSWORD ?? "";
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 20_000);
-const exerciseAllCoreCutover = process.env.SMOKE_MESSAGING_CORE_ALL_CUTOVER === "1";
-const exerciseRoomCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_ROOM_CUTOVER === "1";
-const exerciseRoomWriteCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_CUTOVER === "1";
-const exerciseMessageWriteCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_WRITE_CUTOVER === "1";
-const exerciseSyncCutover = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_SYNC_CUTOVER === "1";
-const exerciseRealtimeConnect = exerciseAllCoreCutover || process.env.SMOKE_MESSAGING_CORE_REALTIME_CONNECT === "1";
+const exerciseAllCoreCutover = envFlag("SMOKE_MESSAGING_CORE_ALL_CUTOVER", true);
+const exerciseRoomCutover = exerciseAllCoreCutover || envFlag("SMOKE_MESSAGING_CORE_ROOM_CUTOVER", true);
+const exerciseRoomWriteCutover = exerciseAllCoreCutover || envFlag("SMOKE_MESSAGING_CORE_ROOM_WRITE_CUTOVER", true);
+const exerciseMessageWriteCutover = exerciseAllCoreCutover || envFlag("SMOKE_MESSAGING_CORE_WRITE_CUTOVER", true);
+const exerciseSyncCutover = exerciseAllCoreCutover || envFlag("SMOKE_MESSAGING_CORE_SYNC_CUTOVER", true);
+const exerciseRealtimeConnect = exerciseAllCoreCutover || envFlag("SMOKE_MESSAGING_CORE_REALTIME_CONNECT", true);
 const roomWritePassword = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_PASSWORD ?? loginPassword ?? "";
 const roomWriteInviteeEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_INVITEE_EMAIL ?? "grace@example.com";
 const roomWriteTransferEmail = process.env.SMOKE_MESSAGING_CORE_ROOM_WRITE_TRANSFER_EMAIL ?? "alan@example.com";
@@ -931,6 +931,7 @@ async function requestRaw(url, options = {}) {
   });
   const text = await response.text();
   const payload = text ? JSON.parse(text) : null;
+  assertNoVoyagerLegacySource(payload, `${options.method ?? "GET"} ${url}`);
   return { response, payload, text };
 }
 
@@ -965,6 +966,26 @@ function base64UrlToBase64(value) {
 
 function trimTrailingSlash(value) {
   return value.trim().replace(/\/+$/, "");
+}
+
+function envFlag(name, fallback) {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (value === undefined || value === "") return fallback;
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function assertNoVoyagerLegacySource(value, context, path = "$") {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoVoyagerLegacySource(item, context, `${path}[${index}]`));
+    return;
+  }
+  if (value.source === "voyager_legacy") {
+    throw new Error(`${context} unexpectedly returned voyager_legacy at ${path}: ${JSON.stringify(value)}`);
+  }
+  for (const [key, child] of Object.entries(value)) {
+    assertNoVoyagerLegacySource(child, context, `${path}.${key}`);
+  }
 }
 
 function assertObject(value, context) {

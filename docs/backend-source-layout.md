@@ -90,8 +90,8 @@ clearer home than the former single large `src/backend.ts` file.
   `src/backend/routing/*-routes.ts` modules; it depends on the catalog to catch
   dropped handlers and undocumented `/v1` routes. During the Messaging Core
   cutover, the same guard also validates `messagingCoreBoundaryCatalog` so every
-  Core-owned Voyager route is explicitly marked as temporary fallback, temporary
-  call fallback, or an active Core facade.
+  Core-owned Voyager route is explicitly marked as Core runtime, product token
+  bridge, call runtime, call realtime runtime, or an active Core facade.
 - `conversation-coordinator.ts` should remain the only module that knows the
   internal Conversation DO request format. It may use `operations.ts` as the
   transitional mutation dispatch surface; route and domain modules should not.

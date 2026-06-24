@@ -194,61 +194,50 @@ BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
 npm run smoke:backend:remote
 ```
 
-For Messaging Core realtime cutover validation, the web client can opt into the
-Core WebSocket contract with `VITE_MESSAGING_CORE_REALTIME=1` at build time or
-`localStorage.setItem("voyager.messagingCoreRealtime", "1")` in a running
-browser session. The client still falls back to Voyager realtime if Core token
-minting fails or the Core socket closes before `ready`. To prove the deployed
-Core WebSocket path through the active Voyager realtime token facade, run:
+For Messaging Core realtime validation, the web client uses the Core WebSocket
+contract by default through `/v1/messaging-core/realtime/token`. To prove the
+deployed Core WebSocket path through the active Voyager realtime token facade,
+run:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
 VOYAGER_LOGIN_EMAIL=ada@example.com \
 VOYAGER_LOGIN_PASSWORD=voyager-demo-pass \
-SMOKE_MESSAGING_CORE_REALTIME_CONNECT=1 \
-npm run smoke:messaging-core-parity
+  npm run smoke:messaging-core-parity
 ```
 
-The dev Worker and Pages deployment now default to the guarded all-Core
-messaging mode through the deployment workflows: `npm run deploy:dev` passes
-`VOYAGER_MESSAGING_CORE_ALL_CUTOVER=1`, and the Pages workflow builds with
-`VITE_MESSAGING_CORE_ALL_CUTOVER=1`. Plain local `wrangler dev` and
-`npm run smoke:backend:local` keep the config default at `0` unless you
-explicitly pass the Core cutover flag. Keep the Messaging Core bridge configured,
-then run:
+The dev Worker and Pages deployment now use Messaging Core as the only
+messaging runtime. There are no room/message/sync cutover flags to enable or
+disable; keep `MESSAGING_CORE_BASE_URL`, `MESSAGING_CORE_TOKEN_SECRET`, and the
+internal service secret configured, then run:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
 VOYAGER_LOGIN_EMAIL=ada@example.com \
 VOYAGER_LOGIN_PASSWORD=voyager-demo-pass \
-SMOKE_MESSAGING_CORE_ALL_CUTOVER=1 \
-npm run smoke:messaging-core-parity
+  npm run smoke:messaging-core-parity
 ```
 
 That smoke exercises normal Voyager login, Core session minting, bootstrap,
 room list/detail, room writes, message send/list, sync, attachment
 upload/download, thread inbox, Core realtime `ready`/`pong`, and Core
 `room.message` delivery for a message sent through the normal Voyager route.
+It fails if any JSON response contains `source: "voyager_legacy"`.
 The old read-only `/v1/messaging-core/*` validation proxies and the
 `/v1/admin/messaging-core/backfill-readonly` parity backfill utility have been
 removed; the parity smoke now uses `/v1/me` for the Core session, direct Core
 reads for Core health, `/v1/app/bootstrap` for normal app-bootstrap proof, and
 normal Voyager cutover routes for app behavior proof.
 
-Rollback is intentionally boring: use `npm run deploy` or
-`npx wrangler deploy --var VOYAGER_MESSAGING_CORE_ALL_CUTOVER:0` for the Worker,
-remove or set `VITE_MESSAGING_CORE_ALL_CUTOVER=0` for the Pages build, or use
-`localStorage.setItem("voyager.messagingCoreRealtime", "0")` for a single
-browser session.
+Rollback now means redeploying a rollback tag/branch or restoring the exported
+D1/R2 backup from the pre-removal proof step. The normal Worker config no
+longer carries a messaging fallback flag.
 
-The remaining Voyager-owned messaging routes are frozen as documented fallback
-boundaries, not new product ownership. `node scripts/route-inventory-check.mjs`
-validates the boundary catalog: room/message/attachment/thread/sync routes are
-temporary fallback when their Core flags are off, call lifecycle/media routes
-are temporary call fallback with `call_cutover_not_implemented` diagnostics,
-app-bootstrap and messaging identity/key-package routes are temporary fallback
-until they cut over, and `/v1/messaging-core/realtime/token` is the retained
-active Core realtime facade for client opt-in/fallback behavior.
+`node scripts/route-inventory-check.mjs` validates the boundary catalog:
+room/message/attachment/thread/sync and app-bootstrap routes are Core runtime,
+messaging identity/key-package routes are product token bridge routes, call
+lifecycle/media routes are call runtime, and `/v1/messaging-core/realtime/token`
+is the active Core realtime facade.
 
 ## 6. Manual Cross-Client Checklist
 

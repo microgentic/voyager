@@ -106,8 +106,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/admin/maintenance/cleanup", stability: "admin/dev-only" }
 ];
 
-const TEMPORARY_FALLBACK_BOUNDARY_ROUTES = [
-  ["GET", "/v1/app/bootstrap"],
+const PRODUCT_TOKEN_BRIDGE_BOUNDARY_ROUTES = [
   ["GET", "/v1/principals"],
   ["GET", "/v1/principals/{principalId}/devices"],
   ["GET", "/v1/principals/{principalId}/key-packages"],
@@ -115,6 +114,10 @@ const TEMPORARY_FALLBACK_BOUNDARY_ROUTES = [
   ["POST", "/v1/devices/{deviceId}/key-packages"],
   ["POST", "/v1/key-packages/{keyPackageId}/claim"],
   ["POST", "/v1/key-packages/{keyPackageId}/revoke"],
+];
+
+const CORE_RUNTIME_BOUNDARY_ROUTES = [
+  ["GET", "/v1/app/bootstrap"],
   ["GET", "/v1/rooms"],
   ["GET", "/v1/threads"],
   ["POST", "/v1/rooms/direct"],
@@ -143,8 +146,6 @@ const TEMPORARY_FALLBACK_BOUNDARY_ROUTES = [
   ["DELETE", "/v1/rooms/{roomId}/messages/{envelopeId}/pin"],
   ["POST", "/v1/rooms/{roomId}/messages/{envelopeId}/ack"],
   ["GET", "/v1/sync"],
-  ["GET", "/v1/realtime"],
-  ["POST", "/v1/realtime/token"],
   ["POST", "/v1/rooms/{roomId}/invitations"],
   ["GET", "/v1/room-invitations"],
   ["POST", "/v1/room-invitations/{roomInvitationId}/accept"],
@@ -156,7 +157,7 @@ const TEMPORARY_FALLBACK_BOUNDARY_ROUTES = [
   ["DELETE", "/v1/attachments/{attachmentId}"]
 ];
 
-const TEMPORARY_CALL_FALLBACK_BOUNDARY_ROUTES = [
+const CALL_RUNTIME_BOUNDARY_ROUTES = [
   ["GET", "/v1/rooms/{roomId}/calls"],
   ["POST", "/v1/rooms/{roomId}/calls"],
   ["GET", "/v1/calls/{callId}"],
@@ -173,22 +174,39 @@ const TEMPORARY_CALL_FALLBACK_BOUNDARY_ROUTES = [
   ["POST", "/v1/calls/{callId}/usage-report"]
 ];
 
+const CALL_REALTIME_BOUNDARY_ROUTES = [
+  ["GET", "/v1/realtime"],
+  ["POST", "/v1/realtime/token"],
+];
+
 const ACTIVE_CORE_FACADE_BOUNDARY_ROUTES = [
   ["POST", "/v1/messaging-core/realtime/token"]
 ];
 
 export const messagingCoreBoundaryCatalog = [
-  ...TEMPORARY_FALLBACK_BOUNDARY_ROUTES.map(([method, path]) => ({
+  ...PRODUCT_TOKEN_BRIDGE_BOUNDARY_ROUTES.map(([method, path]) => ({
     method,
     path,
-    boundary: "temporary-fallback",
-    diagnostics: path === "/v1/realtime" ? "websocket-protocol" : "messagingCoreCutover",
+    boundary: "product-token-bridge",
+    diagnostics: "none",
   })),
-  ...TEMPORARY_CALL_FALLBACK_BOUNDARY_ROUTES.map(([method, path]) => ({
+  ...CORE_RUNTIME_BOUNDARY_ROUTES.map(([method, path]) => ({
     method,
     path,
-    boundary: "temporary-call-fallback",
-    diagnostics: "messagingCoreCutover",
+    boundary: "core-runtime",
+    diagnostics: path.includes("/blob") ? "binary-proxy" : "messagingCoreCutover",
+  })),
+  ...CALL_RUNTIME_BOUNDARY_ROUTES.map(([method, path]) => ({
+    method,
+    path,
+    boundary: "call-runtime",
+    diagnostics: "none",
+  })),
+  ...CALL_REALTIME_BOUNDARY_ROUTES.map(([method, path]) => ({
+    method,
+    path,
+    boundary: "call-realtime-runtime",
+    diagnostics: path === "/v1/realtime" ? "websocket-protocol" : "none",
   })),
   ...ACTIVE_CORE_FACADE_BOUNDARY_ROUTES.map(([method, path]) => ({
     method,
@@ -597,14 +615,20 @@ export function assertMessagingCoreBoundaryCatalog() {
     string(entry.path, "messagingCoreBoundary.path");
     enumValue(
       entry.boundary,
-      ["temporary-fallback", "temporary-call-fallback", "active-core-facade"],
+      ["core-runtime", "product-token-bridge", "call-runtime", "call-realtime-runtime", "active-core-facade"],
       `messagingCoreBoundary(${entry.method} ${entry.path}).boundary`,
     );
     enumValue(
       entry.diagnostics,
-      ["messagingCoreCutover", "proxy-metadata", "websocket-protocol"],
+      ["messagingCoreCutover", "proxy-metadata", "websocket-protocol", "binary-proxy", "none"],
       `messagingCoreBoundary(${entry.method} ${entry.path}).diagnostics`,
     );
+    if (entry.boundary === "core-runtime" && entry.diagnostics !== "messagingCoreCutover" && entry.diagnostics !== "binary-proxy") {
+      fail(`Core runtime boundary must expose Core diagnostics or binary proxy metadata: ${endpointKey(entry)}`);
+    }
+    if (entry.boundary === "product-token-bridge" && entry.diagnostics !== "none") {
+      fail(`product token bridge route should not emit Messaging Core fallback diagnostics: ${endpointKey(entry)}`);
+    }
     const key = endpointKey(entry);
     if (boundaryKeys.has(key)) fail(`duplicate Messaging Core boundary entry: ${key}`);
     boundaryKeys.add(key);
