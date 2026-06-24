@@ -120,7 +120,7 @@ message-send, realtime, or sync source-of-truth model.
 ```
 
 `for_me` writes account-scoped visibility rows. `everyone` is serialized through
-the `ConversationCoordinator` and converts matching envelopes into durable
+Messaging Core's conversation coordinator and converts matching envelopes into durable
 tombstones. The backend clears reactions and active pins for tombstoned
 messages.
 
@@ -157,7 +157,7 @@ removes the current principal's row.
 `POST /v1/rooms/{roomId}/messages/{envelopeId}/pin`
 
 Pins the message in the room. `DELETE` on the same path unpins it. Pinning is
-serialized through the `ConversationCoordinator`; it is room metadata, not a
+serialized through Messaging Core's conversation coordinator; it is room metadata, not a
 second message timeline.
 
 `POST /v1/rooms/{roomId}/messages/{envelopeId}/forward`
@@ -193,7 +193,7 @@ The root is returned even when it is a tombstone so the pane can show context.
 }
 ```
 
-Reuses the send pipeline through the `ConversationCoordinator`. The root and
+Reuses the send pipeline through Messaging Core's conversation coordinator. The root and
 `alsoSendToRoom` intent are server-asserted from the route and threaded to the
 send path internally, so a normal send cannot fabricate thread metadata. New
 thread replies and later mutations to existing thread replies emit `room.thread`

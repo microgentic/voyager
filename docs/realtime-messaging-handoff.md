@@ -17,18 +17,17 @@ The important boundary is that realtime is **not** a second message store and do
 
 This follows the master-plan direction: WebSockets provide the foreground realtime experience, while HTTP sync remains the recovery and source-of-truth path. Push notifications remain future wake-up infrastructure only.
 
-This is intentionally the **foreground mailbox/session layer**, not the read source or message store. Conversation-level Durable Objects now coordinate message-send ordering and room/membership mutations per room. The coordinator stores no second durable room state, so D1 remains authoritative for message content, sync, recovery, and reconciliation.
+This is intentionally the **foreground mailbox/session layer**, not the read source or message store. Messaging Core owns conversation-level message ordering and room/membership mutations. Voyager's remaining realtime Durable Object is a product/call boundary until the dedicated realtime cleanup step; messaging clients use the Core realtime token/socket path by default.
 
 ## 2. Backend Implementation
 
 - `wrangler.jsonc` binds `REALTIME_MAILBOX` to `RealtimeMailbox` and declares the Durable Object migration `v1-realtime-mailbox`.
-- `wrangler.jsonc` also binds `CONVERSATION_COORDINATOR` to `ConversationCoordinator` for per-room message-write coordination.
 - `src/realtime.ts` owns the realtime layer:
   - `RealtimeMailbox` accepts hibernating WebSockets per account.
   - `handleRealtimeConnect()` routes an authenticated account to its mailbox.
   - `notifyRoomRealtime()` resolves active room account memberships and fan-outs an event to each non-null account mailbox.
-- `src/index.ts` exposes `GET /v1/realtime` as a WebSocket upgrade endpoint.
-- `src/backend/routes.ts` and `src/backend/conversation-coordinator.ts` route `POST /v1/rooms/{roomId}/messages` through the room's `ConversationCoordinator`, then emit a `room.message` realtime event only after message insert, delivery receipt creation, attachment reference updates, and room bump succeed.
+- `src/index.ts` exposes `GET /v1/realtime` as a WebSocket upgrade endpoint for the remaining Voyager realtime boundary. Messaging realtime traffic uses Messaging Core via `/v1/messaging-core/realtime/token`.
+- Normal message writes are proxied to Messaging Core. Core emits messaging realtime hints after durable writes; Voyager no longer owns a local message ConversationCoordinator.
 - Idempotent duplicate message sends return the existing message. Same-room duplicates also re-emit a lightweight realtime hint so a sender retry can recover if the first hint failed after the durable write.
 - Conversation-routed writes include `Server-Timing` metrics for the coordinator hop, queue wait, and operation time. The Worker logs `conversation.do.message` and `conversation.do.mutation` for development observability.
 

@@ -19,7 +19,7 @@ The active backend does not interpret message bodies. Messages are stored as opa
 
 The backend is designed to let development proceed without app stores, push providers, paid services, live agent runtimes, billing systems, custom domains, or signing infrastructure. That means clients can be developed against HTTP contracts, curl, and smoke scripts first. Realtime, push, mobile packaging, and production assurance work can be layered in later without replacing the core account, room, message, attachment, and admin models.
 
-Source organization is documented in `docs/backend-source-layout.md`. The active backend route handler and Durable Object classes are exported through compatibility barrels, with route orchestration, Conversation DO coordination, backend-private domain types, domain serializers, shared utilities, and domain operations separated under `src/backend/`.
+Source organization is documented in `docs/backend-source-layout.md`. The active backend route handler and Voyager-owned Durable Object classes are exported through compatibility barrels, with route orchestration, backend-private domain types, domain serializers, shared utilities, and product/call operations separated under `src/backend/`. Messaging rooms, messages, attachments, threads, sync/bootstrap, and conversation sequencing are now owned by Messaging Core and reached through the Voyager Core facade.
 
 ## 2. Current Backend Capability
 
@@ -72,8 +72,8 @@ Source organization is documented in `docs/backend-source-layout.md`. The active
 - Admin endpoints are role-gated; `platform_owner` satisfies all admin role checks.
 - The UI may open `GET /v1/realtime` for foreground near-realtime events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
 - Realtime WebSockets use `POST /v1/realtime/token` to mint a short-lived one-use socket token; clients pass that token as the WebSocket subprotocol instead of the long-lived session token.
-- Conversation-level Durable Objects now coordinate message-send sequencing, idempotency, and room/membership mutations per room. The coordinator stores no second durable room state; D1 remains the recovery and reconciliation source.
-- Conversation-routed writes expose `Server-Timing` metrics for the Durable Object hop, queue wait, and operation time. The Worker also logs `conversation.do.message` and `conversation.do.mutation` entries with request id, room id, operation/result, and timings.
+- Messaging Core coordinates message-send sequencing, idempotency, and room/membership mutations per room. Voyager no longer owns a local ConversationCoordinator for messaging.
+- Conversation-routed messaging writes expose Durable Object timing and structured logs inside Messaging Core. Voyager no longer emits local conversation coordinator metrics for messaging writes.
 - Call endpoints expose durable lifecycle and participant state over HTTP. Realtime events are hints only; clients recover authoritative call state through call read endpoints. Realtime media endpoints keep provider secrets server-side, store provider metadata only, and return `configured: false` when Cloudflare Realtime is unavailable in the current environment.
 
 ## 5. Important Endpoint Groups

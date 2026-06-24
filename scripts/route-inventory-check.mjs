@@ -14,6 +14,7 @@ export function implementedRouteInventory() {
   for (const file of SOURCE_FILES) {
     const source = readFileSync(file, "utf8");
     routes.push(...extractExactPathRoutes(source, file));
+    routes.push(...extractGuardedExactPathRoutes(source, file));
     routes.push(...extractRouteParamRoutes(source, file));
   }
   return uniqueRoutes(routes).filter(
@@ -68,12 +69,22 @@ function extractExactPathRoutes(source, file) {
       (match) => match[1],
     );
     if (!paths.length) continue;
-    const methods = methodsInBlock(block.body);
+    const methods = methodsInBlock(block);
     for (const path of paths) {
       for (const method of methods) {
         routes.push({ method, path, file });
       }
     }
+  }
+  return routes;
+}
+
+function extractGuardedExactPathRoutes(source, file) {
+  const routes = [];
+  const guardedPathRegex =
+    /if\s*\(\s*url\.pathname\s*!==\s*"([^"]+)"\s*\)\s*return\s+null;([\s\S]{0,1000}?)requireMethod\(\s*request,\s*"([A-Z]+)"\s*\)/g;
+  for (const match of source.matchAll(guardedPathRegex)) {
+    routes.push({ method: match[3], path: match[1], file });
   }
   return routes;
 }
@@ -93,7 +104,7 @@ function extractRouteParamRoutes(source, file) {
       variableName,
     );
     if (!block) continue;
-    const methods = methodsInBlock(block.body);
+    const methods = methodsInBlock(block);
     const paths = pathsFromRouteRegex(regexBody);
     for (const path of paths) {
       for (const method of methods) {
@@ -140,19 +151,20 @@ function ifBlocks(source) {
 
 function findIfBlockForVariable(source, startIndex, variableName) {
   const blocks = ifBlocks(source.slice(startIndex));
-  const target = new RegExp(`^\\s*${variableName}\\s*$`);
+  const target = new RegExp(`(?:^|[^a-zA-Z0-9_$])${variableName}(?:$|[^a-zA-Z0-9_$])`);
   const block = blocks.find((candidate) => target.test(candidate.condition));
   return block ? { ...block, index: block.index + startIndex } : null;
 }
 
 function methodsInBlock(block) {
+  const text = typeof block === "string" ? block : `${block.condition}\n${block.body}`;
   const methods = new Set();
-  for (const match of block.matchAll(
+  for (const match of text.matchAll(
     /requireMethod\(\s*request,\s*"([A-Z]+)"\s*\)/g,
   )) {
     methods.add(match[1]);
   }
-  for (const match of block.matchAll(/request\.method\s*===\s*"([A-Z]+)"/g)) {
+  for (const match of text.matchAll(/request\.method\s*===\s*"([A-Z]+)"/g)) {
     methods.add(match[1]);
   }
   return [...methods].sort();

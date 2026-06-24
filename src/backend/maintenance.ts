@@ -3,16 +3,9 @@ import { HttpError } from "../http";
 import type { AuthContext, Env } from "../types";
 import type { RoomRow } from "./rooms/types";
 import type { JsonObject } from "./shared/types";
-import {
-  attachmentObjectRows,
-  uniqueAttachmentObjectKeys,
-} from "./attachments";
 import { publicRoomWithMembers } from "./rooms";
 import { nextCursor, pageParams, runCounted } from "./utils";
 import { publicMaintenanceRun } from "./shared/serializers";
-
-const ABANDONED_ALLOCATED_ATTACHMENT_MINUTES = 60;
-const UNREFERENCED_UPLOADED_ATTACHMENT_HOURS = 24;
 
 export async function listAdminRooms(env: Env, url: URL): Promise<JsonObject> {
   const page = pageParams(url, { defaultLimit: 50, maxLimit: 200 });
@@ -64,73 +57,6 @@ export async function runCleanup(
   env: Env,
   auth: AuthContext,
 ): Promise<JsonObject> {
-  const [
-    expiredAttachmentRows,
-    abandonedAllocatedAttachmentRows,
-    unreferencedUploadedAttachmentRows,
-  ] = await Promise.all([
-    attachmentObjectRows(
-      env,
-      `expires_at <= CURRENT_TIMESTAMP
-       AND state IN ('allocated', 'uploaded', 'referenced')`,
-    ),
-    attachmentObjectRows(
-      env,
-      `expires_at > CURRENT_TIMESTAMP
-       AND state = 'allocated'
-       AND created_at <= datetime('now', '-${ABANDONED_ALLOCATED_ATTACHMENT_MINUTES} minutes')`,
-    ),
-    attachmentObjectRows(
-      env,
-      `expires_at > CURRENT_TIMESTAMP
-       AND state = 'uploaded'
-       AND referenced_at IS NULL
-       AND uploaded_at IS NOT NULL
-       AND uploaded_at <= datetime('now', '-${UNREFERENCED_UPLOADED_ATTACHMENT_HOURS} hours')`,
-    ),
-  ]);
-  const expiredAttachmentObjectKeys = uniqueAttachmentObjectKeys(
-    [
-      ...expiredAttachmentRows,
-      ...abandonedAllocatedAttachmentRows,
-      ...unreferencedUploadedAttachmentRows,
-    ],
-  );
-  await Promise.all(
-    expiredAttachmentObjectKeys.map((objectKey) =>
-      env.ATTACHMENTS_BUCKET.delete(objectKey),
-    ),
-  );
-  const expiredMessages = await runCounted(
-    env.CONTROL_DB.prepare(
-      "UPDATE message_envelopes SET state = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND state NOT IN ('expired', 'purged')",
-    ),
-  );
-  const expiredAttachments = await runCounted(
-    env.CONTROL_DB.prepare(
-      "UPDATE attachments SET state = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND state IN ('allocated', 'uploaded', 'referenced')",
-    ),
-  );
-  const abandonedAllocatedAttachments = await runCounted(
-    env.CONTROL_DB.prepare(
-      `UPDATE attachments
-       SET state = 'expired'
-       WHERE expires_at > CURRENT_TIMESTAMP
-         AND state = 'allocated'
-         AND created_at <= datetime('now', '-${ABANDONED_ALLOCATED_ATTACHMENT_MINUTES} minutes')`,
-    ),
-  );
-  const unreferencedUploadedAttachments = await runCounted(
-    env.CONTROL_DB.prepare(
-      `UPDATE attachments
-       SET state = 'expired'
-       WHERE expires_at > CURRENT_TIMESTAMP
-         AND state = 'uploaded'
-         AND referenced_at IS NULL
-         AND uploaded_at IS NOT NULL
-         AND uploaded_at <= datetime('now', '-${UNREFERENCED_UPLOADED_ATTACHMENT_HOURS} hours')`,
-    ),
-  );
   const expiredKeyPackages = await runCounted(
     env.CONTROL_DB.prepare(
       "UPDATE device_key_packages SET status = 'expired' WHERE expires_at <= CURRENT_TIMESTAMP AND status = 'available'",
@@ -164,21 +90,13 @@ export async function runCleanup(
   const cleanup = {
     maintenanceRunId: randomId("mrun"),
     action: "cleanup",
-    expiredMessages,
-    expiredAttachments,
-    abandonedAllocatedAttachments,
-    unreferencedUploadedAttachments,
     expiredKeyPackages,
     expiredRoomInvitations,
     revokedCredentialResets,
     revokedExpiredSessions,
     deletedRealtimeTokens,
     deletedRateLimits,
-    deletedAttachmentObjects: expiredAttachmentObjectKeys.length,
-    attachmentCleanupWindows: {
-      allocatedOlderThanMinutes: ABANDONED_ALLOCATED_ATTACHMENT_MINUTES,
-      uploadedUnreferencedOlderThanHours: UNREFERENCED_UPLOADED_ATTACHMENT_HOURS,
-    },
+    messagingRuntime: "core",
   };
   await env.CONTROL_DB.prepare(
     "INSERT INTO maintenance_runs (maintenance_run_id, action, actor_account_id, result, metadata_json) VALUES (?, 'cleanup', ?, 'success', ?)",

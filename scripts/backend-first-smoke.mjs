@@ -3033,12 +3033,12 @@ const cleanup = await api("/v1/admin/maintenance/cleanup", {
   headers: ownerHeaders
 });
 if (
-  typeof cleanup.cleanup.abandonedAllocatedAttachments !== "number" ||
-  typeof cleanup.cleanup.unreferencedUploadedAttachments !== "number" ||
-  typeof cleanup.cleanup.attachmentCleanupWindows?.allocatedOlderThanMinutes !== "number" ||
-  typeof cleanup.cleanup.attachmentCleanupWindows?.uploadedUnreferencedOlderThanHours !== "number"
+  cleanup.cleanup.messagingRuntime !== "core" ||
+  "abandonedAllocatedAttachments" in cleanup.cleanup ||
+  "unreferencedUploadedAttachments" in cleanup.cleanup ||
+  "attachmentCleanupWindows" in cleanup.cleanup
 ) {
-  throw new Error("maintenance cleanup did not expose attachment orphan cleanup counters");
+  throw new Error("maintenance cleanup did not reflect Core-owned attachment cleanup");
 }
 
 const maintenanceRuns = await api("/v1/admin/maintenance/runs", { headers: ownerHeaders });

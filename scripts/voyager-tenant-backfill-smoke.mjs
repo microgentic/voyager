@@ -106,52 +106,12 @@ assert(
   "tenant backfill migration must not rewrite existing attachment object keys",
 );
 
-const allocationSource = readFileSync(
-  join(ROOT, "src/backend/attachments/allocation.ts"),
-  "utf8",
-);
-const variantsSource = readFileSync(
-  join(ROOT, "src/backend/attachments/variants.ts"),
-  "utf8",
-);
-const objectKeysSource = readFileSync(
-  join(ROOT, "src/backend/attachments/object-keys.ts"),
-  "utf8",
-);
-
-assert(
-  objectKeysSource.includes(`VOYAGER_DEFAULT_TENANT_ID = "${DEFAULT_TENANT_ID}"`),
-  "attachment object-key helper should define the Voyager default tenant",
-);
-assert(
-  objectKeysSource.includes('"tenants"') &&
-    objectKeysSource.includes('"rooms"') &&
-    objectKeysSource.includes('"attachments"') &&
-    objectKeysSource.includes("encodeURIComponent"),
-  "attachment object-key helper should build encoded tenant-prefixed R2 keys",
-);
-assert(
-  allocationSource.includes("tenantScopedAttachmentObjectKey"),
-  "new attachment allocations should use tenant-scoped object keys",
-);
-assert(
-  variantsSource.includes("tenantScopedAttachmentObjectKey"),
-  "new attachment variant uploads should use tenant-scoped object keys",
-);
-assert(
-  !allocationSource.includes("`attachments/${roomId}/${attachmentId}/original`"),
-  "allocation should not create new legacy room-only object keys",
-);
-assert(
-  !variantsSource.includes("`attachments/${attachment.room_id}/${attachment.attachment_id}/${variant}`"),
-  "variant uploads should not create new legacy room-only object keys",
-);
-
 console.log(
   JSON.stringify({
     ok: true,
     defaultTenantId: DEFAULT_TENANT_ID,
     checkedTables: tenantBackfilledTables.length,
+    coreOnlyAttachmentRuntime: true,
   }),
 );
 

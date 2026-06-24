@@ -1,6 +1,4 @@
 import { HttpError, serverTimingHeader } from "../http";
-import type { ConversationMutationMetrics } from "./conversation/types";
-import type { SendMessageMetrics } from "./messaging/types";
 import type { PageParams } from "./shared/types";
 
 export function stringArrayField(
@@ -179,37 +177,6 @@ export function nextCursor(
   return resultCount === page.limit ? String(page.offset + page.limit) : null;
 }
 
-export function sendMessageTimingHeaders(
-  metrics: SendMessageMetrics,
-): Record<string, string> {
-  return {
-    "server-timing": serverTimingHeader([
-      ["message", metrics.totalMs],
-      ["conversationDo", metrics.conversationDoMs],
-      ["conversationQueue", metrics.conversationQueueMs],
-      ["conversationOperation", metrics.conversationOperationMs],
-      ["context", metrics.contextMs],
-      ["insert", metrics.insertMs],
-      ["postwrite", metrics.postWriteMs],
-      ["realtime", metrics.realtimeMs],
-    ]),
-  };
-}
-
-export function mutationTimingHeaders(
-  routeName: string,
-  metrics: ConversationMutationMetrics,
-): Record<string, string> {
-  return {
-    "server-timing": serverTimingHeader([
-      [routeName, metrics.totalMs],
-      ["conversationDo", metrics.totalMs],
-      ["conversationQueue", metrics.queueMs],
-      ["conversationOperation", metrics.operationMs],
-    ]),
-  };
-}
-
 export function readTimingHeaders(
   routeName: string,
   authMs: number,
@@ -229,39 +196,6 @@ export function readTimingHeaders(
 
 export function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-export function finalizeSendMetrics(input: {
-  duplicate: boolean;
-  startedAt: number;
-  contextMs: number;
-  insertMs: number;
-  postWriteMs: number;
-  realtimeMs: number;
-}): SendMessageMetrics {
-  return {
-    duplicate: input.duplicate,
-    totalMs: durationSince(input.startedAt),
-    contextMs: input.contextMs,
-    insertMs: input.insertMs,
-    postWriteMs: input.postWriteMs,
-    realtimeMs: input.realtimeMs,
-  };
-}
-
-export function logSendMessagePerformance(
-  requestId: string,
-  roomId: string,
-  message: Record<string, unknown>,
-  metrics: SendMessageMetrics,
-): void {
-  console.info("message.send.performance", {
-    requestId,
-    roomId,
-    envelopeId: message.envelope_id,
-    serverSequence: message.server_sequence,
-    ...metrics,
-  });
 }
 
 export function durationSince(startedAt: number): number {

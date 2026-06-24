@@ -30,10 +30,6 @@
         "class_name": "RealtimeMailbox"
       },
       {
-        "name": "CONVERSATION_COORDINATOR",
-        "class_name": "ConversationCoordinator"
-      },
-      {
         "name": "CALL_COORDINATOR",
         "class_name": "CallCoordinator"
       }
@@ -44,6 +40,7 @@
       "tag": "v1-realtime-mailbox",
       "new_sqlite_classes": ["RealtimeMailbox"]
     },
+    // Retained as append-only Durable Object migration history; v4 deletes it from the current Voyager Worker.
     {
       "tag": "v2-conversation-coordinator",
       "new_sqlite_classes": ["ConversationCoordinator"]
@@ -51,6 +48,10 @@
     {
       "tag": "v3-call-coordinator",
       "new_sqlite_classes": ["CallCoordinator"]
+    },
+    {
+      "tag": "v4-delete-conversation-coordinator",
+      "deleted_classes": ["ConversationCoordinator"]
     }
   ],
   "d1_databases": [
@@ -58,12 +59,6 @@
       "binding": "CONTROL_DB",
       "database_name": "voyager-dev-control",
       "database_id": "f7daaf1f-6584-4bb6-89cd-79ab78d38f97"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "ATTACHMENTS_BUCKET",
-      "bucket_name": "voyager-dev-attachments"
     }
   ],
   "services": [

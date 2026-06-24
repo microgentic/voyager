@@ -1,8 +1,6 @@
 export interface Env {
   CONTROL_DB: D1Database;
-  ATTACHMENTS_BUCKET: R2Bucket;
   REALTIME_MAILBOX: DurableObjectNamespace;
-  CONVERSATION_COORDINATOR: DurableObjectNamespace;
   CALL_COORDINATOR: DurableObjectNamespace;
   MESSAGING_CORE_SERVICE?: Fetcher;
   BOOTSTRAP_TOKEN?: string;
