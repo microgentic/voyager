@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { assertMessagingCoreBoundaryCatalog, endpointStabilityCatalog } from "./api-contract-assertions.mjs";
 
@@ -190,6 +190,7 @@ function normalizePath(path) {
 }
 
 function routeGroupSourceFiles() {
+  if (!existsSync("src/backend/routing")) return [];
   return readdirSync("src/backend/routing", { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith("-routes.ts"))
     .map((entry) => `src/backend/routing/${entry.name}`)
