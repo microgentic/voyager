@@ -1,6 +1,6 @@
 {
   "generatedFrom": {
-    "voyagerRoot": "/Users/admin/voyager-r4-realtime-boundary",
+    "voyagerRoot": "/Users/admin/voyager",
     "messagingCoreRepo": "/Users/admin/messaging-core-service",
     "strategy": "backend-abstraction-implementation-strategy.md",
     "routeGuard": {

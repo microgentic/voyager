@@ -3,7 +3,8 @@ import { dirname, join, relative } from "node:path";
 import { endpointStabilityCatalog } from "./api-contract-assertions.mjs";
 import { assertRouteInventory, implementedRouteInventory } from "./route-inventory-check.mjs";
 
-const VOYAGER_ROOT = process.cwd();
+const VOYAGER_SCAN_ROOT = process.cwd();
+const VOYAGER_DISPLAY_ROOT = process.env.VOYAGER_DISPLAY_ROOT ?? "/Users/admin/voyager";
 const MESSAGING_CORE_REPO = process.env.MESSAGING_CORE_REPO ?? "/Users/admin/messaging-core-service";
 const INVENTORY_JSON_PATH = "docs/backend-abstraction/voyager-extraction-inventory.json";
 const VOYAGER_MAP_PATH = "docs/backend-abstraction/voyager-extraction-map.md";
@@ -53,7 +54,7 @@ function main() {
   const modules = moduleInventory();
   const inventory = {
     generatedFrom: {
-      voyagerRoot: VOYAGER_ROOT,
+      voyagerRoot: VOYAGER_DISPLAY_ROOT,
       messagingCoreRepo: MESSAGING_CORE_REPO,
       strategy: "backend-abstraction-implementation-strategy.md",
       routeGuard,
@@ -542,7 +543,7 @@ function listFiles(directory) {
       files.push(file);
     }
   }
-  return files.map((file) => relative(VOYAGER_ROOT, file));
+  return files.map((file) => relative(VOYAGER_SCAN_ROOT, file));
 }
 
 function writeJson(file, value) {
