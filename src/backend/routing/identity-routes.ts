@@ -9,7 +9,6 @@ import {
   publishKeyPackage,
   revokeKeyPackage,
 } from "../identity";
-import { appBootstrap } from "../sync";
 import { readTimingHeaders } from "../utils";
 import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext } from "./types";
@@ -22,21 +21,6 @@ export async function handleIdentityRoutes(context: BackendRouteContext): Promis
     return json(
       { ok: true, principals: await listPrincipals(env) },
       { headers: readTimingHeaders("principals", authTimingMs, startedAt) },
-    );
-  }
-
-  if (url.pathname === "/v1/app/bootstrap") {
-    requireMethod(request, "GET");
-    const startedAt = performance.now();
-    const result = await appBootstrap(env, auth, url, requestId);
-    return json(
-      { ok: true, bootstrap: result.bootstrap },
-      {
-        headers: readTimingHeaders("bootstrap", authTimingMs, startedAt, [
-          ["rooms", result.metrics.roomsMs],
-          ["messages", result.metrics.messagesMs],
-        ]),
-      },
     );
   }
 

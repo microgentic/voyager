@@ -12,7 +12,7 @@ clearer home than the former single large `src/backend.ts` file.
 ## Module Map
 
 - `src/backend.ts` is a compatibility barrel. It exports the backend route
-  handler and Durable Object classes for existing imports.
+  handler and Voyager-owned Durable Object classes for existing imports.
 - `src/backend/routes.ts` is a compatibility route entry. The authenticated
   `/v1` route dispatcher now lives in `src/backend/routing/index.ts`.
 - `src/backend/routing/*.ts` contains route-group orchestration. Route modules
@@ -22,37 +22,30 @@ clearer home than the former single large `src/backend.ts` file.
   Cloudflare Realtime provider logic, or domain business rules. Thread and
   maintenance endpoints have their own route modules instead of living inside
   the broader message, room, or admin route groups.
-- `src/backend/conversation-coordinator.ts` contains the
-  `ConversationCoordinator` Durable Object plus the internal Worker-to-DO send
-  and mutation dispatch helpers.
+- Messaging rooms, messages, threads, attachments, sync/bootstrap, and message
+  sequencing are handled by Messaging Core. Voyager keeps only the Core facade
+  and product-owned bridge code in `src/index.ts` and
+  `src/backend/messaging-core-bridge.ts`.
 - `src/backend/call-coordinator.ts` is a compatibility barrel for
   `src/backend/calls/coordinator.ts`, which contains the `CallCoordinator`
   Durable Object.
-- `src/backend/internal-types.ts` is a compatibility type barrel. Backend
-  modules should import from the owning domain type modules instead:
-  `src/backend/shared/types.ts`, `src/backend/identity/types.ts`,
-  `src/backend/messaging/types.ts`, `src/backend/conversation/types.ts`,
-  `src/backend/rooms/types.ts`, `src/backend/attachments/types.ts`, and
+- `src/backend/internal-types.ts` is a compatibility type barrel for
+  Voyager-owned backend domains. Backend modules should import from the owning
+  domain type modules instead: `src/backend/shared/types.ts`,
+  `src/backend/identity/types.ts`, `src/backend/rooms/types.ts`, and
   `src/backend/calls/types.ts`.
-- `src/backend/operations.ts` is a compatibility barrel that re-exports the
-  domain operation modules for older imports. New route-group modules should
-  import from the owning domain modules instead of this all-domain barrel.
+- `src/backend/operations.ts` is a compatibility barrel for Voyager-owned
+  operations. New route-group modules should import from the owning domain
+  modules instead of this all-domain barrel.
 - `src/backend/identity.ts` contains principal, device-key-package, and
   identity-adjacent read/write operations.
 - `src/backend/rooms/` contains room reads, creation, authorization,
   membership, human room invitations, ownership transfers, quota checks, and
   room member serialization helpers. `src/backend/rooms.ts` remains a
   compatibility barrel.
-- `src/backend/messaging/` contains message send/list/acknowledgement,
-  delivery receipt, message idempotency, attachment-reference, thread, and
-  message realtime hint implementations. `src/backend/messages.ts` and
-  `src/backend/threads.ts` remain compatibility barrels.
-- `src/backend/sync.ts` contains account sync, startup bootstrap, and pending
-  message reads.
-- `src/backend/attachments/` contains R2-backed opaque attachment allocation,
-  upload, completion, download, deletion, variant, quota, object-key cleanup,
-  attachment serialization, and attachment ownership implementations.
-  `src/backend/attachments.ts` remains a compatibility barrel.
+- The old Voyager-owned messaging, thread, sync, attachment, and
+  ConversationCoordinator modules have been removed. Normal app traffic for
+  those capabilities goes through the Messaging Core facade in `src/index.ts`.
 - `src/backend/calls/` contains call lifecycle, read, Realtime config/session/
   track, Realtime provider client/mock helpers, media mutation, usage,
   participant-state, event, serialization, and Durable Object coordinator
@@ -65,13 +58,12 @@ clearer home than the former single large `src/backend.ts` file.
 - `src/backend/agents.ts` contains agent request review and agent principal
   creation operations.
 - `src/backend/maintenance.ts` contains admin room listing, maintenance run
-  history, and cleanup execution.
+  history, and product-owned cleanup execution. Messaging Core owns message and
+  attachment cleanup.
 - `src/backend/serializers.ts` is a compatibility serializer barrel. Public
   API response serializers live with their owning domains:
   `src/backend/shared/serializers.ts`, `src/backend/rooms/serializers.ts`,
-  `src/backend/messaging/serializers.ts`,
-  `src/backend/attachments/serializers.ts`, and
-  `src/backend/calls/serializers.ts`.
+  and `src/backend/calls/serializers.ts`.
 - `src/backend/utils.ts` contains validation, pagination, timing, counted-write,
   JSON, timestamp, and string helper utilities.
 
@@ -92,9 +84,9 @@ clearer home than the former single large `src/backend.ts` file.
   cutover, the same guard also validates `messagingCoreBoundaryCatalog` so every
   Core-owned Voyager route is explicitly marked as Core runtime, product token
   bridge, call runtime, call realtime runtime, or an active Core facade.
-- `conversation-coordinator.ts` should remain the only module that knows the
-  internal Conversation DO request format. It may use `operations.ts` as the
-  transitional mutation dispatch surface; route and domain modules should not.
+- Messaging Core owns the internal Conversation DO request format. Voyager
+  should not reintroduce a local ConversationCoordinator or local
+  message/attachment/thread runtime.
 - Add new backend behavior to the smallest matching domain module. If no
   matching module exists, create one around a product concept rather than around
   a single helper function.

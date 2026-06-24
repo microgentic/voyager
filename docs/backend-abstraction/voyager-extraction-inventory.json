@@ -5,8 +5,8 @@
     "strategy": "backend-abstraction-implementation-strategy.md",
     "routeGuard": {
       "ok": true,
-      "implementedCount": 104,
-      "catalogCount": 104
+      "implementedCount": 105,
+      "catalogCount": 105
     }
   },
   "categories": [
@@ -32,7 +32,7 @@
       "method": "GET",
       "path": "/v1/app/bootstrap",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/identity-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Messaging bootstrap or compatibility alias for /v1/messaging/bootstrap.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -42,7 +42,7 @@
       "method": "DELETE",
       "path": "/v1/attachments/{attachmentId}",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/attachment-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core private attachment route with tenant-scoped R2 keys.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -52,7 +52,7 @@
       "method": "GET",
       "path": "/v1/attachments/{attachmentId}/blob",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/attachment-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core private attachment route with tenant-scoped R2 keys.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -62,7 +62,7 @@
       "method": "PUT",
       "path": "/v1/attachments/{attachmentId}/blob",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/attachment-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core private attachment route with tenant-scoped R2 keys.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -72,7 +72,7 @@
       "method": "POST",
       "path": "/v1/attachments/{attachmentId}/complete",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/attachment-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core private attachment route with tenant-scoped R2 keys.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -312,7 +312,7 @@
       "method": "GET",
       "path": "/v1/room-invitations",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -322,7 +322,7 @@
       "method": "POST",
       "path": "/v1/room-invitations/{roomInvitationId}/accept",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -332,7 +332,7 @@
       "method": "POST",
       "path": "/v1/room-invitations/{roomInvitationId}/decline",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -342,7 +342,7 @@
       "method": "GET",
       "path": "/v1/rooms",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -352,7 +352,7 @@
       "method": "GET",
       "path": "/v1/rooms/{roomId}",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -362,7 +362,7 @@
       "method": "PATCH",
       "path": "/v1/rooms/{roomId}",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -372,7 +372,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/archive",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -382,7 +382,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/attachments",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/attachment-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core private attachment route with tenant-scoped R2 keys.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -412,7 +412,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/invitations",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -422,7 +422,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/leave",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -432,7 +432,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/members",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -442,7 +442,7 @@
       "method": "DELETE",
       "path": "/v1/rooms/{roomId}/members/{principalId}",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -452,7 +452,7 @@
       "method": "PATCH",
       "path": "/v1/rooms/{roomId}/members/{principalId}/role",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -462,7 +462,7 @@
       "method": "GET",
       "path": "/v1/rooms/{roomId}/messages",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -472,7 +472,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -482,7 +482,7 @@
       "method": "PATCH",
       "path": "/v1/rooms/{roomId}/messages/{envelopeId}",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -492,7 +492,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages/{envelopeId}/ack",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -502,7 +502,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages/{envelopeId}/forward",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -512,7 +512,7 @@
       "method": "DELETE",
       "path": "/v1/rooms/{roomId}/messages/{envelopeId}/pin",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -522,7 +522,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages/{envelopeId}/pin",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -532,7 +532,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages/{envelopeId}/reactions",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -542,7 +542,7 @@
       "method": "DELETE",
       "path": "/v1/rooms/{roomId}/messages/{envelopeId}/reactions/{reaction}",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -552,7 +552,7 @@
       "method": "GET",
       "path": "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/thread-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -562,7 +562,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/thread-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -572,7 +572,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/read",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/thread-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -582,7 +582,7 @@
       "method": "PATCH",
       "path": "/v1/rooms/{roomId}/messages/{rootEnvelopeId}/thread/subscription",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/thread-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -592,7 +592,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/messages/delete",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/message-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -602,7 +602,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/ownership-transfers",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -612,7 +612,7 @@
       "method": "POST",
       "path": "/v1/rooms/{roomId}/ownership-transfers/{transferId}/accept",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -622,7 +622,7 @@
       "method": "POST",
       "path": "/v1/rooms/direct",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -632,7 +632,7 @@
       "method": "POST",
       "path": "/v1/rooms/groups",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/room-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core room/membership/invitation route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -642,7 +642,7 @@
       "method": "GET",
       "path": "/v1/sync",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/sync-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core public compatibility route (GET).",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -652,7 +652,7 @@
       "method": "GET",
       "path": "/v1/threads",
       "stability": "stable/current",
-      "implementedIn": "src/backend/routing/thread-routes.ts",
+      "implementedIn": "src/index.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Core messaging/thread route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
@@ -1057,6 +1057,16 @@
       "extractionTarget": "Move behind internal service-token routes.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:1221",
       "rationale": "Core keeps maintenance/usage/audit capabilities, but not Voyager admin dashboards."
+    },
+    {
+      "method": "POST",
+      "path": "/v1/messaging-core/realtime/token",
+      "stability": "future-sensitive",
+      "implementedIn": "src/index.ts",
+      "category": "REMODEL_FOR_CORE",
+      "extractionTarget": "Review manually before extraction.",
+      "strategyReference": "backend-abstraction-implementation-strategy.md:404",
+      "rationale": "No explicit strategy mapping matched this current route."
     }
   ],
   "tables": [
@@ -1064,7 +1074,8 @@
       "name": "attachments",
       "migrations": [
         "migrations/0001_phase1_control_plane.sql",
-        "migrations/0010_attachment_variants.sql"
+        "migrations/0010_attachment_variants.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1074,7 +1085,8 @@
     {
       "name": "call_events",
       "migrations": [
-        "migrations/0011_call_foundation.sql"
+        "migrations/0011_call_foundation.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1085,7 +1097,8 @@
       "name": "call_participants",
       "migrations": [
         "migrations/0011_call_foundation.sql",
-        "migrations/0013_call_lifecycle_completion.sql"
+        "migrations/0013_call_lifecycle_completion.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1095,7 +1108,8 @@
     {
       "name": "call_realtime_sessions",
       "migrations": [
-        "migrations/0012_audio_call_media.sql"
+        "migrations/0012_audio_call_media.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1106,7 +1120,8 @@
       "name": "call_realtime_tracks",
       "migrations": [
         "migrations/0012_audio_call_media.sql",
-        "migrations/0014_large_file_ops_hardening.sql"
+        "migrations/0014_large_file_ops_hardening.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1117,7 +1132,8 @@
       "name": "call_usage_reports",
       "migrations": [
         "migrations/0015_call_usage_reports.sql",
-        "migrations/0016_call_usage_report_source.sql"
+        "migrations/0016_call_usage_report_source.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1127,7 +1143,8 @@
     {
       "name": "calls",
       "migrations": [
-        "migrations/0011_call_foundation.sql"
+        "migrations/0011_call_foundation.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1137,7 +1154,8 @@
     {
       "name": "delivery_receipts",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1147,7 +1165,8 @@
     {
       "name": "device_key_packages",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1157,7 +1176,8 @@
     {
       "name": "devices",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1167,7 +1187,8 @@
     {
       "name": "maintenance_runs",
       "migrations": [
-        "migrations/0002_backend_contract_hardening.sql"
+        "migrations/0002_backend_contract_hardening.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1177,7 +1198,8 @@
     {
       "name": "message_edits",
       "migrations": [
-        "migrations/0005_message_status_reply_edit.sql"
+        "migrations/0005_message_status_reply_edit.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1190,7 +1212,8 @@
         "migrations/0001_phase1_control_plane.sql",
         "migrations/0005_message_status_reply_edit.sql",
         "migrations/0007_forward_delete_everyone.sql",
-        "migrations/0008_threads.sql"
+        "migrations/0008_threads.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1200,7 +1223,8 @@
     {
       "name": "message_pins",
       "migrations": [
-        "migrations/0006_reactions_pinning.sql"
+        "migrations/0006_reactions_pinning.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1210,7 +1234,8 @@
     {
       "name": "message_reactions",
       "migrations": [
-        "migrations/0006_reactions_pinning.sql"
+        "migrations/0006_reactions_pinning.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1220,7 +1245,8 @@
     {
       "name": "message_visibility",
       "migrations": [
-        "migrations/0004_message_visibility.sql"
+        "migrations/0004_message_visibility.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1230,7 +1256,8 @@
     {
       "name": "ownership_transfers",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1240,7 +1267,8 @@
     {
       "name": "principals",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1250,7 +1278,8 @@
     {
       "name": "rate_limits",
       "migrations": [
-        "migrations/0002_backend_contract_hardening.sql"
+        "migrations/0002_backend_contract_hardening.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1260,7 +1289,8 @@
     {
       "name": "realtime_socket_tokens",
       "migrations": [
-        "migrations/0003_realtime_socket_tokens.sql"
+        "migrations/0003_realtime_socket_tokens.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1270,7 +1300,8 @@
     {
       "name": "room_invitations",
       "migrations": [
-        "migrations/0002_backend_contract_hardening.sql"
+        "migrations/0002_backend_contract_hardening.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1280,7 +1311,8 @@
     {
       "name": "room_memberships",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1290,7 +1322,8 @@
     {
       "name": "rooms",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1300,7 +1333,8 @@
     {
       "name": "thread_states",
       "migrations": [
-        "migrations/0009_thread_state.sql"
+        "migrations/0009_thread_state.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "CORE_PUBLIC",
       "extractionTarget": "Port to tenant-aware Messaging Core schema.",
@@ -1310,7 +1344,8 @@
     {
       "name": "account_admin_roles",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "PRODUCT_VOYAGER",
       "extractionTarget": "Keep in Voyager product schema.",
@@ -1320,7 +1355,8 @@
     {
       "name": "admin_roles",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "PRODUCT_VOYAGER",
       "extractionTarget": "Keep in Voyager product schema.",
@@ -1330,7 +1366,8 @@
     {
       "name": "authenticators",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "PRODUCT_VOYAGER",
       "extractionTarget": "Keep in Voyager product schema.",
@@ -1340,7 +1377,8 @@
     {
       "name": "credential_reset_tokens",
       "migrations": [
-        "migrations/0002_backend_contract_hardening.sql"
+        "migrations/0002_backend_contract_hardening.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "PRODUCT_VOYAGER",
       "extractionTarget": "Keep in Voyager product schema.",
@@ -1350,7 +1388,8 @@
     {
       "name": "invitations",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "PRODUCT_VOYAGER",
       "extractionTarget": "Keep in Voyager product schema.",
@@ -1360,7 +1399,8 @@
     {
       "name": "sessions",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "PRODUCT_VOYAGER",
       "extractionTarget": "Keep in Voyager product schema.",
@@ -1370,7 +1410,8 @@
     {
       "name": "agent_requests",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "DROP_FROM_CORE",
       "extractionTarget": "Exclude from Messaging Core migrations.",
@@ -1380,7 +1421,8 @@
     {
       "name": "sidebar_collection_items",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "DROP_FROM_CORE",
       "extractionTarget": "Exclude from Messaging Core migrations.",
@@ -1390,7 +1432,8 @@
     {
       "name": "sidebar_collections",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "DROP_FROM_CORE",
       "extractionTarget": "Exclude from Messaging Core migrations.",
@@ -1400,7 +1443,8 @@
     {
       "name": "accounts",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "REMODEL_FOR_CORE",
       "extractionTarget": "Remodel into tenant-scoped messaging_accounts keyed by product subject.",
@@ -1410,7 +1454,8 @@
     {
       "name": "audit_events",
       "migrations": [
-        "migrations/0001_phase1_control_plane.sql"
+        "migrations/0001_phase1_control_plane.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "REMODEL_FOR_CORE",
       "extractionTarget": "Remodel into internal core_audit_events, not Voyager admin audit UI.",
@@ -1418,109 +1463,39 @@
       "rationale": "Current table carries useful concepts but must be reshaped for tenant-aware product-neutral core."
     },
     {
+      "name": "messaging_core_identity_sync_cache",
+      "migrations": [
+        "migrations/0018_messaging_core_identity_sync_cache.sql"
+      ],
+      "category": "REMODEL_FOR_CORE",
+      "extractionTarget": "Review before extraction.",
+      "strategyReference": "backend-abstraction-implementation-strategy.md:680",
+      "rationale": "Table was discovered in migrations but has no explicit classification rule yet."
+    },
+    {
       "name": "policies",
       "migrations": [
         "migrations/0001_phase1_control_plane.sql",
-        "migrations/0014_large_file_ops_hardening.sql"
+        "migrations/0014_large_file_ops_hardening.sql",
+        "migrations/0017_voyager_tenant_backfill.sql"
       ],
       "category": "REMODEL_FOR_CORE",
       "extractionTarget": "Remodel into tenant-aware messaging policy/limits table.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:680",
       "rationale": "Current table carries useful concepts but must be reshaped for tenant-aware product-neutral core."
+    },
+    {
+      "name": "tenants",
+      "migrations": [
+        "migrations/0017_voyager_tenant_backfill.sql"
+      ],
+      "category": "REMODEL_FOR_CORE",
+      "extractionTarget": "Review before extraction.",
+      "strategyReference": "backend-abstraction-implementation-strategy.md:680",
+      "rationale": "Table was discovered in migrations but has no explicit classification rule yet."
     }
   ],
   "modules": [
-    {
-      "file": "src/backend/attachments.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/allocation.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/completion.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/deletion.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/download.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/index.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/object-keys.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/ownership.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/quotas.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/serializers.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/types.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/upload.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/attachments/variants.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
     {
       "file": "src/backend/call-coordinator.ts",
       "category": "CORE_PUBLIC",
@@ -1648,154 +1623,7 @@
       "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
     },
     {
-      "file": "src/backend/conversation-coordinator.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/conversation/types.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
       "file": "src/backend/internal-types.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messages.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/attachment-references.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/constants.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/delete.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/edit.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/forwarding.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/helpers.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/index.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/pins.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/reactions.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/reads.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/realtime.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/receipts.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/select.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/send.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/serializers.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/thread-inbox.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/threads.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/messaging/types.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:241",
@@ -1879,42 +1707,7 @@
       "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
     },
     {
-      "file": "src/backend/routing/attachment-routes.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
       "file": "src/backend/routing/call-routes.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/routing/message-routes.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/routing/room-routes.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/routing/sync-routes.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/routing/thread-routes.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:241",
@@ -1936,20 +1729,6 @@
     },
     {
       "file": "src/backend/shared/types.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/sync.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
-      "rationale": "Module owns reusable messaging, rooms, attachments, calls, realtime, sync, or shared utility behavior."
-    },
-    {
-      "file": "src/backend/threads.ts",
       "category": "CORE_PUBLIC",
       "extractionTarget": "Move or mirror into Messaging Core package with tenant/auth updates.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:241",
@@ -2040,6 +1819,13 @@
       "rationale": "Useful extraction surface, but current shape contains Voyager auth/admin/session or deployment assumptions."
     },
     {
+      "file": "src/backend/messaging-core-bridge.ts",
+      "category": "REMODEL_FOR_CORE",
+      "extractionTarget": "Review manually before extraction.",
+      "strategyReference": "backend-abstraction-implementation-strategy.md:241",
+      "rationale": "Backend module did not match an explicit extraction rule."
+    },
+    {
       "file": "src/backend/operations.ts",
       "category": "REMODEL_FOR_CORE",
       "extractionTarget": "Split compatibility barrel; export only core-safe operations from Messaging Core and keep Voyager-only barrels in Voyager.",
@@ -2108,19 +1894,19 @@
       "CORE_PUBLIC": 64,
       "PRODUCT_VOYAGER": 24,
       "DROP_FROM_CORE": 10,
-      "REMODEL_FOR_CORE": 6
+      "REMODEL_FOR_CORE": 7
     },
     "tables": {
       "CORE_PUBLIC": 24,
       "PRODUCT_VOYAGER": 6,
       "DROP_FROM_CORE": 3,
-      "REMODEL_FOR_CORE": 3
+      "REMODEL_FOR_CORE": 5
     },
     "modules": {
-      "CORE_PUBLIC": 79,
+      "CORE_PUBLIC": 38,
       "PRODUCT_VOYAGER": 2,
       "DROP_FROM_CORE": 3,
-      "REMODEL_FOR_CORE": 12
+      "REMODEL_FOR_CORE": 13
     }
   }
 }

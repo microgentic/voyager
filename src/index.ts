@@ -30,7 +30,7 @@ import {
   setAccountStatus,
   updateAccountPolicy
 } from "./db";
-import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
+import { CallCoordinator, handleBackendFirstRoutes } from "./backend";
 import {
   createMessagingCoreSessionPayload,
   fetchMessagingCoreAttachmentUsage,
@@ -52,7 +52,7 @@ import { errorResponse, HttpError, json, optionalObject, publicAccount, readJson
 import { handleRealtimeConnect, REALTIME_PROTOCOL, RealtimeMailbox } from "./realtime";
 import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow } from "./types";
 
-export { CallCoordinator, ConversationCoordinator, RealtimeMailbox };
+export { CallCoordinator, RealtimeMailbox };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_TEST_DEVICE_LABEL_MATCHERS = [
@@ -94,7 +94,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       service: "voyager-api-dev",
       status: "healthy",
       d1: Boolean(env.CONTROL_DB) ? "bound" : "missing",
-      r2: Boolean(env.ATTACHMENTS_BUCKET) ? "bound" : "missing",
+      messagingCoreService: Boolean(env.MESSAGING_CORE_SERVICE) ? "bound" : "base-url",
       timestamp: new Date().toISOString()
     });
   }
