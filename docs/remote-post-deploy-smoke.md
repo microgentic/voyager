@@ -36,14 +36,14 @@ Worker and seeded disposable test accounts.
 
 `npm run smoke:backend:remote` checks:
 
-- `GET /health` returns a healthy Worker with D1 and R2 bindings.
+- `GET /health` returns a healthy Worker with D1 and Messaging Core service bindings.
 - Seeded `ada@example.com` and `grace@example.com` password login works.
 - `GET /v1/app/bootstrap?limit=100` returns the stable startup contract.
 - Legacy `/v1/realtime` and `/v1/realtime/token` routes return 404.
 - `POST /v1/messaging-core/realtime/token` returns a valid short-lived Core socket token.
 - The returned Messaging Core `connectPath` opens with that socket token and emits `ready`.
 - Attachment allocation, original/thumbnail upload, completion, authenticated
-  downloads, and unreferenced cleanup work against the deployed R2 binding.
+  downloads, and unreferenced cleanup work through Core-owned attachment storage.
 - Basic audio call lifecycle works at the deployed Worker level: create, optional
   configured-false Realtime session response, receiver join, mute/unmute, both
   participants leave, and final ended call fetch.

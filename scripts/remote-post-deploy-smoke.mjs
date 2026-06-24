@@ -532,7 +532,7 @@ async function runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders) 
 
 async function main() {
   const health = await api("/health");
-  if (health.status !== "healthy" || health.d1 !== "bound" || health.r2 !== "bound") {
+  if (health.status !== "healthy" || health.d1 !== "bound" || health.messagingCoreService !== "bound") {
     throw new Error(`health response is not ready: ${JSON.stringify(health)}`);
   }
 
