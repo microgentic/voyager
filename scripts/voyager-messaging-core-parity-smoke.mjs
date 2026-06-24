@@ -337,6 +337,14 @@ async function runThreadInboxCutoverSmoke({ token, encodedRoomId, rootEnvelopeId
   assertEqual(reply.messagingCoreCutover?.upstreamStatus, 201, "normal Voyager thread reply cutover upstream status");
   assertEqual(reply.message?.threadRootEnvelopeId, rootEnvelopeId, "normal Voyager thread reply root");
   assertEqual(reply.message?.alsoSentToRoom, false, "normal Voyager thread-only reply flag");
+  const threadOnlyListAfter = Math.max(0, Number(reply.message.serverSequence ?? 0) - 1);
+  const threadOnlyListRoute = `/rooms/${encodedRoomId}/messages?after=${threadOnlyListAfter}&limit=20`;
+  const threadOnlyRoomList = await voyagerApi(`/v1${threadOnlyListRoute}`, { token });
+  assertCoreCutoverDiagnostics(threadOnlyRoomList.messagingCoreCutover, threadOnlyListRoute, "normal Voyager thread-only room list diagnostics");
+  assertArray(threadOnlyRoomList.messages, "normal Voyager thread-only room list messages");
+  if (threadOnlyRoomList.messages.some((candidate) => candidate.envelopeId === reply.message.envelopeId)) {
+    throw new Error("normal Voyager room list included a thread-only reply.");
+  }
 
   const broadcastReply = await voyagerApi(`/v1/rooms/${encodedRoomId}/messages/${encodedRootEnvelopeId}/thread`, {
     method: "POST",
