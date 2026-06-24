@@ -1038,6 +1038,13 @@ function messagingCorePublicSendBody(body: Record<string, unknown>): Record<stri
   return sanitized;
 }
 
+function messagingCoreDeleteMessagesBody(body: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...body,
+    scope: body.scope === "me" ? "for_me" : body.scope,
+  };
+}
+
 async function messagingCoreMemberAddBody(env: Env, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const principalId = requiredMessagingCoreBodyString(body, "principalId");
   const principal = await loadActiveMessagingCoreCutoverPrincipal(env, principalId);
@@ -1325,7 +1332,7 @@ async function messagingCoreMessageCutoverRoute(
       kind: "json",
       method: "POST",
       path: `/rooms/${deleteMessagesMatch[1]}/messages/delete`,
-      body: await readJsonObject(request),
+      body: messagingCoreDeleteMessagesBody(await readJsonObject(request)),
       responseKind: "deleted",
     };
   }
