@@ -22,7 +22,7 @@ const DISALLOWED_LEGACY_RUNTIME_PATHS = [
   "src/backend/threads.ts",
 ];
 
-const TEXT_SCAN_ROOTS = ["src", "scripts", "docs"];
+const TEXT_SCAN_ROOTS = ["src", "apps/client/src", "scripts", "docs"];
 const TEXT_SCAN_FILES = ["package.json", "wrangler.jsonc"];
 const IGNORED_DIRECTORIES = new Set([
   ".git",
