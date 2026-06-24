@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && npm run check:core-only-messaging",
+    "check:core-only-messaging": "node scripts/core-only-messaging-guard.mjs",
     "db:migrate:local": "wrangler d1 migrations apply voyager-dev-control --local",
     "db:migrate:remote": "wrangler d1 migrations apply voyager-dev-control --remote",
     "deploy": "wrangler deploy",

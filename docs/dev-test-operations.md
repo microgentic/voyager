@@ -152,8 +152,8 @@ SMOKE_MESSAGING_CORE_ALL_CUTOVER=1 \
 npm run smoke:messaging-core-parity
 ```
 
-The legacy remote smoke remains available manually when validating rollback or
-legacy fallback behavior. It runs:
+The deployed Worker smoke remains available manually when validating a release
+or a rollback deployment. It runs:
 
 ```bash
 npm run smoke:backend:remote
@@ -165,7 +165,7 @@ against:
 https://voyager-api-dev.microgentic-voyager.workers.dev
 ```
 
-That legacy smoke logs in with the disposable seeded accounts, verifies
+That smoke logs in with the disposable seeded accounts, verifies
 `/v1/app/bootstrap`, proves legacy `/v1/realtime` routes are gone, mints a
 short-lived Messaging Core realtime token, exercises attachment upload/download/delete
 and a basic audio call lifecycle plus aggregate call usage reporting in an
@@ -229,9 +229,10 @@ removed; the parity smoke now uses `/v1/me` for the Core session, direct Core
 reads for Core health, `/v1/app/bootstrap` for normal app-bootstrap proof, and
 normal Voyager cutover routes for app behavior proof.
 
-Rollback now means redeploying a rollback tag/branch or restoring the exported
+Rollback means redeploying a rollback tag/branch or restoring the exported
 D1/R2 backup from the pre-removal proof step. The normal Worker config no
-longer carries a messaging fallback flag.
+longer carries a messaging fallback flag or live Voyager-owned messaging
+runtime.
 
 `node scripts/route-inventory-check.mjs` validates the boundary catalog:
 room/message/attachment/thread/sync and app-bootstrap routes are Core runtime,
