@@ -70,8 +70,8 @@ Source organization is documented in `docs/backend-source-layout.md`. The active
 - Message `ciphertext`, attachment blobs, key-package `package`, and cryptographic key fields are opaque to the Worker.
 - Room membership authorization is enforced server-side for room reads, messages, attachments, and membership actions.
 - Admin endpoints are role-gated; `platform_owner` satisfies all admin role checks.
-- The UI may open `GET /v1/realtime` for foreground near-realtime events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
-- Realtime WebSockets use `POST /v1/realtime/token` to mint a short-lived one-use socket token; clients pass that token as the WebSocket subprotocol instead of the long-lived session token.
+- The UI opens Messaging Core realtime through `POST /v1/messaging-core/realtime/token` for foreground messaging events, but must still use `GET /v1/sync` and room/message list endpoints as the source of truth and recovery path.
+- Call lifecycle hints use Voyager's call-only realtime boundary: `POST /v1/calls/realtime/token`, then `GET /v1/calls/realtime` with the short-lived token as a WebSocket subprotocol.
 - Messaging Core coordinates message-send sequencing, idempotency, and room/membership mutations per room. Voyager no longer owns a local ConversationCoordinator for messaging.
 - Conversation-routed messaging writes expose Durable Object timing and structured logs inside Messaging Core. Voyager no longer emits local conversation coordinator metrics for messaging writes.
 - Call endpoints expose durable lifecycle and participant state over HTTP. Realtime events are hints only; clients recover authoritative call state through call read endpoints. Realtime media endpoints keep provider secrets server-side, store provider metadata only, and return `configured: false` when Cloudflare Realtime is unavailable in the current environment.
@@ -126,8 +126,10 @@ Authenticated user:
 - `POST /v1/rooms/{room_id}/messages`
 - `POST /v1/rooms/{room_id}/messages/{envelope_id}/ack`
 - `GET /v1/sync`
-- `POST /v1/realtime/token`
-- `GET /v1/realtime` WebSocket upgrade for lightweight `room.message` event hints.
+- `POST /v1/messaging-core/realtime/token`
+- Messaging Core WebSocket upgrade through the returned Core `connectPath` for lightweight `room.message` event hints.
+- `POST /v1/calls/realtime/token`
+- `GET /v1/calls/realtime` WebSocket upgrade for lightweight `call.*` lifecycle hints.
 - Attachment, call, sidebar collection, thread, and agent request endpoints are documented in `docs/api-contract.md`.
 
 Admin:

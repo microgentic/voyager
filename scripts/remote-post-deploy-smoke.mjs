@@ -8,7 +8,6 @@ import {
   assertMessageResponse,
   assertMessagesResponse,
   assertRealtimeRoomMessageEvent,
-  assertRealtimeTokenResponse,
   assertRoomResponse,
   assertSyncResponse
 } from "./api-contract-assertions.mjs";
@@ -20,7 +19,6 @@ const PASSWORD = process.env.REMOTE_SMOKE_PASSWORD ?? "voyager-demo-pass";
 const KEEP_DEVICES = process.env.REMOTE_SMOKE_KEEP_DEVICES === "1";
 const TIMEOUT_MS = Number(process.env.REMOTE_SMOKE_TIMEOUT_MS ?? 20_000);
 const REALTIME_SMOKE_MEDIA = process.env.REALTIME_SMOKE_MEDIA === "1";
-const REALTIME_PROTOCOL = "voyager.realtime.v1";
 
 const base = BASE_URL.replace(/\/+$/, "");
 const runId = `remote-smoke-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -40,9 +38,10 @@ function auth(token) {
   return { authorization: `Bearer ${token}` };
 }
 
-function realtimeUrl() {
-  const url = new URL("/v1/realtime", base);
+function messagingCoreRealtimeUrl(token) {
+  const url = new URL(token.connectPath, token.baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("token", token.realtimeToken);
   return url.toString();
 }
 
@@ -125,42 +124,47 @@ async function login(email, label) {
   }
 }
 
-async function mintRealtimeToken(sessionToken, context) {
-  const token = await api("/v1/realtime/token", {
+async function createMessagingCoreRealtimeToken(sessionToken, context) {
+  const result = await api("/v1/messaging-core/realtime/token", {
     method: "POST",
     headers: auth(sessionToken)
   });
-  assertRealtimeTokenResponse(token, context);
-  return token.realtimeToken;
+  const token = {
+    baseUrl: result.messagingCore?.baseUrl,
+    connectPath: result.realtime?.connectPath,
+    protocol: result.realtime?.protocol,
+    realtimeToken: result.realtime?.realtimeToken,
+    expiresAt: result.realtime?.expiresAt
+  };
+  if (!token.baseUrl || !token.connectPath || !token.protocol || !token.realtimeToken) {
+    throw new Error(`${context} returned incomplete Messaging Core realtime token: ${JSON.stringify(result)}`);
+  }
+  if (token.protocol !== "messaging.realtime.v1") {
+    throw new Error(`${context} returned unexpected Messaging Core realtime protocol: ${token.protocol}`);
+  }
+  return token;
 }
 
-async function expectRealtimeConnectFailure(token) {
-  await new Promise((resolve, reject) => {
-    const socket = new WebSocket(realtimeUrl(), [REALTIME_PROTOCOL, token]);
-    const timeout = setTimeout(() => {
-      socket.close(1000, "remote_smoke_timeout");
-      reject(new Error("realtime WebSocket unexpectedly stayed pending with an invalid token"));
-    }, TIMEOUT_MS);
-    socket.addEventListener("open", () => {
-      clearTimeout(timeout);
-      socket.close(1000, "remote_smoke_unexpected_open");
-      reject(new Error("realtime WebSocket unexpectedly opened with a session token"));
-    });
-    socket.addEventListener("error", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-    socket.addEventListener("close", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
+async function expectLegacyRealtimeRoutesRemoved(sessionToken) {
+  const legacyToken = await apiRaw("/v1/realtime/token", {
+    method: "POST",
+    headers: auth(sessionToken)
   });
+  if (legacyToken.response.status !== 404) {
+    throw new Error(`legacy POST /v1/realtime/token expected 404 but got ${legacyToken.response.status}`);
+  }
+  const legacySocket = await apiRaw("/v1/realtime", {
+    headers: auth(sessionToken)
+  });
+  if (legacySocket.response.status !== 404) {
+    throw new Error(`legacy GET /v1/realtime expected 404 but got ${legacySocket.response.status}`);
+  }
 }
 
 async function openRealtimeWatcher(sessionToken, expectedRoomId) {
-  const realtimeToken = await mintRealtimeToken(sessionToken, "POST /v1/realtime/token remote smoke");
+  const realtimeToken = await createMessagingCoreRealtimeToken(sessionToken, "POST /v1/messaging-core/realtime/token remote smoke");
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(realtimeUrl(), [REALTIME_PROTOCOL, realtimeToken]);
+    const socket = new WebSocket(messagingCoreRealtimeUrl(realtimeToken), [realtimeToken.protocol]);
     const bufferedRoomMessages = [];
     const readyTimeout = setTimeout(() => {
       socket.close(1000, "remote_smoke_timeout");
@@ -543,7 +547,7 @@ async function main() {
   assertBootstrapResponse(await api("/v1/app/bootstrap?limit=100", { headers: ownerHeaders }), "GET /v1/app/bootstrap owner");
   assertBootstrapResponse(await api("/v1/app/bootstrap?limit=100", { headers: receiverHeaders }), "GET /v1/app/bootstrap receiver");
 
-  await expectRealtimeConnectFailure(receiver.sessionToken);
+  await expectLegacyRealtimeRoutesRemoved(receiver.sessionToken);
 
   let room = await findDirectRoom(ownerHeaders, receiver.principal.principalId);
   if (!room) {

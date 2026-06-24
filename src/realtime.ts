@@ -1,11 +1,8 @@
 import type { AuthContext, Env } from "./types";
 
-export const REALTIME_PROTOCOL = "voyager.realtime.v1";
+export const CALL_REALTIME_PROTOCOL = "voyager.call-realtime.v1";
 
-type RealtimeEventType =
-  | "room.message"
-  | "room.sync"
-  | "room.thread"
+type CallRealtimeEventType =
   | "call.invite"
   | "call.ringing"
   | "call.joined"
@@ -13,16 +10,11 @@ type RealtimeEventType =
   | "call.ended"
   | "call.updated";
 
-interface RealtimeEvent {
-  type: RealtimeEventType;
+interface CallRealtimeEvent {
+  type: CallRealtimeEventType;
   eventId: string;
   createdAt: string;
-  roomId?: string;
-  envelopeId?: string;
-  serverSequence?: number;
-  senderDeviceId?: string;
-  rootEnvelopeId?: string;
-  alsoSentToRoom?: boolean;
+  roomId: string;
   callId?: string;
   callType?: "audio" | "video";
   status?: string;
@@ -33,6 +25,8 @@ interface RealtimeEvent {
   endedReason?: string;
 }
 
+type CallRealtimeEventInput = Omit<CallRealtimeEvent, "eventId" | "createdAt" | "roomId">;
+
 interface SocketAttachment {
   accountId: string;
   principalId: string;
@@ -40,7 +34,7 @@ interface SocketAttachment {
   connectedAt: string;
 }
 
-export async function handleRealtimeConnect(request: Request, env: Env, auth: AuthContext): Promise<Response> {
+export async function handleCallRealtimeConnect(request: Request, env: Env, auth: AuthContext): Promise<Response> {
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
     return new Response("Expected WebSocket upgrade", { status: 426 });
   }
@@ -52,13 +46,13 @@ export async function handleRealtimeConnect(request: Request, env: Env, auth: Au
   headers.set("x-voyager-principal-id", auth.principal.principal_id);
   headers.set("x-voyager-device-id", auth.device.device_id);
 
-  return stub.fetch("https://voyager-realtime.local/connect", { headers });
+  return stub.fetch("https://voyager-call-realtime.local/connect", { headers });
 }
 
-export async function notifyRoomRealtime(
+export async function notifyRoomCallRealtime(
   env: Env,
   roomId: string,
-  event: Omit<RealtimeEvent, "eventId" | "createdAt" | "type" | "roomId"> & { type?: RealtimeEventType }
+  event: CallRealtimeEventInput
 ): Promise<void> {
   const result = await env.CONTROL_DB.prepare(
     "SELECT DISTINCT account_id FROM room_memberships WHERE room_id = ? AND status = 'active' AND account_id IS NOT NULL"
@@ -66,16 +60,11 @@ export async function notifyRoomRealtime(
     .bind(roomId)
     .all<{ account_id: string }>();
   const accountIds = (result.results ?? []).map((row) => row.account_id);
-  await notifyAccountsRealtime(env, accountIds, {
-    type: event.type ?? "room.sync",
+  await notifyAccountsCallRealtime(env, accountIds, {
+    type: event.type,
     eventId: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     roomId,
-    envelopeId: event.envelopeId,
-    serverSequence: event.serverSequence,
-    senderDeviceId: event.senderDeviceId,
-    rootEnvelopeId: event.rootEnvelopeId,
-    alsoSentToRoom: event.alsoSentToRoom,
     callId: event.callId,
     callType: event.callType,
     status: event.status,
@@ -87,12 +76,12 @@ export async function notifyRoomRealtime(
   });
 }
 
-async function notifyAccountsRealtime(env: Env, accountIds: string[], event: RealtimeEvent): Promise<void> {
+async function notifyAccountsCallRealtime(env: Env, accountIds: string[], event: CallRealtimeEvent): Promise<void> {
   if (!accountIds.length) return;
   await Promise.allSettled(
     [...new Set(accountIds)].map((accountId) => {
       const id = env.REALTIME_MAILBOX.idFromName(accountId);
-      return env.REALTIME_MAILBOX.get(id).fetch("https://voyager-realtime.local/notify", {
+      return env.REALTIME_MAILBOX.get(id).fetch("https://voyager-call-realtime.local/notify", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(event)
@@ -154,18 +143,19 @@ export class RealtimeMailbox {
         accountId,
         principalId,
         deviceId,
+        protocol: CALL_REALTIME_PROTOCOL,
         createdAt: attachment.connectedAt
       })
     );
     return new Response(null, {
       status: 101,
       webSocket: client,
-      headers: { "sec-websocket-protocol": REALTIME_PROTOCOL }
+      headers: { "sec-websocket-protocol": CALL_REALTIME_PROTOCOL }
     });
   }
 
   private async notify(request: Request): Promise<Response> {
-    const event = (await request.json()) as RealtimeEvent;
+    const event = (await request.json()) as CallRealtimeEvent;
     const payload = JSON.stringify(event);
     for (const socket of this.state.getWebSockets()) {
       try {

@@ -88,8 +88,8 @@ The startup sequence is:
 2. Store the returned `sessionToken`
 3. `GET /v1/app/bootstrap?limit=100`
 4. Hydrate identity, roles, rooms, and pending messages from the bootstrap payload
-5. `POST /v1/realtime/token`
-6. Open `GET /v1/realtime` with the returned short-lived token for foreground event hints
+5. `POST /v1/messaging-core/realtime/token`
+6. Open the returned Messaging Core `connectPath` with the returned short-lived `mrt_...` token for foreground messaging event hints
 7. Defer supporting reads such as principals, room invitations, and sidebar collections until after first paint
 
 `GET /v1/me`, `GET /v1/rooms`, and `GET /v1/sync` remain supported for compatibility and recovery.
@@ -131,7 +131,6 @@ Bootstrap response:
 | `POST` | `/v1/auth/password/change` | `{ ok: true }` |
 | `POST` | `/v1/auth/password/reset/complete` | `{ account, principal, device, sessionToken, messagingCore? }` |
 | `GET` | `/v1/me` | `{ account, principal, device, roles, messagingCore? }` |
-| `POST` | `/v1/realtime/token` | `{ realtimeToken, expiresAt }` |
 | `POST` | `/v1/messaging-core/realtime/token` | `{ messagingCore, realtime, proxied }` |
 | `GET` | `/v1/sessions` | `{ sessions }` |
 | `DELETE` | `/v1/sessions/{sessionId}` | `{ ok: true }` |
@@ -145,7 +144,7 @@ Login accepts `email`, `password`, and an optional `device` object. Existing-dev
 
 The dedicated `/v1/messaging-core/session`, `/v1/messaging-core/bootstrap`, `/v1/messaging-core/sync`, `/v1/messaging-core/rooms`, `/v1/messaging-core/rooms/{roomId}`, and `/v1/messaging-core/rooms/{roomId}/messages` validation proxies were removed after the all-Core dev cutover proof. Cutover validation now uses the normal Voyager app routes plus direct Messaging Core reads from the `messagingCore` session payload included in login and `/v1/me`.
 
-The web client uses the Messaging Core realtime transport by default. It requests `/v1/messaging-core/realtime/token`, opens the returned Core `connectPath` on `messagingCore.baseUrl`, sends the `mrt_...` token as a query parameter, and uses the returned `messaging.realtime.v1` protocol. The older `/v1/realtime/token` and `/v1/realtime` routes remain only for call/product realtime boundaries until the dedicated realtime cleanup step, not as a messaging fallback.
+The web client uses the Messaging Core realtime transport for messaging. It requests `/v1/messaging-core/realtime/token`, opens the returned Core `connectPath` on `messagingCore.baseUrl`, sends the `mrt_...` token as a query parameter, and uses the returned `messaging.realtime.v1` protocol. Voyager no longer exposes generic `/v1/realtime/token` or `/v1/realtime` messaging fallback routes. Call lifecycle hints use the explicit call runtime routes `/v1/calls/realtime/token` and `/v1/calls/realtime`.
 
 Normal Voyager room routes proxy to the matching Core public room routes and return Voyager-compatible response envelopes. The facade adapts Core-neutral room, member, invitation, and ownership-transfer shapes back to existing Voyager client fields, including account/principal display enrichment from Voyager identity rows. JSON Core-runtime responses include `messagingCoreCutover` diagnostics with `source: "core"`, `fallbackReason: null`, the Core route, upstream status, and a sanitized always-on Core snapshot. This covers room list/detail/create/update/archive, membership add/role/remove/leave, invitation list/create/respond, and ownership transfer propose/accept.
 
@@ -155,7 +154,7 @@ Legacy Voyager-only hidden-message rows, legacy Voyager-only attachment rows, an
 
 Normal `GET /v1/sync` calls Core `/sync`, expands Core room summaries through Core room detail, adapts rooms and pending messages back to Voyager-compatible shapes, and returns the existing `{ ok, sync }` envelope plus `messagingCoreCutover` diagnostics. Normal `GET /v1/app/bootstrap` keeps Voyager product identity/session fields but sources rooms and pending messages through the same Core sync bridge.
 
-Current boundary classification: room/message/attachment/thread/sync and app-bootstrap routes are `core-runtime`; messaging identity/key-package routes are `product-token-bridge`; call lifecycle/media routes are `call-runtime`; `/v1/realtime/token` and `/v1/realtime` are isolated call/product realtime boundaries until the realtime cleanup step; Voyager admin, auth, account/device-management, sidebar, agent provisioning/review, and product usage/audit routes are `product-only`. Default responses must not emit `messagingCoreCutover.source: "voyager_legacy"`.
+Current boundary classification: room/message/attachment/thread/sync and app-bootstrap routes are `core-runtime`; messaging identity/key-package routes are `product-token-bridge`; call lifecycle/media routes are `call-runtime`; `/v1/calls/realtime/token` and `/v1/calls/realtime` are `call-realtime-runtime`; Voyager admin, auth, account/device-management, sidebar, agent provisioning/review, and product usage/audit routes are `product-only`. Default responses must not emit `messagingCoreCutover.source: "voyager_legacy"`.
 
 The executable boundary inventory lives in `messagingCoreBoundaryCatalog` in `scripts/api-contract-assertions.mjs`. `node scripts/route-inventory-check.mjs` validates that every Core-owned Voyager route in the endpoint catalog is classified as Core runtime, product token bridge, call runtime, call realtime runtime, or active Core facade, which keeps new legacy ownership from appearing silently.
 
@@ -519,10 +518,10 @@ The request/review workflow is current. Real hosted AI runtimes remain deferred.
 
 ## Realtime Contract
 
-Clients mint a short-lived socket token before opening the WebSocket:
+Messaging clients mint a short-lived Core socket token before opening the WebSocket:
 
 ```http
-POST /v1/realtime/token
+POST /v1/messaging-core/realtime/token
 Authorization: Bearer <sessionToken>
 ```
 
@@ -531,28 +530,43 @@ Response:
 ```json
 {
   "ok": true,
-  "realtimeToken": "vgr_...",
-  "expiresAt": "2026-06-20 00:00:00"
+  "messagingCore": { "baseUrl": "https://..." },
+  "realtime": {
+    "realtimeToken": "mrt_...",
+    "expiresAt": "2026-06-20 00:00:00",
+    "protocol": "messaging.realtime.v1",
+    "connectPath": "/realtime/connect"
+  },
+  "proxied": { "route": "/realtime/token", "upstreamStatus": 201 }
 }
 ```
 
-`GET /v1/realtime` upgrades to a WebSocket. Browser and WebView clients authenticate with subprotocols:
+The returned Core `connectPath` upgrades to a WebSocket. Browser and WebView clients authenticate by sending the Core realtime token as the `token` query parameter and using the Core protocol:
 
 ```ts
-new WebSocket(url, ["voyager.realtime.v1", realtimeToken]);
+new WebSocket(url, ["messaging.realtime.v1"]);
 ```
 
 The server responds with the selected protocol:
 
 ```text
-voyager.realtime.v1
+messaging.realtime.v1
 ```
 
-Realtime events are hints only. Clients must recover authoritative state through `GET /v1/rooms/{roomId}`, `GET /v1/rooms/{roomId}/messages`, or `GET /v1/sync`. When a room hint carries `serverSequence`, foreground clients should fetch the exact message window with `GET /v1/rooms/{roomId}/messages?after={serverSequence - 1}&limit=1`; broader overlap/sync remains the fallback for sequence-less hints and missed events.
+Messaging realtime events are hints only. Clients must recover authoritative state through `GET /v1/rooms/{roomId}`, `GET /v1/rooms/{roomId}/messages`, or `GET /v1/sync`. When a room hint carries `serverSequence`, foreground clients should fetch the exact message window with `GET /v1/rooms/{roomId}/messages?after={serverSequence - 1}&limit=1`; broader overlap/sync remains the fallback for sequence-less hints and missed events.
 
-Realtime tokens are one-use, short-lived socket credentials bound to the issuing account, session, device, and principal. Revoked sessions, expired sessions, revoked devices, inactive accounts, expired tokens, and reused tokens cannot open the socket. Clients should request a fresh realtime token for every reconnect attempt.
+Core realtime tokens are one-use, short-lived socket credentials bound to the scoped Messaging Core identity. Revoked sessions, expired sessions, revoked devices, inactive accounts, expired tokens, and reused tokens cannot open the socket. Clients should request a fresh realtime token for every reconnect attempt.
 
 Realtime token minting is rate-limited per account/device. Token expiration is checked when opening the socket; an already-open socket may remain connected after the token's `expiresAt`.
+
+Call lifecycle hints use Voyager's explicit call runtime socket, not the messaging realtime lane:
+
+```http
+POST /v1/calls/realtime/token
+Authorization: Bearer <sessionToken>
+```
+
+Clients open `GET /v1/calls/realtime` with WebSocket subprotocols `["voyager.call-realtime.v1", realtimeToken]`. This call socket emits only `call.*` lifecycle events. It does not emit room/message/thread realtime events and must not be used as a messaging fallback.
 
 Ready event:
 
@@ -876,7 +890,7 @@ The local backend smoke test validates the most important stable response shapes
 npm run smoke:backend:local
 ```
 
-Those assertions cover common error payloads, auth results, bootstrap, sync, rooms, room invitations, messages, realtime token minting, realtime `room.message` events, key packages, attachments, sidebar collections, and agent request surfaces. They are intentionally additive-friendly: new fields are allowed, but missing or renamed contract fields fail the smoke run.
+Those assertions cover common error payloads, auth results, bootstrap, sync, rooms, room invitations, messages, Core realtime token minting, Core realtime `room.message` events, call realtime events, key packages, attachments, sidebar collections, and agent request surfaces. They are intentionally additive-friendly: new fields are allowed, but missing or renamed contract fields fail the smoke run.
 
 `scripts/route-inventory-check.mjs` statically compares implemented Worker route/method pairs in `src/index.ts`, `src/backend/routes.ts`, and dynamically discovered `src/backend/routing/*-routes.ts` modules against `endpointStabilityCatalog`. It fails when a documented endpoint has no matching handler or an implemented `/v1` route is not categorized.
 

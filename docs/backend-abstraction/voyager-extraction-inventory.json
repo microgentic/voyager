@@ -200,6 +200,26 @@
     },
     {
       "method": "GET",
+      "path": "/v1/calls/realtime",
+      "stability": "future-sensitive",
+      "implementedIn": "src/index.ts",
+      "category": "CORE_PUBLIC",
+      "extractionTarget": "Core call route, feature/config gated by deployment.",
+      "strategyReference": "backend-abstraction-implementation-strategy.md:404",
+      "rationale": "Calls are reusable core communication substrate and can be disabled per deployment."
+    },
+    {
+      "method": "POST",
+      "path": "/v1/calls/realtime/token",
+      "stability": "future-sensitive",
+      "implementedIn": "src/index.ts",
+      "category": "CORE_PUBLIC",
+      "extractionTarget": "Core call route, feature/config gated by deployment.",
+      "strategyReference": "backend-abstraction-implementation-strategy.md:404",
+      "rationale": "Calls are reusable core communication substrate and can be disabled per deployment."
+    },
+    {
+      "method": "GET",
       "path": "/v1/devices/{deviceId}/key-packages",
       "stability": "future-sensitive",
       "implementedIn": "src/backend/routing/identity-routes.ts",
@@ -287,26 +307,6 @@
       "extractionTarget": "Core messaging identity/key-package route.",
       "strategyReference": "backend-abstraction-implementation-strategy.md:404",
       "rationale": "Strategy lists this as part of the core public messaging surface or compatibility surface."
-    },
-    {
-      "method": "GET",
-      "path": "/v1/realtime",
-      "stability": "stable/current",
-      "implementedIn": "src/index.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Core realtime token/socket route.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:404",
-      "rationale": "Realtime sockets are core hints; HTTP sync remains source of truth."
-    },
-    {
-      "method": "POST",
-      "path": "/v1/realtime/token",
-      "stability": "stable/current",
-      "implementedIn": "src/index.ts",
-      "category": "CORE_PUBLIC",
-      "extractionTarget": "Core realtime token/socket route.",
-      "strategyReference": "backend-abstraction-implementation-strategy.md:404",
-      "rationale": "Realtime sockets are core hints; HTTP sync remains source of truth."
     },
     {
       "method": "GET",

@@ -56,7 +56,6 @@ export const endpointStabilityCatalog = [
   { method: "DELETE", path: "/v1/rooms/{roomId}/messages/{envelopeId}/pin", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages/{envelopeId}/ack", stability: "stable/current" },
   { method: "GET", path: "/v1/sync", stability: "stable/current" },
-  { method: "POST", path: "/v1/realtime/token", stability: "stable/current" },
   { method: "POST", path: "/v1/messaging-core/realtime/token", stability: "future-sensitive" },
   { method: "POST", path: "/v1/rooms/{roomId}/invitations", stability: "stable/current" },
   { method: "GET", path: "/v1/room-invitations", stability: "stable/current" },
@@ -75,7 +74,8 @@ export const endpointStabilityCatalog = [
   { method: "DELETE", path: "/v1/sidebar-collections/{collectionId}/items/{roomId}", stability: "stable/current" },
   { method: "GET", path: "/v1/agent-requests", stability: "stable/current" },
   { method: "POST", path: "/v1/agent-requests", stability: "stable/current" },
-  { method: "GET", path: "/v1/realtime", stability: "stable/current" },
+  { method: "GET", path: "/v1/calls/realtime", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/realtime/token", stability: "future-sensitive" },
   { method: "GET", path: "/v1/devices/{deviceId}/key-packages", stability: "future-sensitive" },
   { method: "POST", path: "/v1/devices/{deviceId}/key-packages", stability: "future-sensitive" },
   { method: "GET", path: "/v1/principals/{principalId}/key-packages", stability: "future-sensitive" },
@@ -175,8 +175,8 @@ const CALL_RUNTIME_BOUNDARY_ROUTES = [
 ];
 
 const CALL_REALTIME_BOUNDARY_ROUTES = [
-  ["GET", "/v1/realtime"],
-  ["POST", "/v1/realtime/token"],
+  ["GET", "/v1/calls/realtime"],
+  ["POST", "/v1/calls/realtime/token"],
 ];
 
 const ACTIVE_CORE_FACADE_BOUNDARY_ROUTES = [
@@ -206,7 +206,7 @@ export const messagingCoreBoundaryCatalog = [
     method,
     path,
     boundary: "call-realtime-runtime",
-    diagnostics: path === "/v1/realtime" ? "websocket-protocol" : "none",
+    diagnostics: path === "/v1/calls/realtime" ? "websocket-protocol" : "none",
   })),
   ...ACTIVE_CORE_FACADE_BOUNDARY_ROUTES.map(([method, path]) => ({
     method,
@@ -495,6 +495,14 @@ export function assertRealtimeTokenResponse(payload, context) {
   string(value.expiresAt, `${context}.expiresAt`);
 }
 
+export function assertCallRealtimeTokenResponse(payload, context) {
+  const value = success(payload, context);
+  string(value.realtimeToken, `${context}.realtimeToken`);
+  string(value.expiresAt, `${context}.expiresAt`);
+  literal(value.protocol, "voyager.call-realtime.v1", `${context}.protocol`);
+  literal(value.connectPath, "/v1/calls/realtime", `${context}.connectPath`);
+}
+
 export function assertMessagingCoreSession(value, context) {
   const session = object(value, context);
   boolean(session.enabled, `${context}.enabled`);
@@ -654,8 +662,6 @@ function isCoreOwnedVoyagerRoute(endpoint) {
   const path = endpoint.path;
   return (
     path === "/v1/sync" ||
-    path === "/v1/realtime" ||
-    path === "/v1/realtime/token" ||
     path === "/v1/app/bootstrap" ||
     path === "/v1/principals" ||
     path.startsWith("/v1/principals/") ||

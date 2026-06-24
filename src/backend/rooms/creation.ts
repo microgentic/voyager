@@ -1,6 +1,6 @@
 import { randomId } from "../../crypto";
 import { HttpError, stringField } from "../../http";
-import { notifyRoomRealtime } from "../../realtime";
+import { notifyRoomCallRealtime } from "../../realtime";
 import type { AuthContext, Env } from "../../types";
 import type { JsonObject } from "../shared/types";
 import { sqliteTimestamp, stringArrayField, uniqueStrings } from "../utils";
@@ -231,13 +231,13 @@ async function endLiveCallRowsForArchivedRoom(
         JSON.stringify({ roomId, status: "ended", reason: "room_archived" }),
       )
       .run();
-    await notifyRoomRealtime(env, roomId, {
+    await notifyRoomCallRealtime(env, roomId, {
       type: "call.ended",
       callId: call.call_id,
       callType: call.call_type,
       endedReason: "room_archived",
     });
-    await notifyRoomRealtime(env, roomId, {
+    await notifyRoomCallRealtime(env, roomId, {
       type: "call.updated",
       callId: call.call_id,
       callType: call.call_type,
