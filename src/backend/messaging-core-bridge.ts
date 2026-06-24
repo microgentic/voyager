@@ -819,7 +819,7 @@ function adaptCoreMessage(
       reason: null,
     },
     threadRootEnvelopeId: stringValue(message.rootEnvelopeId),
-    alsoSentToRoom: false,
+    alsoSentToRoom: Boolean(message.alsoSentToRoom),
     threadSummary: adaptCoreThreadSummary(objectValue(message.threadSummary)),
     receiptSummary: {
       total: numberValue(receipt.total) ?? 0,
