@@ -793,6 +793,7 @@ function adaptCoreMessage(
   const ciphertext = stringValue(message.bodyCiphertext) ?? "deleted-for-everyone";
   const deletedAt = stringValue(message.deletedAt);
   const receipt = objectValue(message.receiptSummary) ?? {};
+  const receiptStatus = coreReceiptStatus(receipt);
   return {
     envelopeId: requiredCoreString(message, "envelopeId"),
     roomId: requiredCoreString(message, "roomId"),
@@ -825,6 +826,7 @@ function adaptCoreMessage(
       pending: Math.max(0, (numberValue(receipt.total) ?? 0) - (numberValue(receipt.delivered) ?? 0)),
       delivered: numberValue(receipt.delivered) ?? 0,
       read: numberValue(receipt.read) ?? 0,
+      status: receiptStatus,
     },
     reactions: jsonObjectArrayValue(message.reactions).map((reaction) => ({
       reaction: requiredCoreString(reaction, "reaction"),
@@ -833,6 +835,18 @@ function adaptCoreMessage(
     })),
     pin: adaptCorePin(objectValue(message.pin)),
   };
+}
+
+function coreReceiptStatus(receipt: JsonObject): "sent" | "delivered" | "read" {
+  const status = stringValue(receipt.status);
+  if (status === "sent" || status === "delivered" || status === "read") {
+    return status;
+  }
+  const read = numberValue(receipt.read) ?? 0;
+  if (read > 0) return "read";
+  const delivered = numberValue(receipt.delivered) ?? 0;
+  if (delivered > 0) return "delivered";
+  return "sent";
 }
 
 function adaptCoreForwardedFrom(forwardedFrom: JsonObject | null): JsonObject | null {
