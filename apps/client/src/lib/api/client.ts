@@ -1,4 +1,4 @@
-import { getApiBase, messagingCoreRealtimeEnabled } from '$lib/config';
+import { getApiBase } from '$lib/config';
 import { ApiError } from './errors';
 import type {
 	Account,
@@ -95,13 +95,7 @@ export class VoyagerClient {
 	}
 
 	private async createPreferredRealtimeToken(): Promise<RealtimeTokenResult> {
-		if (!messagingCoreRealtimeEnabled()) return this.createRealtimeToken();
-		try {
-			return await this.createMessagingCoreRealtimeToken();
-		} catch (error) {
-			console.warn('Messaging Core realtime token failed; falling back to Voyager realtime.', error);
-			return this.createRealtimeToken();
-		}
+		return this.createMessagingCoreRealtimeToken();
 	}
 
 	private async createMessagingCoreRealtimeToken(): Promise<RealtimeTokenResult> {

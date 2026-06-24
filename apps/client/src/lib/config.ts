@@ -12,7 +12,6 @@ const LOCAL_WORKER_BASE = 'http://127.0.0.1:8787';
 // Android emulators reach the host machine via the 10.0.2.2 alias, not 127.0.0.1.
 const ANDROID_EMULATOR_WORKER_BASE = 'http://10.0.2.2:8787';
 const STORAGE_KEY = 'voyager.apiBase';
-const CORE_REALTIME_STORAGE_KEY = 'voyager.messagingCoreRealtime';
 
 function envBase(): string | undefined {
 	try {
@@ -55,22 +54,6 @@ export function setApiBase(base: string | null): void {
 
 export function defaultApiBase(): string {
 	return stripTrailingSlash(envBase() ?? DEFAULT_API_BASE);
-}
-
-export function messagingCoreRealtimeEnabled(): boolean {
-	if (typeof localStorage !== 'undefined') {
-		const stored = localStorage.getItem(CORE_REALTIME_STORAGE_KEY);
-		if (stored === '1' || stored === 'true') return true;
-		if (stored === '0' || stored === 'false') return false;
-	}
-	try {
-		const value = import.meta.env?.VITE_MESSAGING_CORE_REALTIME;
-		const allCoreValue = import.meta.env?.VITE_MESSAGING_CORE_ALL_CUTOVER;
-		if (allCoreValue === '1' || allCoreValue === 'true') return true;
-		return value === '1' || value === 'true';
-	} catch {
-		return false;
-	}
 }
 
 function stripTrailingSlash(value: string): string {

@@ -149,21 +149,28 @@ export async function archiveRoom(
   roomId: string,
 ): Promise<JsonObject> {
   await requireRoomOwner(env, auth, roomId);
-  const liveCalls = await env.CONTROL_DB.prepare(
-    "SELECT call_id, call_type FROM calls WHERE room_id = ? AND status IN ('ringing', 'active')",
-  )
-    .bind(roomId)
-    .all<{ call_id: string; call_type: "audio" | "video" }>();
   await env.CONTROL_DB.prepare(
     "UPDATE rooms SET status = 'archived', archived_at = CURRENT_TIMESTAMP, version = version + 1, updated_at = CURRENT_TIMESTAMP WHERE room_id = ? AND status = 'active'",
   )
     .bind(roomId)
     .run();
-  await endLiveCallsForArchivedRoom(env, roomId, liveCalls.results ?? []);
+  await endLiveCallsForArchivedRoom(env, roomId);
   return publicRoomWithMembers(env, await getRoom(env, roomId));
 }
 
-async function endLiveCallsForArchivedRoom(
+export async function endLiveCallsForArchivedRoom(
+  env: Env,
+  roomId: string,
+): Promise<void> {
+  const liveCalls = await env.CONTROL_DB.prepare(
+    "SELECT call_id, call_type FROM calls WHERE room_id = ? AND status IN ('ringing', 'active')",
+  )
+    .bind(roomId)
+    .all<{ call_id: string; call_type: "audio" | "video" }>();
+  await endLiveCallRowsForArchivedRoom(env, roomId, liveCalls.results ?? []);
+}
+
+async function endLiveCallRowsForArchivedRoom(
   env: Env,
   roomId: string,
   liveCalls: Array<{ call_id: string; call_type: "audio" | "video" }>,

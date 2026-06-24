@@ -70,6 +70,7 @@ async function apiRaw(path, options = {}) {
   });
   const contentType = response.headers.get("content-type") ?? "";
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+  assertNoVoyagerLegacySource(payload, `${options.method ?? "GET"} ${path}`);
   return { response, payload };
 }
 
@@ -93,27 +94,54 @@ function assertServerTiming(header, metrics, context) {
   }
 }
 
-function assertMessagingCoreFallbackDiagnostics(payload, fallbackReason, context) {
-  const diagnostics = payload?.messagingCoreCutover;
-  if (!diagnostics || typeof diagnostics !== "object" || Array.isArray(diagnostics)) {
-    throw new Error(`${context} missing messagingCoreCutover fallback diagnostics`);
+function assertNoVoyagerLegacySource(value, context, path = "$") {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoVoyagerLegacySource(item, context, `${path}[${index}]`));
+    return;
   }
-  if (
-    diagnostics.source !== "voyager_legacy" ||
-    diagnostics.fallbackReason !== fallbackReason ||
-    diagnostics.route !== null ||
-    diagnostics.upstreamStatus !== null
-  ) {
-    throw new Error(`${context} used unexpected Messaging Core fallback diagnostics: ${JSON.stringify(diagnostics)}`);
+  if (value.source === "voyager_legacy") {
+    throw new Error(`${context} unexpectedly returned voyager_legacy at ${path}: ${JSON.stringify(value)}`);
   }
-  const flags = diagnostics.flags;
-  if (!flags || typeof flags !== "object" || Array.isArray(flags) || typeof flags.allCoreMessaging !== "boolean") {
-    throw new Error(`${context} missing Messaging Core fallback flag snapshot`);
+  for (const [key, child] of Object.entries(value)) {
+    assertNoVoyagerLegacySource(child, context, `${path}.${key}`);
   }
 }
 
 function realtimeUrl() {
   return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/realtime`;
+}
+
+function realtimeSocketSpec(token) {
+  if (typeof token === "string") {
+    return { url: realtimeUrl(), protocols: ["voyager.realtime.v1", token] };
+  }
+  const url = new URL(token.connectPath, token.baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("token", token.realtimeToken);
+  return { url: url.toString(), protocols: [token.protocol] };
+}
+
+async function createMessagingCoreRealtimeToken(headers, context) {
+  const result = await api("/v1/messaging-core/realtime/token", {
+    method: "POST",
+    headers,
+    json: {}
+  });
+  const token = {
+    baseUrl: result.messagingCore?.baseUrl,
+    connectPath: result.realtime?.connectPath,
+    protocol: result.realtime?.protocol,
+    realtimeToken: result.realtime?.realtimeToken,
+    expiresAt: result.realtime?.expiresAt
+  };
+  if (!token.baseUrl || !token.connectPath || !token.protocol || !token.realtimeToken) {
+    throw new Error(`${context} returned incomplete Messaging Core realtime token: ${JSON.stringify(result)}`);
+  }
+  if (token.protocol !== "messaging.realtime.v1") {
+    throw new Error(`${context} returned unexpected Messaging Core realtime protocol: ${token.protocol}`);
+  }
+  return token;
 }
 
 async function openRealtimeEventWatcher(
@@ -126,7 +154,8 @@ async function openRealtimeEventWatcher(
     throw new Error("Node WebSocket global is required for realtime smoke coverage");
   }
   return await new Promise((resolveReady, rejectReady) => {
-    const socket = new WebSocket(realtimeUrl(), ["voyager.realtime.v1", token]);
+    const socketSpec = realtimeSocketSpec(token);
+    const socket = new WebSocket(socketSpec.url, socketSpec.protocols);
     let ready = false;
     let settled = false;
     let messageTimeout;
@@ -289,7 +318,8 @@ async function expectRealtimeConnectFailure(token, timeoutMs = 5_000) {
     throw new Error("Node WebSocket global is required for realtime smoke coverage");
   }
   await new Promise((resolve, reject) => {
-    const socket = new WebSocket(realtimeUrl(), ["voyager.realtime.v1", token]);
+    const socketSpec = realtimeSocketSpec(token);
+    const socket = new WebSocket(socketSpec.url, socketSpec.protocols);
     const timeout = setTimeout(() => {
       socket.close(1000, "smoke_timeout");
       reject(new Error("realtime websocket unexpectedly stayed pending"));
@@ -702,10 +732,8 @@ const ownerKeyPackage = await api(`/v1/devices/${owner.device.deviceId}/key-pack
   }
 });
 assertKeyPackageResponse(ownerKeyPackage, "POST /v1/devices/{deviceId}/key-packages");
-assertMessagingCoreFallbackDiagnostics(ownerKeyPackage, "identity_cutover_not_implemented", "POST /v1/devices/{deviceId}/key-packages");
 
 const listedPrincipals = await api("/v1/principals", { headers: userHeaders });
-assertMessagingCoreFallbackDiagnostics(listedPrincipals, "identity_cutover_not_implemented", "GET /v1/principals");
 if (!Array.isArray(listedPrincipals.principals) || !listedPrincipals.principals.some((principal) => principal.principalId === owner.principal.principalId)) {
   throw new Error("principal listing did not include the owner principal");
 }
@@ -713,11 +741,6 @@ if (!Array.isArray(listedPrincipals.principals) || !listedPrincipals.principals.
 const listedPrincipalDevices = await api(`/v1/principals/${owner.principal.principalId}/devices`, {
   headers: userHeaders
 });
-assertMessagingCoreFallbackDiagnostics(
-  listedPrincipalDevices,
-  "identity_cutover_not_implemented",
-  "GET /v1/principals/{principalId}/devices"
-);
 if (!Array.isArray(listedPrincipalDevices.devices) || !listedPrincipalDevices.devices.some((device) => device.deviceId === owner.device.deviceId)) {
   throw new Error("principal device listing did not include the owner device");
 }
@@ -726,7 +749,6 @@ const listedKeys = await api(`/v1/principals/${owner.principal.principalId}/key-
   headers: userHeaders
 });
 assertKeyPackagesResponse(listedKeys, "GET /v1/principals/{principalId}/key-packages");
-assertMessagingCoreFallbackDiagnostics(listedKeys, "identity_cutover_not_implemented", "GET /v1/principals/{principalId}/key-packages");
 if (listedKeys.keyPackages.length < 1) throw new Error("key package listing failed");
 
 const claimedKeyPackage = await api(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
@@ -734,7 +756,6 @@ const claimedKeyPackage = await api(`/v1/key-packages/${ownerKeyPackage.keyPacka
   headers: userHeaders
 });
 assertKeyPackageResponse(claimedKeyPackage, "POST /v1/key-packages/{keyPackageId}/claim");
-assertMessagingCoreFallbackDiagnostics(claimedKeyPackage, "identity_cutover_not_implemented", "POST /v1/key-packages/{keyPackageId}/claim");
 
 await expectFailure(`/v1/key-packages/${ownerKeyPackage.keyPackage.keyPackageId}/claim`, {
   method: "POST",
@@ -756,14 +777,12 @@ const ownKeyPackages = await api(`/v1/devices/${owner.device.deviceId}/key-packa
   headers: ownerHeaders
 });
 assertPaginatedKeyPackagesResponse(ownKeyPackages, "GET /v1/devices/{deviceId}/key-packages");
-assertMessagingCoreFallbackDiagnostics(ownKeyPackages, "identity_cutover_not_implemented", "GET /v1/devices/{deviceId}/key-packages");
 if (ownKeyPackages.keyPackages.length !== 1 || ownKeyPackages.nextCursor === null) throw new Error("own key package pagination failed");
 
 const revokedKeyPackage = await api(`/v1/key-packages/${ownerRevokedKeyPackage.keyPackage.keyPackageId}/revoke`, {
   method: "POST",
   headers: ownerHeaders
 });
-assertMessagingCoreFallbackDiagnostics(revokedKeyPackage, "identity_cutover_not_implemented", "POST /v1/key-packages/{keyPackageId}/revoke");
 
 const direct = await api("/v1/rooms/direct", {
   method: "POST",
@@ -806,7 +825,6 @@ assertServerTiming(
 );
 const createdCall = createdCallResult.payload;
 assertCallResponse(createdCall, "POST /v1/rooms/{roomId}/calls");
-assertMessagingCoreFallbackDiagnostics(createdCall, "call_cutover_not_implemented", "POST /v1/rooms/{roomId}/calls");
 if (createdCall.call.status !== "ringing" || createdCall.call.callType !== "audio") {
   throw new Error("created audio call did not enter ringing state");
 }
@@ -837,14 +855,12 @@ if (
 
 const listedCalls = await api(`/v1/rooms/${direct.room.roomId}/calls`, { headers: userHeaders });
 assertCallsResponse(listedCalls, "GET /v1/rooms/{roomId}/calls");
-assertMessagingCoreFallbackDiagnostics(listedCalls, "call_cutover_not_implemented", "GET /v1/rooms/{roomId}/calls");
 if (!listedCalls.calls.some((call) => call.callId === createdCall.call.callId)) {
   throw new Error("room call list did not include the created call");
 }
 
 const fetchedCall = await api(`/v1/calls/${createdCall.call.callId}`, { headers: userHeaders });
 assertCallResponse(fetchedCall, "GET /v1/calls/{callId}");
-assertMessagingCoreFallbackDiagnostics(fetchedCall, "call_cutover_not_implemented", "GET /v1/calls/{callId}");
 if (fetchedCall.call.callId !== createdCall.call.callId) {
   throw new Error("call fetch returned the wrong call");
 }
@@ -1825,12 +1841,8 @@ await api(`/v1/rooms/${group.room.roomId}/members`, {
 
 await expectRealtimeConnectFailure(relogin.sessionToken);
 
-const realtimeToken = await api("/v1/realtime/token", {
-  method: "POST",
-  headers: userHeaders
-});
-assertRealtimeTokenResponse(realtimeToken, "POST /v1/realtime/token");
-const realtimeWatcher = await openRealtimeMessageWatcher(realtimeToken.realtimeToken, direct.room.roomId);
+const realtimeToken = await createMessagingCoreRealtimeToken(userHeaders, "POST /v1/messaging-core/realtime/token");
+const realtimeWatcher = await openRealtimeMessageWatcher(realtimeToken, direct.room.roomId);
 
 const directMessageResult = await apiRaw(`/v1/rooms/${direct.room.roomId}/messages`, {
   method: "POST",
@@ -1976,7 +1988,7 @@ if (realtimeEvent.serverSequence !== directMessage.message.serverSequence) {
 if (realtimeEvent.senderDeviceId !== owner.device.deviceId) {
   throw new Error("realtime event did not reference the sender device");
 }
-await expectRealtimeConnectFailure(realtimeToken.realtimeToken);
+await expectRealtimeConnectFailure(realtimeToken);
 
 const forwardedToGroup = await api(`/v1/rooms/${direct.room.roomId}/messages/${directMessage.message.envelopeId}/forward`, {
   method: "POST",
@@ -2240,13 +2252,12 @@ if (!observerThreadsAfterFollow.items.some((item) => item.root.envelopeId === th
   throw new Error("explicitly followed unparticipated thread did not appear in the thread inbox");
 }
 
-const threadMutationRealtimeToken = await api("/v1/realtime/token", {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertRealtimeTokenResponse(threadMutationRealtimeToken, "POST /v1/realtime/token thread mutation");
+const threadMutationRealtimeToken = await createMessagingCoreRealtimeToken(
+  ownerHeaders,
+  "POST /v1/messaging-core/realtime/token thread mutation"
+);
 const threadMutationRealtimeWatcher = await openRealtimeThreadWatcher(
-  threadMutationRealtimeToken.realtimeToken,
+  threadMutationRealtimeToken,
   group.room.roomId
 );
 const editedThreadReply = await api(`/v1/rooms/${group.room.roomId}/messages/${threadReply.message.envelopeId}`, {
@@ -2505,7 +2516,6 @@ for (const metric of ["bootstrap;dur=", "auth;dur=", "read;dur=", "rooms;dur=", 
 }
 const bootstrap = bootstrapResult.payload.bootstrap;
 assertBootstrapResponse(bootstrapResult.payload, "GET /v1/app/bootstrap");
-assertMessagingCoreFallbackDiagnostics(bootstrapResult.payload, "identity_cutover_not_implemented", "GET /v1/app/bootstrap");
 if (bootstrap.account.accountId !== login.account.accountId) throw new Error("bootstrap identity did not match logged-in account");
 if (!Array.isArray(bootstrap.roles) || !Array.isArray(bootstrap.rooms) || !Array.isArray(bootstrap.pendingMessages)) {
   throw new Error("bootstrap response shape is invalid");
@@ -2566,11 +2576,6 @@ if (!hiddenBootstrapResult.response.ok) {
   throw new Error(`GET bootstrap after delete-for-me failed ${hiddenBootstrapResult.response.status}: ${JSON.stringify(hiddenBootstrapResult.payload)}`);
 }
 assertBootstrapResponse(hiddenBootstrapResult.payload, "GET /v1/app/bootstrap after delete-for-me");
-assertMessagingCoreFallbackDiagnostics(
-  hiddenBootstrapResult.payload,
-  "identity_cutover_not_implemented",
-  "GET /v1/app/bootstrap after delete-for-me"
-);
 if (hiddenBootstrapResult.payload.bootstrap.pendingMessages.some((message) => message.envelopeId === directMessage.message.envelopeId)) {
   throw new Error("delete-for-me message remained visible to deleting account bootstrap");
 }
@@ -2732,12 +2737,8 @@ const completedAttachment = await api(`/v1/attachments/${attachment.attachment.a
 });
 assertAttachmentResponse(completedAttachment, "POST /v1/attachments/{attachmentId}/complete");
 
-const groupRealtimeToken = await api("/v1/realtime/token", {
-  method: "POST",
-  headers: userHeaders
-});
-assertRealtimeTokenResponse(groupRealtimeToken, "POST /v1/realtime/token group");
-const groupRealtimeWatcher = await openRealtimeMessageWatcher(groupRealtimeToken.realtimeToken, group.room.roomId);
+const groupRealtimeToken = await createMessagingCoreRealtimeToken(userHeaders, "POST /v1/messaging-core/realtime/token group");
+const groupRealtimeWatcher = await openRealtimeMessageWatcher(groupRealtimeToken, group.room.roomId);
 
 const groupMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
   method: "POST",

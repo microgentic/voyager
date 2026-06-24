@@ -33,6 +33,7 @@ import {
 import { CallCoordinator, ConversationCoordinator, handleBackendFirstRoutes } from "./backend";
 import {
   createMessagingCoreSessionPayload,
+  fetchMessagingCoreAttachmentUsage,
   fetchMessagingCoreAttachmentDownloadCutoverProxy,
   fetchMessagingCoreAttachmentUploadCutoverProxy,
   fetchMessagingCoreMessageCutoverProxy,
@@ -41,10 +42,7 @@ import {
   fetchMessagingCoreSyncCutoverProxy,
   messagingCoreAttachmentAllocateBody,
   messagingCoreAttachmentCompleteBody,
-  messagingCoreCutoverFallbackDiagnostics,
-  messagingCoreMessageCutoverEnabled,
-  messagingCoreRoomCutoverEnabled,
-  messagingCoreSyncCutoverEnabled,
+  syncMessagingCorePrincipal,
 } from "./backend/messaging-core-bridge";
 import { getCallRealtimeStatus } from "./backend/operations";
 import { ROOM_INVITATION_DAYS } from "./backend/rooms/types";
@@ -256,7 +254,6 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       ok: true,
       realtimeToken: token.token,
       expiresAt: token.expiresAt,
-      messagingCoreCutover: messagingCoreCutoverFallbackDiagnostics(env, "voyager_realtime_token_route"),
     });
   }
 
@@ -272,6 +269,11 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
       ok: true,
       ...(await fetchMessagingCoreRealtimeTokenProxy(env, messagingCoreIdentity(auth))),
     });
+  }
+
+  const messagingCoreBootstrapResponse = await handleMessagingCoreBootstrap(request, env, url, requestId, auth, authTimingMs);
+  if (messagingCoreBootstrapResponse) {
+    return messagingCoreBootstrapResponse;
   }
 
   const messagingCoreRoomCutoverResponse = await handleMessagingCoreRoomCutover(request, env, url, auth);
@@ -291,7 +293,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
 
   const backendFirstResponse = await handleBackendFirstRoutes(request, env, url, requestId, auth, authTimingMs);
   if (backendFirstResponse) {
-    return annotateMessagingCoreLegacyFallback(backendFirstResponse, env, request, url);
+    return backendFirstResponse;
   }
 
   if (url.pathname === "/v1/me") {
@@ -605,7 +607,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   if (url.pathname === "/v1/admin/usage") {
     requireMethod(request, "GET");
     requireAdmin(auth, ["quota_operator", "security_admin", "auditor"]);
-    return json({ ok: true, usage: await getUsage(env) });
+    return json({ ok: true, usage: await getCoreOnlyUsage(env) });
   }
 
   if (url.pathname === "/v1/admin/calls/realtime-status") {
@@ -621,6 +623,24 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   }
 
   throw new HttpError(404, "not_found", "Route not found");
+}
+
+async function getCoreOnlyUsage(env: Env): Promise<Record<string, unknown>> {
+  const usage = await getUsage(env);
+  const attachmentUsage = await fetchMessagingCoreAttachmentUsage(env);
+  if (!attachmentUsage) return usage;
+  const activeAttachmentCount = typeof attachmentUsage.activeAttachmentCount === "number"
+    ? attachmentUsage.activeAttachmentCount
+    : usage.attachments;
+  return {
+    ...usage,
+    attachments: activeAttachmentCount,
+    attachmentBytes: {
+      activeExpectedBytes: attachmentUsage.activeExpectedBytes,
+      allocatedExpectedBytesLast24h: attachmentUsage.allocatedExpectedBytesLast24h,
+      uploadedStoredBytes: attachmentUsage.uploadedStoredBytes,
+    },
+  };
 }
 
 function publicPrincipal(principal: PrincipalRow) {
@@ -737,14 +757,70 @@ function clientIp(request: Request): string {
   return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 }
 
+async function handleMessagingCoreBootstrap(
+  request: Request,
+  env: Env,
+  url: URL,
+  requestId: string,
+  auth: AuthContext,
+  authTimingMs: number,
+): Promise<Response | null> {
+  if (url.pathname !== "/v1/app/bootstrap") return null;
+  requireMethod(request, "GET");
+  const startedAt = performance.now();
+  const syncStartedAt = performance.now();
+  const result = await fetchMessagingCoreSyncCutoverProxy(
+    env,
+    messagingCoreIdentity(auth),
+    proxyQuery(url, ["limit"]),
+  );
+  const syncMs = durationSince(syncStartedAt);
+  const sync = result.payload.sync;
+  if (!sync || typeof sync !== "object" || Array.isArray(sync)) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core sync response is missing the expected bootstrap payload.",
+    );
+  }
+  const syncPayload = sync as Record<string, unknown>;
+  const rooms = Array.isArray(syncPayload.rooms) ? syncPayload.rooms : [];
+  const pendingMessages = Array.isArray(syncPayload.pendingMessages) ? syncPayload.pendingMessages : [];
+  const serverTime = typeof syncPayload.serverTime === "string" ? syncPayload.serverTime : new Date().toISOString();
+  const roomsNextCursor = typeof syncPayload.roomsNextCursor === "string" ? syncPayload.roomsNextCursor : null;
+  return json(
+    {
+      ok: true,
+      bootstrap: {
+        account: publicAccount(auth.account),
+        principal: publicPrincipal(auth.principal),
+        device: publicDevice(auth.device),
+        roles: auth.roles,
+        rooms,
+        roomsNextCursor,
+        pendingMessages,
+        serverTime,
+        requestId,
+      },
+      messagingCoreCutover: result.payload.messagingCoreCutover,
+    },
+    {
+      status: result.status,
+      headers: readTimingHeaders("bootstrap", authTimingMs, startedAt, [
+        ["rooms", syncMs],
+        ["messages", 0],
+      ]),
+    },
+  );
+}
+
 async function handleMessagingCoreRoomCutover(
   request: Request,
   env: Env,
   url: URL,
   auth: AuthContext,
 ): Promise<Response | null> {
-  if (!messagingCoreRoomCutoverEnabled(env)) return null;
-
+  const startedAt = performance.now();
   const route = await messagingCoreRoomCutoverRoute(request, env, url);
   if (!route) return null;
 
@@ -760,7 +836,10 @@ async function handleMessagingCoreRoomCutover(
       memberPrincipalId: route.memberPrincipalId,
     },
   );
-  return json(result.payload, { status: result.status });
+  return json(result.payload, {
+    status: result.status,
+    headers: coreProxyTimingHeaders(messagingCoreRoomTimingMetric(route), startedAt),
+  });
 }
 
 async function messagingCoreRoomCutoverRoute(
@@ -783,7 +862,7 @@ async function messagingCoreRoomCutoverRoute(
     return {
       method: "POST",
       path: "/rooms/direct",
-      body: messagingCoreDirectRoomBody(await readJsonObject(request)),
+      body: await messagingCoreDirectRoomBody(env, await readJsonObject(request)),
       responseKind: "room",
     };
   }
@@ -841,8 +920,6 @@ async function messagingCoreRoomCutoverRoute(
   }
 
   if (url.pathname === "/v1/room-invitations" && request.method === "GET") {
-    const status = url.searchParams.get("status");
-    if (status && status !== "pending") return null;
     return { method: "GET", path: "/room-invitations", responseKind: "invitations" };
   }
 
@@ -902,7 +979,7 @@ async function messagingCoreRoomCutoverRoute(
   return null;
 }
 
-function messagingCoreDirectRoomBody(body: Record<string, unknown>): Record<string, unknown> {
+async function messagingCoreDirectRoomBody(env: Env, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const principalIds = stringArrayField(body, "principalIds", { maxItems: 1, maxLength: 128 });
   if (principalIds.length !== 1) {
     throw new HttpError(
@@ -911,6 +988,7 @@ function messagingCoreDirectRoomBody(body: Record<string, unknown>): Record<stri
       "Direct rooms require exactly two principals",
     );
   }
+  await syncMessagingCorePrincipal(env, principalIds[0]);
   return {
     principalId: principalIds[0],
     title: optionalMessagingCoreBodyString(body, "name", { maxLength: 120 }),
@@ -947,6 +1025,19 @@ function messagingCoreRoomPatchBody(body: Record<string, unknown>): Record<strin
   return patch;
 }
 
+function messagingCorePublicSendBody(body: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...body };
+  delete sanitized.forwardedFromRoomId;
+  delete sanitized.forwardedFromEnvelopeId;
+  delete sanitized.forwardedFromSenderPrincipalId;
+  delete sanitized.rootEnvelopeId;
+  delete sanitized.threadRootEnvelopeId;
+  delete sanitized.alsoSendToRoom;
+  delete sanitized.alsoSentToRoom;
+  delete sanitized.threadReply;
+  return sanitized;
+}
+
 async function messagingCoreMemberAddBody(env: Env, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const principalId = requiredMessagingCoreBodyString(body, "principalId");
   const principal = await loadActiveMessagingCoreCutoverPrincipal(env, principalId);
@@ -957,6 +1048,7 @@ async function messagingCoreMemberAddBody(env: Env, body: Record<string, unknown
       "Human principals must accept a room invitation",
     );
   }
+  await syncMessagingCorePrincipal(env, principalId);
   return { principalId, role: "agent" };
 }
 
@@ -984,6 +1076,7 @@ async function messagingCoreInvitationBody(env: Env, body: Record<string, unknow
       "Agent principals should be added directly by a room admin",
     );
   }
+  await syncMessagingCorePrincipal(env, principalId);
   return {
     principalId,
     role: optionalMessagingCoreInvitationRole(body),
@@ -1001,6 +1094,7 @@ async function messagingCoreOwnershipTransferBody(env: Env, body: Record<string,
       "Ownership can only transfer to an active human room member",
     );
   }
+  await syncMessagingCorePrincipal(env, toPrincipalId);
   return {
     toPrincipalId,
     expiresAt: optionalMessagingCoreBodyString(body, "expiresAt"),
@@ -1088,8 +1182,7 @@ async function handleMessagingCoreMessageCutover(
   url: URL,
   auth: AuthContext,
 ): Promise<Response | null> {
-  if (!messagingCoreMessageCutoverEnabled(env)) return null;
-
+  const startedAt = performance.now();
   const route = await messagingCoreMessageCutoverRoute(request, url);
   if (!route) return null;
 
@@ -1102,7 +1195,10 @@ async function handleMessagingCoreMessageCutover(
         request,
         route.query,
       );
-      return json(result.payload, { status: result.status });
+      return json(result.payload, {
+        status: result.status,
+        headers: coreProxyTimingHeaders("attachmentUpload", startedAt),
+      });
     }
 
     return fetchMessagingCoreAttachmentDownloadCutoverProxy(
@@ -1125,7 +1221,10 @@ async function handleMessagingCoreMessageCutover(
       roomId: route.roomId,
     },
   );
-  return json(result.payload, { status: result.status });
+  return json(result.payload, {
+    status: result.status,
+    headers: coreProxyTimingHeaders(messagingCoreMessageTimingMetric(route), startedAt),
+  });
 }
 
 async function messagingCoreMessageCutoverRoute(
@@ -1216,7 +1315,7 @@ async function messagingCoreMessageCutoverRoute(
     }
     if (request.method === "POST") {
       const body = await readJsonObject(request);
-      return { kind: "json", method: "POST", path: roomPath, body, responseKind: "message" };
+      return { kind: "json", method: "POST", path: roomPath, body: messagingCorePublicSendBody(body), responseKind: "message" };
     }
   }
 
@@ -1306,7 +1405,7 @@ async function messagingCoreMessageCutoverRoute(
         kind: "json",
         method: "GET",
         path: threadPath,
-        query: proxyQuery(url, ["after", "limit"]),
+        query: proxyQuery(url, ["after", "before", "limit"]),
         responseKind: "thread",
       };
     }
@@ -1355,7 +1454,6 @@ async function handleMessagingCoreSyncCutover(
   auth: AuthContext,
   authTimingMs: number,
 ): Promise<Response | null> {
-  if (!messagingCoreSyncCutoverEnabled(env)) return null;
   if (url.pathname !== "/v1/sync") return null;
   requireMethod(request, "GET");
   const startedAt = performance.now();
@@ -1370,122 +1468,60 @@ async function handleMessagingCoreSyncCutover(
   });
 }
 
-async function annotateMessagingCoreLegacyFallback(
-  response: Response,
-  env: Env,
-  request: Request,
-  url: URL,
-): Promise<Response> {
-  const fallbackReason = messagingCoreLegacyFallbackReason(env, request, url);
-  if (!fallbackReason) return response;
-  if (!(response.headers.get("content-type") ?? "").includes("application/json")) {
-    return response;
-  }
-
-  let payload: unknown;
-  try {
-    payload = await response.clone().json();
-  } catch {
-    return response;
-  }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload) || "messagingCoreCutover" in payload) {
-    return response;
-  }
-
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  return json(
-    {
-      ...(payload as Record<string, unknown>),
-      messagingCoreCutover: messagingCoreCutoverFallbackDiagnostics(env, fallbackReason),
-    },
-    {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    },
-  );
+function messagingCoreRoomTimingMetric(route: { method: string; path: string; responseKind: string }): string {
+  if (route.method === "PATCH" && /^\/rooms\/[^/]+$/.test(route.path)) return "roomUpdate";
+  if (route.method === "POST" && route.path.endsWith("/archive")) return "roomArchive";
+  if (route.method === "POST" && route.path.endsWith("/members")) return "roomMemberAdd";
+  if (route.method === "PATCH" && route.path.endsWith("/role")) return "roomMemberRole";
+  if (route.method === "DELETE" && /\/members\/[^/]+$/.test(route.path)) return "roomMemberRemove";
+  if (route.method === "POST" && route.path.endsWith("/leave")) return "roomLeave";
+  if (route.method === "POST" && route.path.endsWith("/invitations")) return "roomInvitation";
+  if (route.method === "POST" && route.path.includes("/ownership-transfers")) return "roomOwnershipTransfer";
+  if (route.method === "POST" && route.path === "/rooms/direct") return "roomDirectCreate";
+  if (route.method === "POST" && route.path === "/rooms/groups") return "roomGroupCreate";
+  return route.responseKind === "rooms" ? "rooms" : "room";
 }
 
-function messagingCoreLegacyFallbackReason(env: Env, request: Request, url: URL): string | null {
-  if (url.pathname === "/v1/sync" && request.method === "GET") {
-    return messagingCoreSyncCutoverEnabled(env) ? "sync_cutover_route_not_used" : "sync_cutover_disabled";
-  }
-  if (isMessagingCoreIdentityFallbackPath(request, url)) {
-    return "identity_cutover_not_implemented";
-  }
-  if (isMessagingCoreMessageFallbackPath(request, url)) {
-    return messagingCoreMessageCutoverEnabled(env) ? "message_cutover_route_not_supported" : "message_cutover_disabled";
-  }
-  if (isMessagingCoreRoomFallbackPath(request, url)) {
-    return messagingCoreRoomCutoverEnabled(env) ? "room_cutover_route_not_supported" : "room_cutover_disabled";
-  }
-  if (url.pathname === "/v1/realtime/token" && request.method === "POST") {
-    return "voyager_realtime_token_route";
-  }
-  if (isMessagingCoreCallFallbackPath(request, url)) {
-    return "call_cutover_not_implemented";
-  }
-  return null;
+function messagingCoreMessageTimingMetric(route: { method: string; path: string; responseKind: string }): string {
+  if (route.method === "POST" && /^\/rooms\/[^/]+\/messages$/.test(route.path)) return "message";
+  if (route.method === "PATCH" && /^\/rooms\/[^/]+\/messages\/[^/]+$/.test(route.path)) return "messageEdit";
+  if (route.method === "POST" && route.path.endsWith("/messages/delete")) return "messageDelete";
+  if (route.method === "POST" && route.path.endsWith("/forward")) return "messageForward";
+  if (route.path.includes("/thread")) return "thread";
+  if (route.path.includes("/reactions")) return "messageReaction";
+  if (route.path.endsWith("/pin")) return "messagePin";
+  if (route.path.endsWith("/ack")) return "messageAck";
+  return route.responseKind === "messages" ? "messages" : "message";
 }
 
-function isMessagingCoreIdentityFallbackPath(request: Request, url: URL): boolean {
-  if (url.pathname === "/v1/app/bootstrap" && request.method === "GET") return true;
-  if (url.pathname === "/v1/principals" && request.method === "GET") return true;
-  if (/^\/v1\/principals\/[^/]+\/devices$/.test(url.pathname) && request.method === "GET") return true;
-  if (/^\/v1\/principals\/[^/]+\/key-packages$/.test(url.pathname) && request.method === "GET") return true;
-  if (/^\/v1\/devices\/[^/]+\/key-packages$/.test(url.pathname) && ["GET", "POST"].includes(request.method)) {
-    return true;
-  }
-  if (/^\/v1\/key-packages\/[^/]+\/(?:claim|revoke)$/.test(url.pathname) && request.method === "POST") {
-    return true;
-  }
-  return false;
+function coreProxyTimingHeaders(routeName: string, startedAt: number): Record<string, string> {
+  const elapsedMs = durationSince(startedAt);
+  const legacyMutationMetrics = ["conversationDo", "conversationQueue", "conversationOperation"];
+  const legacyMessageMetrics = routeName === "message"
+    ? ["context", "insert", "postwrite", "realtime"]
+    : [];
+  return {
+    "server-timing": serverTimingHeader([
+      [routeName, elapsedMs],
+      ...legacyMutationMetrics.map((metric): [string, number] => [metric, 0]),
+      ...legacyMessageMetrics.map((metric): [string, number] => [metric, 0]),
+    ]),
+  };
 }
 
-function isMessagingCoreMessageFallbackPath(request: Request, url: URL): boolean {
-  if (request.method === "GET" && url.pathname === "/v1/threads") return true;
-  if (/^\/v1\/rooms\/[^/]+\/messages(?:\/.*)?$/.test(url.pathname)) return true;
-  if (request.method === "POST" && /^\/v1\/rooms\/[^/]+\/attachments$/.test(url.pathname)) return true;
-  if (/^\/v1\/attachments\/[^/]+(?:\/blob|\/complete)?$/.test(url.pathname)) return true;
-  return false;
-}
-
-function isMessagingCoreRoomFallbackPath(request: Request, url: URL): boolean {
-  if (url.pathname === "/v1/rooms" && request.method === "GET") return true;
-  if (url.pathname === "/v1/rooms/direct" && request.method === "POST") return true;
-  if (url.pathname === "/v1/rooms/groups" && request.method === "POST") return true;
-  if (url.pathname === "/v1/room-invitations" && request.method === "GET") return true;
-  if (/^\/v1\/room-invitations\/[^/]+\/(?:accept|decline)$/.test(url.pathname) && request.method === "POST") return true;
-  if (/^\/v1\/rooms\/[^/]+(?:\/archive|\/members(?:\/[^/]+(?:\/role)?)?|\/leave|\/invitations|\/ownership-transfers(?:\/[^/]+\/accept)?)?$/.test(url.pathname)) {
-    return true;
-  }
-  return false;
-}
-
-function isMessagingCoreCallFallbackPath(request: Request, url: URL): boolean {
-  if (request.method === "GET" && /^\/v1\/rooms\/[^/]+\/calls$/.test(url.pathname)) return true;
-  if (request.method === "POST" && /^\/v1\/rooms\/[^/]+\/calls$/.test(url.pathname)) return true;
-  if (request.method === "GET" && /^\/v1\/calls\/[^/]+$/.test(url.pathname)) return true;
-  if (/^\/v1\/calls\/[^/]+\/(?:join|leave|decline|mute|unmute|usage-report)$/.test(url.pathname) && request.method === "POST") {
-    return true;
-  }
-  if (/^\/v1\/calls\/[^/]+\/participants\/me$/.test(url.pathname) && request.method === "PATCH") {
-    return true;
-  }
-  if (/^\/v1\/calls\/[^/]+\/realtime\/(?:session|tracks|renegotiate|tracks\/close)$/.test(url.pathname) && request.method === "POST") {
-    return true;
-  }
-  return false;
-}
-
-function readTimingHeaders(routeName: string, authMs: number, startedAt: number): Record<string, string> {
+function readTimingHeaders(
+  routeName: string,
+  authMs: number,
+  startedAt: number,
+  extraMetrics: Array<[string, number]> = [],
+): Record<string, string> {
   const readMs = durationSince(startedAt);
   return {
     "server-timing": serverTimingHeader([
       [routeName, authMs + readMs],
       ["auth", authMs],
-      ["read", readMs]
+      ["read", readMs],
+      ...extraMetrics,
     ])
   };
 }
