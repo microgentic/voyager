@@ -742,7 +742,7 @@ export interface RealtimeTokenResult {
 	protocol: string;
 	connectPath: string;
 	baseUrl: string;
-	transport: 'voyager' | 'messaging-core';
+	transport: 'messaging-core' | 'call-runtime';
 }
 
 export interface RealtimeReadyEvent {

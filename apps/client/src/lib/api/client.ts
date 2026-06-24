@@ -48,7 +48,7 @@ import type {
 } from './types';
 
 type Json = Record<string, unknown>;
-export const REALTIME_PROTOCOL = 'voyager.realtime.v1';
+export const CALL_REALTIME_PROTOCOL = 'voyager.call-realtime.v1';
 export const MESSAGING_CORE_REALTIME_PROTOCOL = 'messaging.realtime.v1';
 
 export type RealtimeTransport = RealtimeTokenResult['transport'];
@@ -84,8 +84,8 @@ export class VoyagerClient {
 		const token =
 			transport === 'messaging-core'
 				? await this.createMessagingCoreRealtimeToken()
-				: transport === 'voyager'
-					? await this.createRealtimeToken()
+				: transport === 'call-runtime'
+					? await this.createCallRealtimeToken()
 					: await this.createPreferredRealtimeToken();
 		const url = realtimeSocketUrl(token.baseUrl, token.connectPath, token.transport, token.realtimeToken);
 		return {
@@ -117,19 +117,21 @@ export class VoyagerClient {
 		};
 	}
 
-	async createRealtimeToken(): Promise<RealtimeTokenResult> {
-		const res = await this.request<Pick<RealtimeTokenResult, 'realtimeToken' | 'expiresAt'> & { ok: true }>(
+	async createCallRealtimeToken(): Promise<RealtimeTokenResult> {
+		const res = await this.request<
+			Pick<RealtimeTokenResult, 'realtimeToken' | 'expiresAt' | 'protocol' | 'connectPath'> & { ok: true }
+		>(
 			'POST',
-			'/v1/realtime/token'
+			'/v1/calls/realtime/token'
 		);
 		const origin = getApiBase() || (typeof location !== 'undefined' ? location.origin : 'http://localhost');
 		return {
 			realtimeToken: res.realtimeToken,
 			expiresAt: res.expiresAt,
-			protocol: REALTIME_PROTOCOL,
-			connectPath: '/v1/realtime',
+			protocol: res.protocol ?? CALL_REALTIME_PROTOCOL,
+			connectPath: res.connectPath ?? '/v1/calls/realtime',
 			baseUrl: origin,
-			transport: 'voyager'
+			transport: 'call-runtime'
 		};
 	}
 

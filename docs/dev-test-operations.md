@@ -166,11 +166,11 @@ https://voyager-api-dev.microgentic-voyager.workers.dev
 ```
 
 That legacy smoke logs in with the disposable seeded accounts, verifies
-`/v1/app/bootstrap`, proves session tokens cannot directly open `/v1/realtime`,
-mints a short-lived realtime token, exercises attachment upload/download/delete
+`/v1/app/bootstrap`, proves legacy `/v1/realtime` routes are gone, mints a
+short-lived Messaging Core realtime token, exercises attachment upload/download/delete
 and a basic audio call lifecycle plus aggregate call usage reporting in an
 existing Ada/Grace room when available,
-sends a direct message, waits for the exact matching `room.message`, then verifies
+sends a direct message, waits for the exact matching Core `room.message`, then verifies
 idempotent retry, Conversation DO timing headers, and HTTP recovery reads. It
 acknowledges the smoke message, archives only a fallback room it had to create,
 leaves any smoke call, deletes any unreferenced smoke attachment, and revokes the
@@ -259,9 +259,10 @@ instead of `/`. The auth route guard must treat both paths as the root splash.
 If it only redirects authenticated users from `/`, a signed-in desktop launch can
 resolve auth successfully but remain on the root spinner forever.
 
-Desktop realtime also needs the Worker WebSocket origin in the Tauri CSP
-`connect-src`; allowing only the HTTPS API origin is not enough for
-`wss://.../v1/realtime`.
+Desktop realtime also needs the Worker WebSocket origins in the Tauri CSP
+`connect-src`; allowing only the HTTPS API origin is not enough for the
+Messaging Core WebSocket path or the Voyager call WebSocket path
+`wss://.../v1/calls/realtime`.
 
 The macOS app uses a desktop-only Tauri drag strip above the web shell. Keep it
 out of web and mobile layouts so mobile safe-area behavior and browser spacing

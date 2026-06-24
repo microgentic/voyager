@@ -7,11 +7,11 @@ import {
   checkRateLimit,
   cleanupTestDevices,
   completeCredentialReset,
-  consumeRealtimeSocketToken,
+  consumeCallRealtimeSocketToken,
   createDeviceForPrincipal,
   createCredentialReset,
   createInvitation,
-  createRealtimeSocketToken,
+  createCallRealtimeSocketToken,
   getActiveAdminRoles,
   getAuditEvents,
   getAuthContext,
@@ -49,7 +49,7 @@ import { ROOM_INVITATION_DAYS } from "./backend/rooms/types";
 import { sqliteTimestamp } from "./backend/utils";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
-import { handleRealtimeConnect, REALTIME_PROTOCOL, RealtimeMailbox } from "./realtime";
+import { CALL_REALTIME_PROTOCOL, handleCallRealtimeConnect, RealtimeMailbox } from "./realtime";
 import type { AuthContext, DeviceInput, DeviceRow, Env, PrincipalRow, SessionRow } from "./types";
 
 export { CallCoordinator, RealtimeMailbox };
@@ -227,33 +227,38 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return json(await authResultPayload(env, result), { status: 201 });
   }
 
-  if (url.pathname === "/v1/realtime") {
+  if (url.pathname === "/v1/calls/realtime") {
     requireMethod(request, "GET");
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return new Response("Expected WebSocket upgrade", { status: 426 });
+    }
     const origin = request.headers.get("origin");
     if (origin && !isAllowedOrigin(origin, env)) {
-      throw new HttpError(403, "origin_not_allowed", "Realtime origin is not allowed");
+      throw new HttpError(403, "origin_not_allowed", "Call realtime origin is not allowed");
     }
-    const auth = await getRealtimeAuthContext(env, request);
-    return handleRealtimeConnect(request, env, auth);
+    const auth = await getCallRealtimeAuthContext(env, request);
+    return handleCallRealtimeConnect(request, env, auth);
   }
 
   const authStartedAt = performance.now();
   const auth = await getAuthContext(env, request);
   const authTimingMs = durationSince(authStartedAt);
 
-  if (url.pathname === "/v1/realtime/token") {
+  if (url.pathname === "/v1/calls/realtime/token") {
     requireMethod(request, "POST");
     await checkRateLimit(env, {
-      key: `realtime-token:${auth.account.account_id}:${auth.device.device_id}`,
-      action: "realtime-token",
+      key: `call-realtime-token:${auth.account.account_id}:${auth.device.device_id}`,
+      action: "call-realtime-token",
       limit: REALTIME_TOKEN_LIMIT,
       windowSeconds: REALTIME_TOKEN_WINDOW_SECONDS
     });
-    const token = await createRealtimeSocketToken(env, auth);
+    const token = await createCallRealtimeSocketToken(env, auth);
     return json({
       ok: true,
       realtimeToken: token.token,
       expiresAt: token.expiresAt,
+      protocol: CALL_REALTIME_PROTOCOL,
+      connectPath: "/v1/calls/realtime",
     });
   }
 
@@ -1555,15 +1560,15 @@ function proxyQuery(url: URL, allowedKeys: string[]): URLSearchParams {
   return params;
 }
 
-async function getRealtimeAuthContext(env: Env, request: Request): Promise<AuthContext> {
-  const token = realtimeToken(request);
+async function getCallRealtimeAuthContext(env: Env, request: Request): Promise<AuthContext> {
+  const token = callRealtimeToken(request);
   if (!token) {
-    throw new HttpError(401, "unauthorized", "Missing realtime token");
+    throw new HttpError(401, "unauthorized", "Missing call realtime token");
   }
-  return consumeRealtimeSocketToken(env, token);
+  return consumeCallRealtimeSocketToken(env, token);
 }
 
-function realtimeToken(request: Request): string | null {
+function callRealtimeToken(request: Request): string | null {
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
     return authorization.slice("Bearer ".length).trim();
@@ -1572,7 +1577,7 @@ function realtimeToken(request: Request): string | null {
     .split(",")
     .map((protocol) => protocol.trim())
     .filter(Boolean);
-  return protocols.find((protocol) => protocol !== REALTIME_PROTOCOL && protocol.startsWith("vgr_")) ?? null;
+  return protocols.find((protocol) => protocol !== CALL_REALTIME_PROTOCOL && protocol.startsWith("vgr_")) ?? null;
 }
 
 // CORS. The app authenticates with Bearer tokens (no cookies), so credentialed

@@ -1,6 +1,6 @@
 import { hashPassword, randomId, randomToken, sha256Base64Url, verifyPassword } from "../crypto";
 import { HttpError } from "../http";
-import { notifyRoomRealtime } from "../realtime";
+import { notifyRoomCallRealtime } from "../realtime";
 import type { AccountRow, AuthContext, DeviceInput, DeviceRow, Env, PolicyRow, PrincipalRow, SessionRow } from "../types";
 
 // Voyager product-auth/admin DB implementation. Messaging Core must only receive
@@ -174,7 +174,7 @@ export async function getAuthContext(env: Env, request: Request): Promise<AuthCo
   return authContextFromRow(row, roles);
 }
 
-export async function createRealtimeSocketToken(env: Env, auth: AuthContext): Promise<{ token: string; expiresAt: string }> {
+export async function createCallRealtimeSocketToken(env: Env, auth: AuthContext): Promise<{ token: string; expiresAt: string }> {
   const token = randomToken();
   const tokenHash = await sha256Base64Url(token);
   const tokenId = randomId("rtt");
@@ -197,7 +197,7 @@ export async function createRealtimeSocketToken(env: Env, auth: AuthContext): Pr
   return { token, expiresAt };
 }
 
-export async function consumeRealtimeSocketToken(env: Env, token: string): Promise<AuthContext> {
+export async function consumeCallRealtimeSocketToken(env: Env, token: string): Promise<AuthContext> {
   const tokenHash = await sha256Base64Url(token.trim());
   const tokenRow = await env.CONTROL_DB.prepare(
     `SELECT token_id, session_id
@@ -210,7 +210,7 @@ export async function consumeRealtimeSocketToken(env: Env, token: string): Promi
     .bind(tokenHash)
     .first<{ token_id: string; session_id: string }>();
   if (!tokenRow) {
-    throw new HttpError(401, "invalid_realtime_token", "Realtime token is invalid or expired");
+    throw new HttpError(401, "invalid_call_realtime_token", "Call realtime token is invalid or expired");
   }
 
   const usedAt = operationMarker();
@@ -237,7 +237,7 @@ export async function consumeRealtimeSocketToken(env: Env, token: string): Promi
     .bind(usedAt, tokenRow.token_id, tokenHash)
     .run();
   if (changesFrom(claim) !== 1) {
-    throw new HttpError(401, "invalid_realtime_token", "Realtime token is invalid or expired");
+    throw new HttpError(401, "invalid_call_realtime_token", "Call realtime token is invalid or expired");
   }
 
   return getAuthContextForSession(env, tokenRow.session_id);
@@ -271,7 +271,7 @@ async function getAuthContextForSession(env: Env, sessionId: string): Promise<Au
     .bind(sessionId)
     .first<AuthContextRecord>();
   if (!row) {
-    throw new HttpError(401, "invalid_realtime_token", "Realtime token session is invalid or expired");
+    throw new HttpError(401, "invalid_call_realtime_token", "Call realtime token session is invalid or expired");
   }
   if (row.status !== "active") {
     throw new HttpError(403, "account_not_active", "Account is not active");
@@ -962,7 +962,7 @@ async function notifyRevokedDeviceCallCleanup(
         })
       )
       .run();
-    await notifyRoomRealtime(env, participant.room_id, {
+    await notifyRoomCallRealtime(env, participant.room_id, {
       type: "call.left",
       callId: participant.call_id,
       callType: participant.call_type,
@@ -986,14 +986,14 @@ async function notifyRevokedDeviceCallCleanup(
           JSON.stringify({ roomId: call.room_id, status: call.status, reason: "device_revoked" })
         )
         .run();
-      await notifyRoomRealtime(env, call.room_id, {
+      await notifyRoomCallRealtime(env, call.room_id, {
         type: "call.ended",
         callId: call.call_id,
         callType: call.call_type,
         endedReason: "device_revoked"
       });
     }
-    await notifyRoomRealtime(env, call.room_id, {
+    await notifyRoomCallRealtime(env, call.room_id, {
       type: "call.updated",
       callId: call.call_id,
       callType: call.call_type,

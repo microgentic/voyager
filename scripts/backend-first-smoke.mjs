@@ -6,6 +6,7 @@ import {
   assertAttachmentResponse,
   assertAuthResult,
   assertBootstrapResponse,
+  assertCallRealtimeTokenResponse,
   assertCallRealtimeStatusResponse,
   assertCallRealtimeConfigResponse,
   assertCallResponse,
@@ -24,7 +25,6 @@ import {
   assertRealtimeRoomMessageEvent,
   assertRealtimeRoomThreadEvent,
   assertRealtimeCallEvent,
-  assertRealtimeTokenResponse,
   assertRoomInvitationResponse,
   assertRoomResponse,
   assertSidebarCollectionResponse,
@@ -108,13 +108,13 @@ function assertNoVoyagerLegacySource(value, context, path = "$") {
   }
 }
 
-function realtimeUrl() {
-  return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/realtime`;
+function callRealtimeUrl() {
+  return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/calls/realtime`;
 }
 
 function realtimeSocketSpec(token) {
   if (typeof token === "string") {
-    return { url: realtimeUrl(), protocols: ["voyager.realtime.v1", token] };
+    return { url: callRealtimeUrl(), protocols: ["voyager.call-realtime.v1", token] };
   }
   const url = new URL(token.connectPath, token.baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -803,12 +803,16 @@ await expectFailure("/v1/rooms/direct", {
   json: { principalIds: [accepted.principal.principalId, acceptedInvitee.principal.principalId], name: "Invalid direct" }
 }, 400);
 
-const callRealtimeToken = await api("/v1/realtime/token", {
+const callRealtimeToken = await api("/v1/calls/realtime/token", {
   method: "POST",
   headers: userHeaders
 });
-assertRealtimeTokenResponse(callRealtimeToken, "POST /v1/realtime/token call invite");
+assertCallRealtimeTokenResponse(callRealtimeToken, "POST /v1/calls/realtime/token call invite");
 const callInviteWatcher = await openRealtimeCallWatcher(callRealtimeToken.realtimeToken, direct.room.roomId, "call.invite");
+await expectFailure("/v1/realtime/token", {
+  method: "POST",
+  headers: userHeaders
+}, 404);
 
 const createdCallResult = await apiRaw(`/v1/rooms/${direct.room.roomId}/calls`, {
   method: "POST",
@@ -844,7 +848,7 @@ if (calleeParticipant.audioEnabled || calleeParticipant.videoEnabled || calleePa
 }
 
 const callInviteEvent = await callInviteWatcher.wait;
-assertRealtimeCallEvent(callInviteEvent, "GET /v1/realtime call.invite", "call.invite");
+assertRealtimeCallEvent(callInviteEvent, "GET /v1/calls/realtime call.invite", "call.invite");
 if (
   callInviteEvent.callId !== createdCall.call.callId ||
   callInviteEvent.roomId !== direct.room.roomId ||
@@ -1416,11 +1420,11 @@ assertCallResponse(joinedRevocationGuardCall, "POST /v1/calls/{callId}/join revo
 if (joinedRevocationGuardCall.call.status !== "active") {
   throw new Error("revocation guard call did not activate before revoking the joined device");
 }
-const revocationRealtimeToken = await api("/v1/realtime/token", {
+const revocationRealtimeToken = await api("/v1/calls/realtime/token", {
   method: "POST",
   headers: ownerHeaders
 });
-assertRealtimeTokenResponse(revocationRealtimeToken, "POST /v1/realtime/token revocation watcher");
+assertCallRealtimeTokenResponse(revocationRealtimeToken, "POST /v1/calls/realtime/token revocation watcher");
 const revocationLeftWatcher = await openRealtimeCallWatcher(
   revocationRealtimeToken.realtimeToken,
   direct.room.roomId,
@@ -1432,7 +1436,7 @@ await api(`/v1/devices/${revokedCallLogin.device.deviceId}/revoke`, {
   json: { reason: "call_join_revocation_smoke" }
 });
 const revocationLeftEvent = await revocationLeftWatcher.wait;
-assertRealtimeCallEvent(revocationLeftEvent, "GET /v1/realtime call.left after device revocation", "call.left");
+assertRealtimeCallEvent(revocationLeftEvent, "GET /v1/calls/realtime call.left after device revocation", "call.left");
 if (
   revocationLeftEvent.callId !== revocationGuardCall.call.callId ||
   revocationLeftEvent.principalId !== accepted.principal.principalId ||
@@ -1969,7 +1973,7 @@ if (unpinnedRoom.room.pinnedMessageCount !== 0 || unpinnedRoom.room.latestPinned
 }
 
 const realtimeEvent = await realtimeWatcher.wait;
-assertRealtimeRoomMessageEvent(realtimeEvent, "GET /v1/realtime room.message");
+assertRealtimeRoomMessageEvent(realtimeEvent, "Messaging Core realtime room.message");
 if (realtimeEvent.roomId !== direct.room.roomId) {
   throw new Error("realtime event did not reference the sent room");
 }
@@ -2271,7 +2275,7 @@ const editedThreadReply = await api(`/v1/rooms/${group.room.roomId}/messages/${t
 });
 assertMessageResponse(editedThreadReply, "PATCH thread reply emits room.thread");
 const threadMutationRealtimeEvent = await threadMutationRealtimeWatcher.wait;
-assertRealtimeRoomThreadEvent(threadMutationRealtimeEvent, "GET /v1/realtime room.thread after thread reply edit");
+assertRealtimeRoomThreadEvent(threadMutationRealtimeEvent, "Messaging Core realtime room.thread after thread reply edit");
 if (
   threadMutationRealtimeEvent.roomId !== group.room.roomId ||
   threadMutationRealtimeEvent.envelopeId !== threadReply.message.envelopeId ||
@@ -2753,7 +2757,7 @@ const groupMessage = await api(`/v1/rooms/${group.room.roomId}/messages`, {
 assertMessageResponse(groupMessage, "POST /v1/rooms/{roomId}/messages group");
 
 const groupRealtimeEvent = await groupRealtimeWatcher.wait;
-assertRealtimeRoomMessageEvent(groupRealtimeEvent, "GET /v1/realtime group room.message");
+assertRealtimeRoomMessageEvent(groupRealtimeEvent, "Messaging Core realtime group room.message");
 if (groupRealtimeEvent.roomId !== group.room.roomId) {
   throw new Error("group realtime event did not reference the sent room");
 }

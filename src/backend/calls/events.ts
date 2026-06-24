@@ -1,5 +1,5 @@
 import { randomId } from "../../crypto";
-import { notifyRoomRealtime } from "../../realtime";
+import { notifyRoomCallRealtime } from "../../realtime";
 import type { AuthContext, Env } from "../../types";
 import { getCall } from "./public-read";
 import type { CallStatus, CallType } from "./types";
@@ -60,5 +60,5 @@ export async function emitCallEvent(
     endedReason?: string;
   },
 ): Promise<void> {
-  await notifyRoomRealtime(env, roomId, event);
+  await notifyRoomCallRealtime(env, roomId, event);
 }

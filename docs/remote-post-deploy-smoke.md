@@ -39,9 +39,9 @@ Worker and seeded disposable test accounts.
 - `GET /health` returns a healthy Worker with D1 and R2 bindings.
 - Seeded `ada@example.com` and `grace@example.com` password login works.
 - `GET /v1/app/bootstrap?limit=100` returns the stable startup contract.
-- Long-lived session tokens cannot authenticate `GET /v1/realtime` directly.
-- `POST /v1/realtime/token` returns a valid short-lived socket token.
-- `GET /v1/realtime` opens with that socket token and emits `ready`.
+- Legacy `/v1/realtime` and `/v1/realtime/token` routes return 404.
+- `POST /v1/messaging-core/realtime/token` returns a valid short-lived Core socket token.
+- The returned Messaging Core `connectPath` opens with that socket token and emits `ready`.
 - Attachment allocation, original/thumbnail upload, completion, authenticated
   downloads, and unreferenced cleanup work against the deployed R2 binding.
 - Basic audio call lifecycle works at the deployed Worker level: create, optional
@@ -131,9 +131,9 @@ present yet.
 
 If the WebSocket checks fail while HTTP checks pass, inspect:
 
-- `POST /v1/realtime/token` response status and `Server-Timing`.
-- WebSocket connection to `/v1/realtime` with protocol
-  `voyager.realtime.v1`.
+- `POST /v1/messaging-core/realtime/token` response status and proxy metadata.
+- WebSocket connection to the returned Messaging Core `connectPath` with protocol
+  `messaging.realtime.v1`.
 - Durable Object deployment/binding health in the Worker deploy logs.
 
 ## Conversation Durable Object Sequencing

@@ -155,8 +155,6 @@ function classifyRoute(route) {
     path.startsWith("/v1/rooms/") ||
     path === "/v1/threads" ||
     path === "/v1/sync" ||
-    path === "/v1/realtime/token" ||
-    path === "/v1/realtime" ||
     path.startsWith("/v1/room-invitations") ||
     path.startsWith("/v1/attachments/") ||
     path.startsWith("/v1/calls/")
