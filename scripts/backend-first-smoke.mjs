@@ -6,7 +6,6 @@ import {
   assertAttachmentResponse,
   assertAuthResult,
   assertBootstrapResponse,
-  assertCallRealtimeTokenResponse,
   assertCallRealtimeStatusResponse,
   assertCallRealtimeConfigResponse,
   assertCallResponse,
@@ -43,7 +42,6 @@ const baseUrl = process.env.BASE_URL ?? "http://localhost:8787";
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN ?? "local-bootstrap-secret";
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
-const realtimeMockEnabled = process.env.CLOUDFLARE_REALTIME_MOCK === "1";
 const messagingCoreBridgeEnabled = process.env.SMOKE_MESSAGING_CORE_BRIDGE === "1";
 const messagingCoreSmokeSecret = process.env.SMOKE_MESSAGING_CORE_TOKEN_SECRET ?? "local-messaging-core-token-secret";
 
@@ -108,14 +106,7 @@ function assertNoVoyagerLegacySource(value, context, path = "$") {
   }
 }
 
-function callRealtimeUrl() {
-  return `${baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/v1/calls/realtime`;
-}
-
 function realtimeSocketSpec(token) {
-  if (typeof token === "string") {
-    return { url: callRealtimeUrl(), protocols: ["voyager.call-realtime.v1", token] };
-  }
   const url = new URL(token.connectPath, token.baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("token", token.realtimeToken);
@@ -282,12 +273,16 @@ function assertMessagingCoreBridgeSession(session, identity, context) {
   if (
     !Array.isArray(claims.scopes) ||
     !claims.scopes.includes("messaging:read") ||
-    !claims.scopes.includes("messaging:rooms:write") ||
-    !claims.scopes.includes("messaging:messages:write") ||
-    !claims.scopes.includes("messaging:key-packages:write")
-  ) {
-    throw new Error(`${context} messagingCore token scopes are missing messaging scopes`);
-  }
+	    !claims.scopes.includes("messaging:rooms:write") ||
+	    !claims.scopes.includes("messaging:messages:write") ||
+	    !claims.scopes.includes("messaging:key-packages:write") ||
+	    !claims.scopes.includes("messaging:calls:read") ||
+	    !claims.scopes.includes("messaging:calls:write") ||
+	    !claims.scopes.includes("messaging:calls:media") ||
+	    !claims.scopes.includes("messaging:calls:usage")
+	  ) {
+	    throw new Error(`${context} messagingCore token scopes are missing messaging/call scopes`);
+	  }
   if (!Number.isInteger(claims.exp) || !Number.isInteger(claims.iat) || claims.exp <= claims.iat) {
     throw new Error(`${context} messagingCore token expiry claims are invalid`);
   }
@@ -793,8 +788,30 @@ assertRoomResponse(direct, "POST /v1/rooms/direct");
 
 const callRealtimeStatus = await api("/v1/admin/calls/realtime-status", { headers: ownerHeaders });
 assertCallRealtimeStatusResponse(callRealtimeStatus, "GET /v1/admin/calls/realtime-status");
-if (callRealtimeStatus.realtime.mock !== realtimeMockEnabled) {
-  throw new Error("call realtime status did not reflect mock mode");
+const coreRealtimeMockEnabled = callRealtimeStatus.realtime.mock === true;
+if (callRealtimeStatus.realtime.apiBase !== "managed-by-messaging-core") {
+  throw new Error("call realtime status was not sourced from Messaging Core");
+}
+if (callRealtimeStatus.realtime.messagingCore?.source !== "core") {
+  throw new Error("call realtime status did not report Core ownership");
+}
+if (callRealtimeStatus.realtime.mock && !callRealtimeStatus.realtime.configured) {
+  throw new Error("call realtime mock mode should still be reported as configured by Core");
+}
+const retiredCallRealtimeToken = await expectFailure("/v1/calls/realtime/token", {
+  method: "POST",
+  headers: userHeaders
+}, 410);
+assertApiErrorShape(retiredCallRealtimeToken, "POST /v1/calls/realtime/token retired");
+if (retiredCallRealtimeToken.error !== "call_realtime_socket_retired") {
+  throw new Error(`retired call realtime token returned unexpected error ${retiredCallRealtimeToken.error}`);
+}
+const retiredCallRealtimeSocket = await expectFailure("/v1/calls/realtime", {
+  headers: userHeaders
+}, 410);
+assertApiErrorShape(retiredCallRealtimeSocket, "GET /v1/calls/realtime retired");
+if (retiredCallRealtimeSocket.error !== "call_realtime_socket_retired") {
+  throw new Error(`retired call realtime socket returned unexpected error ${retiredCallRealtimeSocket.error}`);
 }
 
 await expectFailure("/v1/rooms/direct", {
@@ -803,12 +820,8 @@ await expectFailure("/v1/rooms/direct", {
   json: { principalIds: [accepted.principal.principalId, acceptedInvitee.principal.principalId], name: "Invalid direct" }
 }, 400);
 
-const callRealtimeToken = await api("/v1/calls/realtime/token", {
-  method: "POST",
-  headers: userHeaders
-});
-assertCallRealtimeTokenResponse(callRealtimeToken, "POST /v1/calls/realtime/token call invite");
-const callInviteWatcher = await openRealtimeCallWatcher(callRealtimeToken.realtimeToken, direct.room.roomId, "call.invite");
+const callRealtimeToken = await createMessagingCoreRealtimeToken(userHeaders, "POST /v1/messaging-core/realtime/token call invite");
+const callInviteWatcher = await openRealtimeCallWatcher(callRealtimeToken, direct.room.roomId, "call.invite");
 await expectFailure("/v1/realtime/token", {
   method: "POST",
   headers: userHeaders
@@ -824,7 +837,7 @@ if (!createdCallResult.response.ok) {
 }
 assertServerTiming(
   createdCallResult.response.headers.get("server-timing") ?? "",
-  ["callCreate", "callDo", "callQueue", "callOperation"],
+  ["callCreate"],
   "POST /v1/rooms/{roomId}/calls"
 );
 const createdCall = createdCallResult.payload;
@@ -870,7 +883,7 @@ if (fetchedCall.call.callId !== createdCall.call.callId) {
 }
 
 let mockAudioSessionId = null;
-if (realtimeMockEnabled) {
+if (coreRealtimeMockEnabled) {
   const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
     method: "POST",
     headers: ownerHeaders,
@@ -1071,8 +1084,8 @@ const callUsageReport = await api(`/v1/calls/${createdCall.call.callId}/usage-re
       { kind: "audio", direction: "receive", durationMs: 40_000 }
     ],
     network: {
-      candidateType: realtimeMockEnabled ? "host" : "relay",
-      relayLikely: !realtimeMockEnabled,
+      candidateType: coreRealtimeMockEnabled ? "host" : "relay",
+      relayLikely: !coreRealtimeMockEnabled,
       roundTripTimeMs: 12,
       packetsLost: 0
     }
@@ -1194,9 +1207,9 @@ if (videoCall.call.status !== "ringing" || videoCall.call.callType !== "video") 
 }
 await expectFailure(`/v1/calls/${videoCall.call.callId}`, {
   headers: inviteeHeaders
-}, 403);
+}, 404);
 
-if (realtimeMockEnabled) {
+if (coreRealtimeMockEnabled) {
   const videoRealtimeSessionConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/session`, {
     method: "POST",
     headers: ownerHeaders,
@@ -1420,13 +1433,12 @@ assertCallResponse(joinedRevocationGuardCall, "POST /v1/calls/{callId}/join revo
 if (joinedRevocationGuardCall.call.status !== "active") {
   throw new Error("revocation guard call did not activate before revoking the joined device");
 }
-const revocationRealtimeToken = await api("/v1/calls/realtime/token", {
-  method: "POST",
-  headers: ownerHeaders
-});
-assertCallRealtimeTokenResponse(revocationRealtimeToken, "POST /v1/calls/realtime/token revocation watcher");
+const revocationRealtimeToken = await createMessagingCoreRealtimeToken(
+  ownerHeaders,
+  "POST /v1/messaging-core/realtime/token revocation watcher"
+);
 const revocationLeftWatcher = await openRealtimeCallWatcher(
-  revocationRealtimeToken.realtimeToken,
+  revocationRealtimeToken,
   direct.room.roomId,
   "call.left"
 );
@@ -1842,8 +1854,6 @@ await api(`/v1/rooms/${group.room.roomId}/members`, {
   headers: ownerHeaders,
   json: { principalId: agent.agent.principalId }
 });
-
-await expectRealtimeConnectFailure(relogin.sessionToken);
 
 const realtimeToken = await createMessagingCoreRealtimeToken(userHeaders, "POST /v1/messaging-core/realtime/token");
 const realtimeWatcher = await openRealtimeMessageWatcher(realtimeToken, direct.room.roomId);
@@ -2999,22 +3009,8 @@ await api(`/v1/sidebar-collections/${collection.collection.collectionId}/items`,
 
 const usage = await api("/v1/admin/usage", { headers: ownerHeaders });
 assertAdminUsageResponse(usage, "GET /v1/admin/usage");
-if (usage.usage.callMedia.usageReports !== 1 || usage.usage.callMedia.bytesSentEstimate !== 12_345) {
-  throw new Error("admin usage did not preserve idempotent client-estimate call usage totals");
-}
-if (!realtimeMockEnabled && usage.usage.callMedia.failedMediaEvents < 4) {
-  throw new Error("admin usage did not record unconfigured call media failures");
-}
-if (realtimeMockEnabled) {
-  if (usage.usage.callMedia.realtimeSessions < 2) {
-    throw new Error("admin usage did not record mock realtime sessions");
-  }
-  if (usage.usage.callMedia.realtimeTracks < 3) {
-    throw new Error("admin usage did not record mock realtime tracks");
-  }
-  if ((usage.usage.callMedia.tracksByKind.audio ?? 0) < 1 || (usage.usage.callMedia.tracksByKind.video ?? 0) < 1) {
-    throw new Error("admin usage did not record mock audio/video track kinds");
-  }
+if (usage.usage.callMedia.source !== "messaging_core" || usage.usage.callMedia.status !== "core_owned") {
+  throw new Error("admin usage did not mark call media usage as Messaging Core owned");
 }
 if (usage.usage.attachmentBytes.allocatedExpectedBytesLast24h <= 0) {
   throw new Error("admin usage did not include attachment allocation bytes");

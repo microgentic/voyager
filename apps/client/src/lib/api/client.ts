@@ -48,7 +48,6 @@ import type {
 } from './types';
 
 type Json = Record<string, unknown>;
-export const CALL_REALTIME_PROTOCOL = 'voyager.call-realtime.v1';
 export const MESSAGING_CORE_REALTIME_PROTOCOL = 'messaging.realtime.v1';
 
 export type RealtimeTransport = RealtimeTokenResult['transport'];
@@ -81,21 +80,15 @@ export class VoyagerClient {
 	async openRealtimeSocket(options: { transport?: 'auto' | RealtimeTransport } = {}): Promise<RealtimeSocketConnection | null> {
 		if (!this.token || typeof WebSocket === 'undefined') return null;
 		const transport = options.transport ?? 'auto';
-		const token =
-			transport === 'messaging-core'
-				? await this.createMessagingCoreRealtimeToken()
-				: transport === 'call-runtime'
-					? await this.createCallRealtimeToken()
-					: await this.createPreferredRealtimeToken();
+		if (transport !== 'auto' && transport !== 'messaging-core') {
+			throw new ApiError(400, 'realtime_transport_retired', 'Messaging Core is the only realtime transport.');
+		}
+		const token = await this.createMessagingCoreRealtimeToken();
 		const url = realtimeSocketUrl(token.baseUrl, token.connectPath, token.transport, token.realtimeToken);
 		return {
 			socket: new WebSocket(url, realtimeSocketProtocols(token)),
 			transport: token.transport
 		};
-	}
-
-	private async createPreferredRealtimeToken(): Promise<RealtimeTokenResult> {
-		return this.createMessagingCoreRealtimeToken();
 	}
 
 	private async createMessagingCoreRealtimeToken(): Promise<RealtimeTokenResult> {
@@ -114,24 +107,6 @@ export class VoyagerClient {
 			connectPath: res.realtime.connectPath,
 			baseUrl: res.messagingCore.baseUrl,
 			transport: 'messaging-core'
-		};
-	}
-
-	async createCallRealtimeToken(): Promise<RealtimeTokenResult> {
-		const res = await this.request<
-			Pick<RealtimeTokenResult, 'realtimeToken' | 'expiresAt' | 'protocol' | 'connectPath'> & { ok: true }
-		>(
-			'POST',
-			'/v1/calls/realtime/token'
-		);
-		const origin = getApiBase() || (typeof location !== 'undefined' ? location.origin : 'http://localhost');
-		return {
-			realtimeToken: res.realtimeToken,
-			expiresAt: res.expiresAt,
-			protocol: res.protocol ?? CALL_REALTIME_PROTOCOL,
-			connectPath: res.connectPath ?? '/v1/calls/realtime',
-			baseUrl: origin,
-			transport: 'call-runtime'
 		};
 	}
 

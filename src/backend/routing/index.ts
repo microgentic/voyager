@@ -3,14 +3,12 @@ import type { RouteResult } from "../shared/types";
 import type { BackendRouteContext, BackendRouteHandler } from "./types";
 import { handleAdminRoutes } from "./admin-routes";
 import { handleAgentRoutes } from "./agent-routes";
-import { handleCallRoutes } from "./call-routes";
 import { handleIdentityRoutes } from "./identity-routes";
 import { handleMaintenanceRoutes } from "./maintenance-routes";
 import { handleSidebarRoutes } from "./sidebar-routes";
 
 const ROUTE_HANDLERS: BackendRouteHandler[] = [
   handleIdentityRoutes,
-  handleCallRoutes,
   handleSidebarRoutes,
   handleAgentRoutes,
   handleMaintenanceRoutes,

@@ -1,6 +1,5 @@
 import { hashPassword, randomId, randomToken, sha256Base64Url, verifyPassword } from "../crypto";
 import { HttpError } from "../http";
-import { notifyRoomCallRealtime } from "../realtime";
 import type { AccountRow, AuthContext, DeviceInput, DeviceRow, Env, PolicyRow, PrincipalRow, SessionRow } from "../types";
 
 // Voyager product-auth/admin DB implementation. Messaging Core must only receive
@@ -10,7 +9,6 @@ const SESSION_DAYS = 30;
 const INVITATION_DAYS = 7;
 const CREDENTIAL_RESET_DAYS = 3;
 const AUTH_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
-const REALTIME_TOKEN_SECONDS = 90;
 
 export interface LoginWithPasswordMetrics {
   accountMs: number;
@@ -61,24 +59,6 @@ export interface CleanupTestDeviceResult {
 }
 
 type AuthContextRecord = Record<string, string | number | null>;
-
-interface RevokedDeviceCallParticipant {
-  call_participant_id: string;
-  call_id: string;
-  account_id: string;
-  principal_id: string;
-  device_id: string;
-  room_id: string;
-  call_type: "audio" | "video";
-}
-
-interface RevokedDeviceCallState {
-  call_id: string;
-  room_id: string;
-  call_type: "audio" | "video";
-  status: "ringing" | "active" | "ended" | "missed" | "declined" | "failed";
-  ended_reason: string | null;
-}
 
 export async function audit(
   env: Env,
@@ -172,111 +152,6 @@ export async function getAuthContext(env: Env, request: Request): Promise<AuthCo
   }
 
   return authContextFromRow(row, roles);
-}
-
-export async function createCallRealtimeSocketToken(env: Env, auth: AuthContext): Promise<{ token: string; expiresAt: string }> {
-  const token = randomToken();
-  const tokenHash = await sha256Base64Url(token);
-  const tokenId = randomId("rtt");
-  const expiresAt = sqliteTimestamp(Date.now() + REALTIME_TOKEN_SECONDS * 1000);
-  await env.CONTROL_DB.prepare(
-    `INSERT INTO realtime_socket_tokens (
-      token_id, token_hash, account_id, session_id, device_id, principal_id, expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      tokenId,
-      tokenHash,
-      auth.account.account_id,
-      auth.session.session_id,
-      auth.device.device_id,
-      auth.principal.principal_id,
-      expiresAt
-    )
-    .run();
-  return { token, expiresAt };
-}
-
-export async function consumeCallRealtimeSocketToken(env: Env, token: string): Promise<AuthContext> {
-  const tokenHash = await sha256Base64Url(token.trim());
-  const tokenRow = await env.CONTROL_DB.prepare(
-    `SELECT token_id, session_id
-     FROM realtime_socket_tokens
-     WHERE token_hash = ?
-       AND used_at IS NULL
-       AND revoked_at IS NULL
-       AND expires_at > CURRENT_TIMESTAMP`
-  )
-    .bind(tokenHash)
-    .first<{ token_id: string; session_id: string }>();
-  if (!tokenRow) {
-    throw new HttpError(401, "invalid_call_realtime_token", "Call realtime token is invalid or expired");
-  }
-
-  const usedAt = operationMarker();
-  const claim = await env.CONTROL_DB.prepare(
-    `UPDATE realtime_socket_tokens
-     SET used_at = ?
-     WHERE token_id = ?
-       AND token_hash = ?
-       AND used_at IS NULL
-       AND revoked_at IS NULL
-       AND expires_at > CURRENT_TIMESTAMP
-       AND EXISTS (
-         SELECT 1
-         FROM sessions s
-         JOIN accounts a ON a.account_id = s.account_id
-         JOIN devices d ON d.device_id = s.device_id
-         WHERE s.session_id = realtime_socket_tokens.session_id
-           AND s.revoked_at IS NULL
-           AND s.expires_at > CURRENT_TIMESTAMP
-           AND a.status = 'active'
-           AND d.revoked_at IS NULL
-       )`
-  )
-    .bind(usedAt, tokenRow.token_id, tokenHash)
-    .run();
-  if (changesFrom(claim) !== 1) {
-    throw new HttpError(401, "invalid_call_realtime_token", "Call realtime token is invalid or expired");
-  }
-
-  return getAuthContextForSession(env, tokenRow.session_id);
-}
-
-async function getAuthContextForSession(env: Env, sessionId: string): Promise<AuthContext> {
-  const row = await env.CONTROL_DB.prepare(
-    `SELECT
-      s.session_id, s.account_id AS session_account_id, s.device_id AS session_device_id,
-      s.refresh_token_hash, s.created_at AS session_created_at, s.expires_at,
-      s.last_used_at AS session_last_used_at, s.revoked_at AS session_revoked_at, s.risk_state,
-      a.account_id, a.status, a.display_name, a.email, a.phone, a.policy_id,
-      a.default_principal_id, a.activated_at, a.suspended_at, a.deletion_state,
-      a.created_at AS account_created_at, a.updated_at AS account_updated_at,
-      p.principal_id, p.principal_type, p.display_name AS principal_display_name,
-      p.avatar_ref, p.status AS principal_status, p.owner_principal_id,
-      p.created_at AS principal_created_at, p.revoked_at AS principal_revoked_at,
-      d.device_id, d.platform, d.device_label, d.credential_fingerprint,
-      d.credential_version, d.public_key_package, d.notification_capability,
-      d.client_version, d.protocol_version, d.created_at AS device_created_at,
-      d.last_seen_at, d.revoked_at AS device_revoked_at, d.revocation_reason
-    FROM sessions s
-    JOIN accounts a ON a.account_id = s.account_id
-    JOIN devices d ON d.device_id = s.device_id
-    JOIN principals p ON p.principal_id = d.principal_id
-    WHERE s.session_id = ?
-      AND s.revoked_at IS NULL
-      AND s.expires_at > CURRENT_TIMESTAMP
-      AND d.revoked_at IS NULL`
-  )
-    .bind(sessionId)
-    .first<AuthContextRecord>();
-  if (!row) {
-    throw new HttpError(401, "invalid_call_realtime_token", "Call realtime token session is invalid or expired");
-  }
-  if (row.status !== "active") {
-    throw new HttpError(403, "account_not_active", "Account is not active");
-  }
-  return authContextFromRow(row, await getActiveAdminRoles(env, String(row.account_id)));
 }
 
 function authContextFromRow(row: AuthContextRecord, roles: string[]): AuthContext {
@@ -858,21 +733,6 @@ export async function revokeDevice(env: Env, deviceId: string, reason: string, a
   const deviceBinds = accountId ? [reason, deviceId, accountId] : [reason, deviceId];
   const sessionWhere = accountId ? "device_id = ? AND account_id = ? AND revoked_at IS NULL" : "device_id = ? AND revoked_at IS NULL";
   const sessionBinds = accountId ? [deviceId, accountId] : [deviceId];
-  const participantWhere = accountId ? "device_id = ? AND account_id = ?" : "device_id = ?";
-  const participantBinds = accountId ? [deviceId, accountId] : [deviceId];
-  const participantSelectWhere = accountId ? "cp.device_id = ? AND cp.account_id = ?" : "cp.device_id = ?";
-  const activeParticipants = await env.CONTROL_DB.prepare(
-    `SELECT cp.call_participant_id, cp.call_id, cp.account_id, cp.principal_id, cp.device_id,
-            c.room_id, c.call_type
-     FROM call_participants cp
-     JOIN calls c ON c.call_id = cp.call_id
-     WHERE ${participantSelectWhere}
-       AND cp.status = 'connected'
-       AND c.status IN ('ringing', 'active')`
-  )
-    .bind(...participantBinds)
-    .all<RevokedDeviceCallParticipant>();
-  const callParticipants = activeParticipants.results ?? [];
   await env.CONTROL_DB.batch([
     env.CONTROL_DB.prepare(
       `UPDATE devices SET revoked_at = CURRENT_TIMESTAMP, revocation_reason = ? WHERE ${deviceWhere}`
@@ -880,126 +740,7 @@ export async function revokeDevice(env: Env, deviceId: string, reason: string, a
     env.CONTROL_DB.prepare(
       `UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP WHERE ${sessionWhere}`
     ).bind(...sessionBinds),
-    env.CONTROL_DB.prepare(
-      `UPDATE call_realtime_tracks
-       SET status = 'closed',
-           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE device_id = ? AND status = 'active'`
-    ).bind(deviceId),
-    env.CONTROL_DB.prepare(
-      `UPDATE call_realtime_sessions
-       SET status = 'closed',
-           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE ${participantWhere} AND status = 'active'`
-    ).bind(...participantBinds),
-    env.CONTROL_DB.prepare(
-      `UPDATE call_participants
-       SET status = 'failed',
-           left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
-           muted_at = NULL,
-           audio_enabled = 0,
-           video_enabled = 0,
-           screen_enabled = 0,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE ${participantWhere} AND status = 'connected'`
-    ).bind(...participantBinds),
-    env.CONTROL_DB.prepare(
-      `UPDATE calls
-       SET status = 'ended',
-           ended_reason = 'device_revoked',
-           ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE status IN ('ringing', 'active')
-         AND call_id IN (
-           SELECT call_id FROM call_participants WHERE ${participantWhere}
-         )
-         AND NOT EXISTS (
-           SELECT 1
-           FROM call_participants cp
-           WHERE cp.call_id = calls.call_id AND cp.status = 'connected'
-         )`
-    ).bind(...participantBinds)
   ]);
-  await notifyRevokedDeviceCallCleanup(env, callParticipants, reason);
-}
-
-async function notifyRevokedDeviceCallCleanup(
-  env: Env,
-  participants: RevokedDeviceCallParticipant[],
-  revocationReason: string
-): Promise<void> {
-  if (!participants.length) return;
-  const callIds = [...new Set(participants.map((participant) => participant.call_id))];
-  const placeholders = callIds.map(() => "?").join(", ");
-  const refreshed = await env.CONTROL_DB.prepare(
-    `SELECT call_id, room_id, call_type, status, ended_reason
-     FROM calls
-     WHERE call_id IN (${placeholders})`
-  )
-    .bind(...callIds)
-    .all<RevokedDeviceCallState>();
-  const callsById = new Map((refreshed.results ?? []).map((call) => [call.call_id, call]));
-
-  for (const participant of participants) {
-    await env.CONTROL_DB.prepare(
-      `INSERT INTO call_events (
-        call_event_id, call_id, actor_account_id, actor_principal_id,
-        actor_device_id, event_type, payload_json
-      ) VALUES (?, ?, NULL, NULL, NULL, 'call.participant.revoked', ?)`
-    )
-      .bind(
-        randomId("cevt"),
-        participant.call_id,
-        JSON.stringify({
-          roomId: participant.room_id,
-          accountId: participant.account_id,
-          principalId: participant.principal_id,
-          deviceId: participant.device_id,
-          reason: "device_revoked",
-          revocationReason
-        })
-      )
-      .run();
-    await notifyRoomCallRealtime(env, participant.room_id, {
-      type: "call.left",
-      callId: participant.call_id,
-      callType: participant.call_type,
-      principalId: participant.principal_id,
-      deviceId: participant.device_id,
-      reason: "device_revoked"
-    });
-  }
-
-  for (const call of callsById.values()) {
-    if (call.status === "ended" && call.ended_reason === "device_revoked") {
-      await env.CONTROL_DB.prepare(
-        `INSERT INTO call_events (
-          call_event_id, call_id, actor_account_id, actor_principal_id,
-          actor_device_id, event_type, payload_json
-        ) VALUES (?, ?, NULL, NULL, NULL, 'call.ended', ?)`
-      )
-        .bind(
-          randomId("cevt"),
-          call.call_id,
-          JSON.stringify({ roomId: call.room_id, status: call.status, reason: "device_revoked" })
-        )
-        .run();
-      await notifyRoomCallRealtime(env, call.room_id, {
-        type: "call.ended",
-        callId: call.call_id,
-        callType: call.call_type,
-        endedReason: "device_revoked"
-      });
-    }
-    await notifyRoomCallRealtime(env, call.room_id, {
-      type: "call.updated",
-      callId: call.call_id,
-      callType: call.call_type,
-      status: call.status
-    });
-  }
 }
 
 export async function getActiveAdminRoles(env: Env, accountId: string): Promise<string[]> {
@@ -1466,159 +1207,37 @@ async function getAttachmentByteUsage(env: Env): Promise<Record<string, number>>
 }
 
 async function getCallMediaUsage(env: Env): Promise<Record<string, unknown>> {
-  const [
-    totalCalls,
-    activeCalls,
-    endedCalls,
-    failedCalls,
-    participantRows,
-    failedParticipants,
-    maxParticipants,
-    totalDurationMs,
-    averageDurationMs,
-    realtimeSessions,
-    activeRealtimeSessions,
-    realtimeTracks,
-    failedMediaEvents,
-    failedProviderRequests,
-    tracksByKind,
-    tracksByQualityLayer,
-    usageReportTotals,
-  ] = await Promise.all([
-    count(env, "calls"),
-    count(env, "calls", "status IN ('ringing', 'active')"),
-    count(env, "calls", "status IN ('ended', 'missed', 'declined')"),
-    count(env, "calls", "status = 'failed'"),
-    count(env, "call_participants"),
-    count(env, "call_participants", "status = 'failed'"),
-    scalarNumber(
-      env,
-      `SELECT COALESCE(MAX(participant_count), 0) AS value
-       FROM (
-         SELECT COUNT(*) AS participant_count
-         FROM call_participants
-         GROUP BY call_id
-       )`,
-    ),
-    scalarNumber(
-      env,
-      `SELECT COALESCE(SUM(
-         CASE
-           WHEN started_at IS NULL THEN 0
-           ELSE (julianday(COALESCE(ended_at, CURRENT_TIMESTAMP)) - julianday(started_at)) * 86400000
-         END
-       ), 0) AS value
-       FROM calls`,
-      { round: true },
-    ),
-    scalarNumber(
-      env,
-      `SELECT COALESCE(AVG(
-         CASE
-           WHEN started_at IS NULL THEN NULL
-           ELSE (julianday(COALESCE(ended_at, CURRENT_TIMESTAMP)) - julianday(started_at)) * 86400000
-         END
-       ), 0) AS value
-       FROM calls`,
-      { round: true },
-    ),
-    count(env, "call_realtime_sessions"),
-    count(env, "call_realtime_sessions", "status = 'active'"),
-    count(env, "call_realtime_tracks"),
-    count(env, "call_events", "event_type = 'call.media.join_failed'"),
-    count(env, "call_events", "event_type = 'call.media.join_failed' AND COALESCE(payload_json, '') NOT LIKE '%cloudflare_realtime_not_configured%'"),
-    groupedCounts(
-      env,
-      `SELECT kind AS name, COUNT(*) AS count
-       FROM call_realtime_tracks
-       GROUP BY kind`,
-    ),
-    groupedCounts(
-      env,
-      `SELECT COALESCE(quality_layer, 'unspecified') AS name, COUNT(*) AS count
-       FROM call_realtime_tracks
-       GROUP BY COALESCE(quality_layer, 'unspecified')`,
-    ),
-    getCallUsageReportTotals(env),
-  ]);
+  void env;
   return {
-    totalCalls,
-    activeCalls,
-    endedCalls,
-    failedCalls,
-    participantRows,
-    failedParticipants,
-    maxParticipants,
-    totalDurationMs,
-    averageDurationMs,
-    realtimeSessions,
-    activeRealtimeSessions,
-    realtimeTracks,
-    failedMediaEvents,
-    failedProviderRequests,
-    tracksByKind,
-    tracksByQualityLayer,
-    usageReports: usageReportTotals.reports,
-    reportedDurationMs: usageReportTotals.durationMs,
-    reportedAudioDurationMs: usageReportTotals.audioDurationMs,
-    reportedVideoDurationMs: usageReportTotals.videoDurationMs,
-    reportedScreenDurationMs: usageReportTotals.screenDurationMs,
-    bytesSentEstimate: usageReportTotals.bytesSentEstimate,
-    bytesReceivedEstimate: usageReportTotals.bytesReceivedEstimate,
-    relayLikelyReports: usageReportTotals.relayLikelyReports,
-    turnConfigured: Boolean(env.CLOUDFLARE_REALTIME_TURN_USERNAME && env.CLOUDFLARE_REALTIME_TURN_CREDENTIAL),
-    estimatedSfuTurnEgressBytes: usageReportTotals.providerEgressBytes || null,
-    estimatedSfuTurnEgressStatus: usageReportTotals.providerEgressBytes > 0 ? "provider_authoritative" : "unavailable_provider_metric",
-  };
-}
-
-async function getCallUsageReportTotals(env: Env): Promise<{
-  reports: number;
-  durationMs: number;
-  audioDurationMs: number;
-  videoDurationMs: number;
-  screenDurationMs: number;
-  bytesSentEstimate: number;
-  bytesReceivedEstimate: number;
-  relayLikelyReports: number;
-  providerEgressBytes: number;
-}> {
-  const row = await env.CONTROL_DB.prepare(
-    `SELECT
-       COUNT(*) AS reports,
-       COALESCE(SUM(duration_ms), 0) AS durationMs,
-       COALESCE(SUM(audio_duration_ms), 0) AS audioDurationMs,
-       COALESCE(SUM(video_duration_ms), 0) AS videoDurationMs,
-       COALESCE(SUM(screen_duration_ms), 0) AS screenDurationMs,
-       COALESCE(SUM(bytes_sent_estimate), 0) AS bytesSentEstimate,
-       COALESCE(SUM(bytes_received_estimate), 0) AS bytesReceivedEstimate,
-       COALESCE(SUM(CASE WHEN relay_likely = 1 THEN 1 ELSE 0 END), 0) AS relayLikelyReports,
-       COALESCE(SUM(CASE
-         WHEN source = 'provider_authoritative' THEN COALESCE(provider_egress_bytes, 0)
-         ELSE 0
-       END), 0) AS providerEgressBytes
-     FROM call_usage_reports`,
-  ).first<{
-    reports: number;
-    durationMs: number;
-    audioDurationMs: number;
-    videoDurationMs: number;
-    screenDurationMs: number;
-    bytesSentEstimate: number;
-    bytesReceivedEstimate: number;
-    relayLikelyReports: number;
-    providerEgressBytes: number;
-  }>();
-  return {
-    reports: Number(row?.reports ?? 0),
-    durationMs: Number(row?.durationMs ?? 0),
-    audioDurationMs: Number(row?.audioDurationMs ?? 0),
-    videoDurationMs: Number(row?.videoDurationMs ?? 0),
-    screenDurationMs: Number(row?.screenDurationMs ?? 0),
-    bytesSentEstimate: Number(row?.bytesSentEstimate ?? 0),
-    bytesReceivedEstimate: Number(row?.bytesReceivedEstimate ?? 0),
-    relayLikelyReports: Number(row?.relayLikelyReports ?? 0),
-    providerEgressBytes: Number(row?.providerEgressBytes ?? 0),
+    source: "messaging_core",
+    status: "core_owned",
+    totalCalls: null,
+    activeCalls: null,
+    endedCalls: null,
+    failedCalls: null,
+    participantRows: null,
+    failedParticipants: null,
+    maxParticipants: null,
+    totalDurationMs: null,
+    averageDurationMs: null,
+    realtimeSessions: null,
+    activeRealtimeSessions: null,
+    realtimeTracks: null,
+    failedMediaEvents: null,
+    failedProviderRequests: null,
+    tracksByKind: {},
+    tracksByQualityLayer: {},
+    usageReports: null,
+    reportedDurationMs: null,
+    reportedAudioDurationMs: null,
+    reportedVideoDurationMs: null,
+    reportedScreenDurationMs: null,
+    bytesSentEstimate: null,
+    bytesReceivedEstimate: null,
+    relayLikelyReports: null,
+    turnConfigured: null,
+    estimatedSfuTurnEgressBytes: null,
+    estimatedSfuTurnEgressStatus: "owned_by_messaging_core",
   };
 }
 
@@ -1630,19 +1249,6 @@ async function scalarNumber(
   const row = await env.CONTROL_DB.prepare(sql).first<{ value: number }>();
   const value = Number(row?.value ?? 0);
   return options.round ? Math.round(value) : value;
-}
-
-async function groupedCounts(env: Env, sql: string): Promise<Record<string, number>> {
-  const result = await env.CONTROL_DB.prepare(sql).all<{
-    name: string | null;
-    count: number;
-  }>();
-  return Object.fromEntries(
-    (result.results ?? []).map((row) => [
-      row.name ?? "unspecified",
-      Number(row.count ?? 0),
-    ]),
-  );
 }
 
 function nullableString(value: unknown): string | null {

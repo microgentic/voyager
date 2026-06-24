@@ -74,8 +74,8 @@ export const endpointStabilityCatalog = [
   { method: "DELETE", path: "/v1/sidebar-collections/{collectionId}/items/{roomId}", stability: "stable/current" },
   { method: "GET", path: "/v1/agent-requests", stability: "stable/current" },
   { method: "POST", path: "/v1/agent-requests", stability: "stable/current" },
-  { method: "GET", path: "/v1/calls/realtime", stability: "future-sensitive" },
-  { method: "POST", path: "/v1/calls/realtime/token", stability: "future-sensitive" },
+  { method: "GET", path: "/v1/calls/realtime", stability: "retired" },
+  { method: "POST", path: "/v1/calls/realtime/token", stability: "retired" },
   { method: "GET", path: "/v1/devices/{deviceId}/key-packages", stability: "future-sensitive" },
   { method: "POST", path: "/v1/devices/{deviceId}/key-packages", stability: "future-sensitive" },
   { method: "GET", path: "/v1/principals/{principalId}/key-packages", stability: "future-sensitive" },
@@ -174,11 +174,6 @@ const CALL_RUNTIME_BOUNDARY_ROUTES = [
   ["POST", "/v1/calls/{callId}/usage-report"]
 ];
 
-const CALL_REALTIME_BOUNDARY_ROUTES = [
-  ["GET", "/v1/calls/realtime"],
-  ["POST", "/v1/calls/realtime/token"],
-];
-
 const ACTIVE_CORE_FACADE_BOUNDARY_ROUTES = [
   ["POST", "/v1/messaging-core/realtime/token"]
 ];
@@ -199,14 +194,8 @@ export const messagingCoreBoundaryCatalog = [
   ...CALL_RUNTIME_BOUNDARY_ROUTES.map(([method, path]) => ({
     method,
     path,
-    boundary: "call-runtime",
-    diagnostics: "none",
-  })),
-  ...CALL_REALTIME_BOUNDARY_ROUTES.map(([method, path]) => ({
-    method,
-    path,
-    boundary: "call-realtime-runtime",
-    diagnostics: path === "/v1/calls/realtime" ? "websocket-protocol" : "none",
+    boundary: "core-runtime",
+    diagnostics: "messagingCoreCutover",
   })),
   ...ACTIVE_CORE_FACADE_BOUNDARY_ROUTES.map(([method, path]) => ({
     method,
@@ -495,14 +484,6 @@ export function assertRealtimeTokenResponse(payload, context) {
   string(value.expiresAt, `${context}.expiresAt`);
 }
 
-export function assertCallRealtimeTokenResponse(payload, context) {
-  const value = success(payload, context);
-  string(value.realtimeToken, `${context}.realtimeToken`);
-  string(value.expiresAt, `${context}.expiresAt`);
-  literal(value.protocol, "voyager.call-realtime.v1", `${context}.protocol`);
-  literal(value.connectPath, "/v1/calls/realtime", `${context}.connectPath`);
-}
-
 export function assertMessagingCoreSession(value, context) {
   const session = object(value, context);
   boolean(session.enabled, `${context}.enabled`);
@@ -570,6 +551,39 @@ export function assertAdminUsageResponse(payload, context) {
   number(attachmentBytes.uploadedStoredBytes, `${context}.usage.attachmentBytes.uploadedStoredBytes`);
 
   const callMedia = object(usage.callMedia, `${context}.usage.callMedia`);
+  if (callMedia.status === "core_owned") {
+    literal(callMedia.source, "messaging_core", `${context}.usage.callMedia.source`);
+    [
+      "totalCalls",
+      "activeCalls",
+      "endedCalls",
+      "failedCalls",
+      "participantRows",
+      "failedParticipants",
+      "maxParticipants",
+      "totalDurationMs",
+      "averageDurationMs",
+      "realtimeSessions",
+      "activeRealtimeSessions",
+      "realtimeTracks",
+      "failedMediaEvents",
+      "failedProviderRequests",
+      "usageReports",
+      "reportedDurationMs",
+      "reportedAudioDurationMs",
+      "reportedVideoDurationMs",
+      "reportedScreenDurationMs",
+      "bytesSentEstimate",
+      "bytesReceivedEstimate",
+      "relayLikelyReports",
+      "estimatedSfuTurnEgressBytes"
+    ].forEach((key) => nullableNumber(callMedia[key], `${context}.usage.callMedia.${key}`));
+    assertNumericMap(callMedia.tracksByKind, `${context}.usage.callMedia.tracksByKind`);
+    assertNumericMap(callMedia.tracksByQualityLayer, `${context}.usage.callMedia.tracksByQualityLayer`);
+    if (callMedia.turnConfigured !== null) boolean(callMedia.turnConfigured, `${context}.usage.callMedia.turnConfigured`);
+    string(callMedia.estimatedSfuTurnEgressStatus, `${context}.usage.callMedia.estimatedSfuTurnEgressStatus`);
+    return;
+  }
   [
     "totalCalls",
     "activeCalls",
@@ -606,7 +620,7 @@ export function assertEndpointCatalog() {
   for (const endpoint of endpointStabilityCatalog) {
     string(endpoint.method, "endpoint.method");
     string(endpoint.path, "endpoint.path");
-    if (!["stable/current", "admin/dev-only", "future-sensitive"].includes(endpoint.stability)) {
+    if (!["stable/current", "admin/dev-only", "future-sensitive", "retired"].includes(endpoint.stability)) {
       fail(`endpoint ${endpoint.method} ${endpoint.path} has invalid stability ${endpoint.stability}`);
     }
     const key = `${endpoint.method} ${endpoint.path}`;
@@ -623,12 +637,12 @@ export function assertMessagingCoreBoundaryCatalog() {
     string(entry.path, "messagingCoreBoundary.path");
     enumValue(
       entry.boundary,
-      ["core-runtime", "product-token-bridge", "call-runtime", "call-realtime-runtime", "active-core-facade"],
+      ["core-runtime", "product-token-bridge", "active-core-facade"],
       `messagingCoreBoundary(${entry.method} ${entry.path}).boundary`,
     );
     enumValue(
       entry.diagnostics,
-      ["messagingCoreCutover", "proxy-metadata", "websocket-protocol", "binary-proxy", "none"],
+      ["messagingCoreCutover", "proxy-metadata", "binary-proxy", "none"],
       `messagingCoreBoundary(${entry.method} ${entry.path}).diagnostics`,
     );
     if (entry.boundary === "core-runtime" && entry.diagnostics !== "messagingCoreCutover" && entry.diagnostics !== "binary-proxy") {
@@ -660,6 +674,7 @@ function endpointKey(endpoint) {
 
 function isCoreOwnedVoyagerRoute(endpoint) {
   const path = endpoint.path;
+  if (endpoint.stability === "retired") return false;
   return (
     path === "/v1/sync" ||
     path === "/v1/app/bootstrap" ||

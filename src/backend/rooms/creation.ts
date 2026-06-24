@@ -1,6 +1,5 @@
 import { randomId } from "../../crypto";
 import { HttpError, stringField } from "../../http";
-import { notifyRoomCallRealtime } from "../../realtime";
 import type { AuthContext, Env } from "../../types";
 import type { JsonObject } from "../shared/types";
 import { sqliteTimestamp, stringArrayField, uniqueStrings } from "../utils";
@@ -154,94 +153,5 @@ export async function archiveRoom(
   )
     .bind(roomId)
     .run();
-  await endLiveCallsForArchivedRoom(env, roomId);
   return publicRoomWithMembers(env, await getRoom(env, roomId));
-}
-
-export async function endLiveCallsForArchivedRoom(
-  env: Env,
-  roomId: string,
-): Promise<void> {
-  const liveCalls = await env.CONTROL_DB.prepare(
-    "SELECT call_id, call_type FROM calls WHERE room_id = ? AND status IN ('ringing', 'active')",
-  )
-    .bind(roomId)
-    .all<{ call_id: string; call_type: "audio" | "video" }>();
-  await endLiveCallRowsForArchivedRoom(env, roomId, liveCalls.results ?? []);
-}
-
-async function endLiveCallRowsForArchivedRoom(
-  env: Env,
-  roomId: string,
-  liveCalls: Array<{ call_id: string; call_type: "audio" | "video" }>,
-): Promise<void> {
-  if (!liveCalls.length) return;
-  await env.CONTROL_DB.batch([
-    env.CONTROL_DB.prepare(
-      `UPDATE calls
-       SET status = 'ended',
-           ended_reason = 'room_archived',
-           ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE room_id = ? AND status IN ('ringing', 'active')`,
-    ).bind(roomId),
-    env.CONTROL_DB.prepare(
-      `UPDATE call_participants
-       SET status = CASE
-             WHEN status IN ('invited', 'ringing', 'joining') THEN 'missed'
-             WHEN status = 'connected' THEN 'left'
-             ELSE status
-           END,
-           left_at = CASE WHEN left_at IS NULL AND status = 'connected' THEN CURRENT_TIMESTAMP ELSE left_at END,
-           muted_at = NULL,
-           audio_enabled = 0,
-           video_enabled = 0,
-           screen_enabled = 0,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE call_id IN (SELECT call_id FROM calls WHERE room_id = ?)
-         AND status IN ('invited', 'ringing', 'joining', 'connected')`,
-    ).bind(roomId),
-    env.CONTROL_DB.prepare(
-      `UPDATE call_realtime_tracks
-       SET status = 'closed',
-           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE call_id IN (SELECT call_id FROM calls WHERE room_id = ?)
-         AND status = 'active'`,
-    ).bind(roomId),
-    env.CONTROL_DB.prepare(
-      `UPDATE call_realtime_sessions
-       SET status = 'closed',
-           closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE call_id IN (SELECT call_id FROM calls WHERE room_id = ?)
-         AND status = 'active'`,
-    ).bind(roomId),
-  ]);
-  for (const call of liveCalls) {
-    await env.CONTROL_DB.prepare(
-      `INSERT INTO call_events (
-        call_event_id, call_id, actor_account_id, actor_principal_id,
-        actor_device_id, event_type, payload_json
-      ) VALUES (?, ?, NULL, NULL, NULL, 'call.ended', ?)`,
-    )
-      .bind(
-        randomId("cevt"),
-        call.call_id,
-        JSON.stringify({ roomId, status: "ended", reason: "room_archived" }),
-      )
-      .run();
-    await notifyRoomCallRealtime(env, roomId, {
-      type: "call.ended",
-      callId: call.call_id,
-      callType: call.call_type,
-      endedReason: "room_archived",
-    });
-    await notifyRoomCallRealtime(env, roomId, {
-      type: "call.updated",
-      callId: call.call_id,
-      callType: call.call_type,
-      status: "ended",
-    });
-  }
 }

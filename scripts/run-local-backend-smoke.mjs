@@ -187,11 +187,11 @@ const messagingCoreBaseUrl = `http://127.0.0.1:${messagingCorePort}`;
 const messagingCoreVars = [
   `MESSAGING_TOKEN_HMAC_SECRET:${messagingCoreTokenSecret}`,
   `MESSAGING_INTERNAL_SERVICE_SECRET:${messagingCoreInternalServiceSecret}`,
+  "CALL_RING_TIMEOUT_MS:5000",
   "CLOUDFLARE_REALTIME_MOCK:1"
 ];
 const workerVars = [
   `BOOTSTRAP_TOKEN:${bootstrapToken}`,
-  "CALL_RING_TIMEOUT_MS:5000",
   "CALLS_ENABLED:1",
   "AUDIO_CALLS_ENABLED:1",
   "VIDEO_CALLS_ENABLED:1",

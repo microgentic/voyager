@@ -37,7 +37,7 @@ Source organization is documented in `docs/backend-source-layout.md`. The active
 - Opaque message envelopes with idempotency keys, per-room Conversation Durable Object write coordination, server-side room sequencing, pending delivery receipts, sync, acknowledgements, edits, forwards, reactions, pins, and threads.
 - Durable Object WebSocket event hints for near-immediate foreground message awareness, with HTTP sync still serving as the source of truth.
 - R2-backed opaque attachment allocation, variant-aware original/preview/thumbnail upload, completion, authenticated variant download, pre-reference deletion, quota checks, and cleanup through the Worker. Generic delete and post-reference completion are blocked once an attachment is message-referenced.
-- Durable call lifecycle with participants, call events, `CallCoordinator` serialization, Cloudflare Realtime session/track metadata, feature-flagged audio/video/screen media support, usage reports, diagnostics, and metadata-only cleanup. Call media flows through WebRTC/provider infrastructure and is never stored in D1 or R2.
+- Messaging Core-owned call lifecycle with participants, call events, serialized Core mutations, Cloudflare Realtime session/track metadata, feature-flagged audio/video/screen media support, usage reports, diagnostics, room-archive cleanup, and device-revoke participant cleanup. Call media flows through WebRTC/provider infrastructure and is never stored in D1 or R2.
 - Sidebar collections for user-owned room organization metadata.
 - Maintenance cleanup endpoint and maintenance run history.
 - Fetch-based local, mock-Realtime, and remote backend smoke scripts that exercise the main API path end to end.

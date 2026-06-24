@@ -20,6 +20,11 @@ const DISALLOWED_LEGACY_RUNTIME_PATHS = [
   "src/backend/routing/thread-routes.ts",
   "src/backend/sync.ts",
   "src/backend/threads.ts",
+  "src/backend/call-coordinator.ts",
+  "src/backend/calls.ts",
+  "src/backend/calls",
+  "src/backend/routing/call-routes.ts",
+  "src/realtime.ts",
 ];
 
 const TEXT_SCAN_ROOTS = ["src", "apps/client/src", "scripts", "docs"];
@@ -55,7 +60,7 @@ const evidence = [];
 
 assertNoDisallowedPaths();
 assertRouteCatalog();
-assertNoActiveConversationCoordinatorBinding();
+assertNoActiveLegacyDurableObjectBindings();
 scanTextFiles();
 
 if (failures.length) {
@@ -105,23 +110,33 @@ function assertRouteCatalog() {
   });
 }
 
-function assertNoActiveConversationCoordinatorBinding() {
+function assertNoActiveLegacyDurableObjectBindings() {
   const wrangler = readFileSync("wrangler.jsonc", "utf8");
   const durableObjectsBlock = extractJsonObjectLikeBlock(wrangler, "durable_objects");
   if (!durableObjectsBlock) {
-    failures.push("wrangler.jsonc does not contain a durable_objects block to verify");
+    evidence.push({ check: "no-active-voyager-durable-object-bindings" });
+    assertNoLegacyDurableObjectsOnEnv();
     return;
   }
-  if (/"CONVERSATION_COORDINATOR"|"ConversationCoordinator"/.test(durableObjectsBlock)) {
-    failures.push("wrangler.jsonc has an active ConversationCoordinator Durable Object binding");
+  if (/"CONVERSATION_COORDINATOR"|"ConversationCoordinator"|"CALL_COORDINATOR"|"CallCoordinator"|"REALTIME_MAILBOX"|"RealtimeMailbox"/.test(durableObjectsBlock)) {
+    failures.push("wrangler.jsonc has an active legacy Voyager messaging/call Durable Object binding");
   }
 
+  assertNoLegacyDurableObjectsOnEnv();
+  evidence.push({ check: "no-active-voyager-durable-object-bindings" });
+}
+
+function assertNoLegacyDurableObjectsOnEnv() {
   const envSource = readFileSync("src/types.ts", "utf8");
   if (envSource.includes("CONVERSATION_COORDINATOR")) {
     failures.push("src/types.ts reintroduces CONVERSATION_COORDINATOR on Env");
   }
-
-  evidence.push({ check: "no-active-voyager-conversation-coordinator-binding" });
+  if (envSource.includes("CALL_COORDINATOR")) {
+    failures.push("src/types.ts reintroduces CALL_COORDINATOR on Env");
+  }
+  if (envSource.includes("REALTIME_MAILBOX")) {
+    failures.push("src/types.ts reintroduces REALTIME_MAILBOX on Env");
+  }
 }
 
 function scanTextFiles() {
@@ -146,6 +161,16 @@ function scanTextFiles() {
       }
       if (/ConversationCoordinator/.test(line) && file.startsWith("src/")) {
         failures.push(`${file}:${lineNumber} reintroduces Voyager source reference to ConversationCoordinator`);
+      }
+      if (/(CallCoordinator|RealtimeMailbox|CALL_COORDINATOR|REALTIME_MAILBOX|voyager\.call-realtime\.v1)/.test(line) && file.startsWith("src/")) {
+        failures.push(`${file}:${lineNumber} reintroduces Voyager call runtime source`);
+      }
+      if (
+        /(call-runtime|call-realtime-runtime)/.test(line) &&
+        file !== "scripts/core-only-messaging-guard.mjs" &&
+        (file.startsWith("src/") || file.startsWith("scripts/"))
+      ) {
+        failures.push(`${file}:${lineNumber} reintroduces legacy call runtime boundary text`);
       }
       if (/ConversationCoordinator/.test(line) && !file.startsWith("src/") && !CONVERSATION_COORDINATOR_DOC_ALLOWLIST.has(file) && file !== "scripts/core-only-messaging-guard.mjs") {
         failures.push(`${file}:${lineNumber} mentions ConversationCoordinator outside approved historical/Core-boundary docs`);

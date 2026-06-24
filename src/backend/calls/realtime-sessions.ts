@@ -1,3 +1,0 @@
-export {
-  getRealtimeSessionConfig,
-} from "./core";
