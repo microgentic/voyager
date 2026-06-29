@@ -1580,7 +1580,7 @@ async function messagingCoreCallCutoverRoute(
     return {
       method: "POST",
       path: `/calls/${callMediaSignalsMatch[1]}/media/signals`,
-      body: await readJsonObject(request),
+      body: messagingCoreProviderSessionBody(await readJsonObject(request)),
       responseKind: "signal",
     };
   }

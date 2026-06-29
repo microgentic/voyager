@@ -15,6 +15,7 @@ const messagingCoreRoot = process.env.MESSAGING_CORE_SERVICE_ROOT ?? "/Users/adm
 const messagingCoreWranglerConfig = process.env.MESSAGING_CORE_WRANGLER_CONFIG ?? "apps/voyager-messaging-worker.example/wrangler.example.jsonc";
 const messagingCoreTokenSecret = process.env.MESSAGING_CORE_TOKEN_SECRET ?? "local-messaging-core-token-secret";
 const messagingCoreInternalServiceSecret = process.env.MESSAGING_CORE_INTERNAL_SERVICE_SECRET ?? "local-messaging-core-internal-service-secret";
+const callMediaProvider = process.env.SMOKE_CALL_MEDIA_PROVIDER ?? "cloudflare_realtime";
 const pathEnvKey = process.platform === "win32" ? "Path" : "PATH";
 const smokePath = [
   join(projectRoot, "node_modules", ".bin"),
@@ -187,9 +188,19 @@ const messagingCoreBaseUrl = `http://127.0.0.1:${messagingCorePort}`;
 const messagingCoreVars = [
   `MESSAGING_TOKEN_HMAC_SECRET:${messagingCoreTokenSecret}`,
   `MESSAGING_INTERNAL_SERVICE_SECRET:${messagingCoreInternalServiceSecret}`,
-  "CALL_RING_TIMEOUT_MS:5000",
-  "CLOUDFLARE_REALTIME_MOCK:1"
+  "CALL_RING_TIMEOUT_MS:5000"
 ];
+if (callMediaProvider === "p2p_webrtc") {
+  messagingCoreVars.push(
+    "CALL_MEDIA_PROVIDER:p2p_webrtc",
+    "CALLS_P2P_ENABLED:1",
+    "CALL_P2P_STUN_URLS:stun:stun.example.invalid:3478"
+  );
+} else if (callMediaProvider === "cloudflare_realtime") {
+  messagingCoreVars.push("CLOUDFLARE_REALTIME_MOCK:1");
+} else {
+  throw new Error(`Unsupported SMOKE_CALL_MEDIA_PROVIDER: ${callMediaProvider}`);
+}
 const workerVars = [
   `BOOTSTRAP_TOKEN:${bootstrapToken}`,
   "CALLS_ENABLED:1",
@@ -276,7 +287,8 @@ try {
       BASE_URL: baseUrl,
       BOOTSTRAP_TOKEN: bootstrapToken,
       SMOKE_MESSAGING_CORE_BRIDGE: "1",
-      SMOKE_MESSAGING_CORE_TOKEN_SECRET: messagingCoreTokenSecret
+      SMOKE_MESSAGING_CORE_TOKEN_SECRET: messagingCoreTokenSecret,
+      SMOKE_CALL_MEDIA_PROVIDER: callMediaProvider
     },
     commandTimeoutMs: smokeTimeoutMs
   });
