@@ -994,6 +994,10 @@ function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
   const realtimeMediaEnabled = Boolean(features.realtimeMedia);
   const configured = Boolean(calls.mediaConfigured ?? calls.realtimeMediaConfigured);
   const mock = Boolean(calls.mockEnabled);
+  const turnConfigured = Boolean(calls.turnConfigured);
+  const stunConfigured = callStunConfigured(calls, provider, configured, turnConfigured);
+  const releaseBlockers = callReleaseBlockers(calls, provider, configured, mock, turnConfigured);
+  const credentialMode = turnCredentialMode(calls, turnConfigured);
   const configurationStatus = stringValue(payload.configurationStatus)
     ?? (realtimeMediaEnabled ? (configured ? "configured" : "not_configured") : "disabled");
   return {
@@ -1006,11 +1010,11 @@ function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
     providerHealthCheckedAt: null,
     mock,
     apiBase: "managed-by-messaging-core",
-    stunConfigured: Boolean(calls.stunConfigured),
-    turnConfigured: Boolean(calls.turnConfigured),
-    turnCredentialMode: turnCredentialMode(calls),
-    releaseReadiness: callReleaseReadiness(calls),
-    releaseBlockers: stringArrayValue(calls.releaseBlockers),
+    stunConfigured,
+    turnConfigured,
+    turnCredentialMode: credentialMode,
+    releaseReadiness: callReleaseReadiness(calls, provider, configured, mock, turnConfigured),
+    releaseBlockers,
     lastProviderCheckAt: null,
     lastProviderCheckStatus: "not_checked",
     estimatedSfuTurnEgressStatus: "owned_by_messaging_core",
@@ -1018,8 +1022,8 @@ function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
     credentialState: {
       appIdConfigured: provider === "cloudflare_realtime" && configured && !mock,
       appSecretConfigured: provider === "cloudflare_realtime" && configured && !mock,
-      turnCredentialsConfigured: Boolean(calls.turnConfigured),
-      turnCredentialMode: turnCredentialMode(calls),
+      turnCredentialsConfigured: turnConfigured,
+      turnCredentialMode: credentialMode,
     },
     messagingCore: {
       source: "core",
@@ -1035,14 +1039,70 @@ function callMediaProvider(calls: JsonObject): "cloudflare_realtime" | "p2p_webr
     : "cloudflare_realtime";
 }
 
-function turnCredentialMode(calls: JsonObject): "none" | "static" | "ephemeral" {
-  const mode = stringValue(calls.turnCredentialMode);
-  return mode === "static" || mode === "ephemeral" ? mode : "none";
+function callStunConfigured(
+  calls: JsonObject,
+  provider: "cloudflare_realtime" | "p2p_webrtc",
+  configured: boolean,
+  turnConfigured: boolean,
+): boolean {
+  if (typeof calls.stunConfigured === "boolean") {
+    return calls.stunConfigured;
+  }
+  if (provider === "cloudflare_realtime") {
+    return true;
+  }
+  return configured && !turnConfigured;
 }
 
-function callReleaseReadiness(calls: JsonObject): "not_configured" | "dev_only" | "production_ready" {
+function turnCredentialMode(calls: JsonObject, turnConfigured: boolean): "none" | "static" | "ephemeral" {
+  const mode = stringValue(calls.turnCredentialMode);
+  if (mode === "static" || mode === "ephemeral") {
+    return mode;
+  }
+  return turnConfigured ? "static" : "none";
+}
+
+function callReleaseReadiness(
+  calls: JsonObject,
+  provider: "cloudflare_realtime" | "p2p_webrtc",
+  configured: boolean,
+  mock: boolean,
+  turnConfigured: boolean,
+): "not_configured" | "dev_only" | "production_ready" {
   const readiness = stringValue(calls.releaseReadiness);
-  return readiness === "dev_only" || readiness === "production_ready" ? readiness : "not_configured";
+  if (readiness === "not_configured" || readiness === "dev_only" || readiness === "production_ready") {
+    return readiness;
+  }
+  if (!configured) {
+    return "not_configured";
+  }
+  if (mock || (provider === "p2p_webrtc" && !turnConfigured)) {
+    return "dev_only";
+  }
+  return "production_ready";
+}
+
+function callReleaseBlockers(
+  calls: JsonObject,
+  provider: "cloudflare_realtime" | "p2p_webrtc",
+  configured: boolean,
+  mock: boolean,
+  turnConfigured: boolean,
+): string[] {
+  const blockers = stringArrayValue(calls.releaseBlockers);
+  if (blockers.length > 0 || Array.isArray(calls.releaseBlockers)) {
+    return blockers;
+  }
+  if (!configured) {
+    return ["media_not_configured"];
+  }
+  if (mock) {
+    return ["media_provider_mock_enabled"];
+  }
+  if (provider === "p2p_webrtc" && !turnConfigured) {
+    return ["owned_turn_not_configured"];
+  }
+  return [];
 }
 
 function stringArrayValue(value: unknown): string[] {
