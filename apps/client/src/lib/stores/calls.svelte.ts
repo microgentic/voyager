@@ -1,6 +1,8 @@
 import { api, isApiError } from '$lib/api';
 import type {
 	Call,
+	CallIceCandidate,
+	CallMediaProvider,
 	CallParticipant,
 	CallFeatureFlags,
 	CallRealtimeConfig,
@@ -9,6 +11,8 @@ import type {
 	CallRealtimeTrackInput,
 	CallRealtimeTrackKind,
 	CallType,
+	CallSignalEvent,
+	CallSignalType,
 	CallUsageReportTrackInput,
 	RealtimeCallEvent,
 	Room
@@ -95,6 +99,11 @@ interface ConnectMediaOptions {
 	audioOutputId?: string;
 	videoInputId?: string;
 	startWithCamera?: boolean;
+}
+
+interface P2pSignalTarget {
+	principalId: string;
+	deviceId: string;
 }
 
 const LIVE_CALL_STATUSES = new Set(['ringing', 'active']);
@@ -228,6 +237,7 @@ class CallsStore {
 	private localStream: MediaStream | null = null;
 	private sessionId: string | null = null;
 	private mediaCallId: string | null = null;
+	private mediaProvider: CallMediaProvider | null = null;
 	private publishedMids = new Set<string>();
 	private subscribedTracks = new Set<string>();
 	private pendingRemoteVideoTracks: CallRealtimeTrack[] = [];
@@ -243,6 +253,17 @@ class CallsStore {
 	private mediaAttemptId = 0;
 	private mediaStartedAt: number | null = null;
 	private usageReportSent = false;
+	private p2pTarget: P2pSignalTarget | null = null;
+	private p2pPolite = true;
+	private p2pMakingOffer = false;
+	private p2pSettingRemoteAnswerPending = false;
+	private p2pIgnoreOffer = false;
+	private p2pInitialOfferSent = false;
+	private p2pInitialNegotiationComplete = false;
+	private p2pReadyTargetKey: string | null = null;
+	private p2pSignalSequence = 0;
+	private p2pPendingCandidates: CallIceCandidate[] = [];
+	private pendingP2pSignals: CallSignalEvent[] = [];
 
 	constructor() {
 		this.loadDevicePreferences();
@@ -813,6 +834,10 @@ class CallsStore {
 
 	async handleRealtimeEvent(event: RealtimeCallEvent): Promise<void> {
 		void this.loadRoomHistory(event.roomId, { quiet: true });
+		if (event.type === 'call.signal') {
+			await this.handleP2pSignal(event);
+			return;
+		}
 		if (event.type === 'call.invite' || event.type === 'call.ringing') {
 			if (event.createdByPrincipalId !== auth.principal?.principalId) {
 				await this.refreshIncomingCall(event.callId);
@@ -830,7 +855,8 @@ class CallsStore {
 		if (this.activeCall?.callId === event.callId) {
 			await this.refreshActiveCall();
 			if (event.type === 'call.joined' || event.type === 'call.updated') {
-				await this.refreshAvailableTracks();
+				if (this.mediaProvider === 'p2p_webrtc') await this.maybeStartP2pNegotiation();
+				else await this.refreshAvailableTracks();
 			}
 		}
 	}
@@ -943,6 +969,9 @@ class CallsStore {
 				toasts.error(sessionConfig.message);
 				return false;
 			}
+			if (sessionConfig.provider === 'p2p_webrtc') {
+				return await this.connectP2pMedia(call, sessionConfig, options, attemptId);
+			}
 
 			const peer = new RTCPeerConnection({
 				iceServers: sessionConfig.iceServers as RTCIceServer[]
@@ -950,6 +979,8 @@ class CallsStore {
 			this.peer = peer;
 			this.sessionId = sessionConfig.session.sessionId;
 			this.mediaCallId = call.callId;
+			this.mediaProvider = sessionConfig.provider;
+			this.resetP2pState();
 			this.publishedMids = new Set();
 			this.subscribedTracks = new Set();
 			this.pendingRemoteVideoTracks = [];
@@ -1062,6 +1093,120 @@ class CallsStore {
 		}
 	}
 
+	private async connectP2pMedia(
+		call: Call,
+		sessionConfig: CallRealtimeConfig,
+		options: ConnectMediaOptions,
+		attemptId: number
+	): Promise<boolean> {
+		const sessionId = sessionConfig.session?.sessionId;
+		if (!sessionId) return false;
+		const peer = new RTCPeerConnection({
+			iceServers: sessionConfig.iceServers as RTCIceServer[]
+		});
+		this.peer = peer;
+		this.sessionId = sessionId;
+		this.mediaCallId = call.callId;
+		this.mediaProvider = 'p2p_webrtc';
+		this.resetP2pState({ keepPendingSignals: true });
+		this.p2pPolite = this.isP2pPolite(call);
+		this.publishedMids = new Set();
+		this.subscribedTracks = new Set();
+		this.pendingRemoteVideoTracks = [];
+		this.remoteStreams = [];
+		this.remoteVideoStreams = [];
+		this.localVideoStream = null;
+		this.localScreenStream = null;
+		this.audioSender = null;
+		this.videoSender = null;
+		this.cameraEnabled = false;
+		this.screenShareEnabled = false;
+		this.screenSender = null;
+		this.screenTrackMid = null;
+		this.peerConnectionState = peer.connectionState;
+		this.iceConnectionState = peer.iceConnectionState;
+		this.iceGatheringState = peer.iceGatheringState;
+		this.signalingState = peer.signalingState;
+		this.mediaStartedAt = null;
+		this.usageReportSent = false;
+		this.diagnostics = {
+			...EMPTY_CALL_DIAGNOSTICS,
+			callId: call.callId,
+			sessionId,
+			peerConnectionState: peer.connectionState,
+			iceConnectionState: peer.iceConnectionState,
+			iceGatheringState: peer.iceGatheringState,
+			signalingState: peer.signalingState
+		};
+		this.activeAudioInputId = options.audioInputId ?? this.devicePreferences.audioInputId ?? '';
+		this.activeVideoInputId = options.videoInputId ?? this.devicePreferences.videoInputId ?? '';
+		this.wirePeer(peer);
+
+		this.localStream = await navigator.mediaDevices.getUserMedia({
+			audio: audioConstraints(this.activeAudioInputId || undefined),
+			video:
+				call.callType === 'video' && options.startWithCamera
+					? videoConstraints(this.cameraFacingMode, this.activeVideoInputId || undefined)
+					: false
+		});
+		if (!this.isCurrentMediaAttempt(attemptId, call.callId)) {
+			await this.closeMedia({ notifyProvider: false });
+			return false;
+		}
+		const audioTrack = this.localStream.getAudioTracks()[0];
+		if (!audioTrack) throw new Error('Microphone did not provide an audio track.');
+		const publishTracks: CallRealtimeTrackInput[] = [];
+		const publishMids: Array<string | null> = [];
+		const audioTransceiver = peer.addTransceiver(audioTrack, {
+			direction: 'sendrecv',
+			streams: [this.localStream]
+		});
+		this.audioSender = audioTransceiver.sender;
+		publishMids.push(audioTransceiver.mid ?? 'audio');
+		publishTracks.push({
+			location: 'local',
+			trackName: localTrackName(call, 'audio'),
+			kind: 'audio',
+			mid: audioTransceiver.mid ?? 'audio'
+		});
+
+		if (call.callType === 'video' && options.startWithCamera) {
+			const videoTrack = this.localStream.getVideoTracks()[0];
+			if (!videoTrack) throw new Error('Camera did not provide a video track.');
+			const videoTransceiver = addCameraTransceiver(peer, videoTrack, this.localStream);
+			this.videoSender = videoTransceiver.sender;
+			publishMids.push(videoTransceiver.mid ?? 'video');
+			publishTracks.push({
+				location: 'local',
+				trackName: localTrackName(call, 'video'),
+				kind: 'video',
+				mid: videoTransceiver.mid ?? 'video'
+			});
+			this.cameraEnabled = true;
+			this.updateLocalVideoStream();
+		}
+
+		const trackConfig = await api.getCallRealtimeTrackConfig(call.callId, {
+			sessionId,
+			tracks: publishTracks
+		});
+		if (!this.isCurrentMediaAttempt(attemptId, call.callId)) {
+			await this.closeMedia({ notifyProvider: false });
+			return false;
+		}
+		this.publishedMids = publishedTrackMids(trackConfig, publishMids);
+		this.mediaState = 'active';
+		this.mediaStartedAt = Date.now();
+		await this.syncParticipantMediaState();
+		this.startMediaHeartbeat();
+		this.startStatsHeartbeat();
+		await this.refreshCallStats();
+		await this.applyAudioOutputToAll();
+		await this.maybeStartP2pNegotiation();
+		await this.drainPendingP2pSignals();
+		return true;
+	}
+
 	private wirePeer(peer: RTCPeerConnection): void {
 		const updateConnectionState = () => {
 			this.peerConnectionState = peer.connectionState;
@@ -1110,6 +1255,17 @@ class CallsStore {
 				this.lastError = 'Call media connection was interrupted.';
 			}
 		};
+		peer.onicecandidate = (event) => {
+			if (this.mediaProvider !== 'p2p_webrtc' || !event.candidate) return;
+			void this.sendP2pSignal('ice-candidate', {
+				candidate: iceCandidate(event.candidate)
+			}).catch(() => undefined);
+		};
+		peer.onnegotiationneeded = () => {
+			if (this.mediaProvider !== 'p2p_webrtc') return;
+			if (this.p2pPolite && !this.p2pInitialNegotiationComplete) return;
+			void this.createAndSendP2pOffer();
+		};
 		peer.oniceconnectionstatechange = updateConnectionState;
 		peer.onicegatheringstatechange = updateConnectionState;
 		peer.onsignalingstatechange = updateConnectionState;
@@ -1117,6 +1273,10 @@ class CallsStore {
 
 	private async refreshAvailableTracks(): Promise<void> {
 		if (!this.activeCall || !this.sessionId || this.mediaState !== 'active') return;
+		if (this.mediaProvider === 'p2p_webrtc') {
+			await this.maybeStartP2pNegotiation();
+			return;
+		}
 		try {
 			const config = await api.getCallRealtimeTrackConfig(this.activeCall.callId, {
 				sessionId: this.sessionId
@@ -1128,6 +1288,7 @@ class CallsStore {
 	}
 
 	private async subscribeAvailableTracks(tracks: CallRealtimeTrack[]): Promise<void> {
+		if (this.mediaProvider === 'p2p_webrtc') return;
 		if (this.subscribing || !this.activeCall || !this.sessionId || !this.peer) return;
 		const remoteTracks = tracks.filter(
 			(track) =>
@@ -1171,6 +1332,7 @@ class CallsStore {
 	}
 
 	private async applyProviderDescription(config: CallRealtimeConfig): Promise<void> {
+		if (this.mediaProvider === 'p2p_webrtc') return;
 		if (!config.sessionDescription || !this.peer || !this.activeCall || !this.sessionId) return;
 		await this.peer.setRemoteDescription(config.sessionDescription);
 		if (config.sessionDescription.type === 'offer') {
@@ -1180,6 +1342,198 @@ class CallsStore {
 				sessionDescription: answer
 			});
 		}
+	}
+
+	private async handleP2pSignal(event: CallSignalEvent): Promise<void> {
+		if (event.callId !== this.activeCall?.callId) return;
+		if (event.fromPrincipalId === auth.principal?.principalId) return;
+		if (event.toPrincipalId !== auth.principal?.principalId) return;
+		if (event.toDeviceId && event.toDeviceId !== auth.device?.deviceId) return;
+		if (event.callId !== this.mediaCallId || this.mediaProvider !== 'p2p_webrtc' || !this.peer) {
+			this.pendingP2pSignals = [...this.pendingP2pSignals, event].slice(-50);
+			return;
+		}
+		if (event.fromDeviceId) {
+			this.p2pTarget = {
+				principalId: event.fromPrincipalId,
+				deviceId: event.fromDeviceId
+			};
+		}
+		if (event.signalType === 'ready') {
+			await this.maybeStartP2pNegotiation();
+			return;
+		}
+		if (event.signalType === 'hangup') return;
+		if (event.signalType === 'ice-candidate') {
+			await this.handleP2pCandidate(event.candidate);
+			return;
+		}
+		if (event.signalType === 'renegotiate' || event.signalType === 'ice-restart') {
+			await this.createAndSendP2pOffer({ iceRestart: event.signalType === 'ice-restart' });
+			return;
+		}
+		if (!event.description) return;
+		await this.handleP2pDescription(event.description);
+	}
+
+	private async handleP2pDescription(description: CallRealtimeSessionDescription): Promise<void> {
+		const peer = this.peer;
+		if (!peer || this.mediaProvider !== 'p2p_webrtc') return;
+		try {
+			const readyForOffer =
+				!this.p2pMakingOffer && (peer.signalingState === 'stable' || this.p2pSettingRemoteAnswerPending);
+			const offerCollision = description.type === 'offer' && !readyForOffer;
+			this.p2pIgnoreOffer = !this.p2pPolite && offerCollision;
+			if (this.p2pIgnoreOffer) return;
+			this.p2pSettingRemoteAnswerPending = description.type === 'answer';
+			await peer.setRemoteDescription(description);
+			this.p2pSettingRemoteAnswerPending = false;
+			await this.flushP2pCandidates();
+			if (description.type === 'offer') {
+				const answer = await createP2pAnswer(peer);
+				await this.sendP2pSignal('answer', { description: answer });
+				this.p2pInitialNegotiationComplete = true;
+			} else {
+				this.p2pInitialNegotiationComplete = true;
+			}
+		} catch (error) {
+			this.p2pSettingRemoteAnswerPending = false;
+			if (!this.p2pIgnoreOffer) {
+				this.lastError = displayError(error, 'Could not apply call signal.');
+			}
+		}
+	}
+
+	private async handleP2pCandidate(candidate: CallIceCandidate | undefined): Promise<void> {
+		if (!candidate || !this.peer) return;
+		if (!this.peer.remoteDescription) {
+			this.p2pPendingCandidates = [...this.p2pPendingCandidates, candidate].slice(-100);
+			return;
+		}
+		try {
+			await this.peer.addIceCandidate(candidate);
+		} catch (error) {
+			if (!this.p2pIgnoreOffer) this.lastError = displayError(error, 'Could not apply call network candidate.');
+		}
+	}
+
+	private async flushP2pCandidates(): Promise<void> {
+		const peer = this.peer;
+		if (!peer || !peer.remoteDescription || !this.p2pPendingCandidates.length) return;
+		const candidates = this.p2pPendingCandidates;
+		this.p2pPendingCandidates = [];
+		for (const candidate of candidates) {
+			await peer.addIceCandidate(candidate).catch((error) => {
+				if (!this.p2pIgnoreOffer) this.lastError = displayError(error, 'Could not apply call network candidate.');
+			});
+		}
+	}
+
+	private async maybeStartP2pNegotiation(): Promise<void> {
+		if (!this.peer || !this.activeCall || !this.sessionId || this.mediaProvider !== 'p2p_webrtc') return;
+		const target = this.p2pTargetParticipant() ?? this.p2pTarget;
+		if (!target) return;
+		this.p2pTarget = target;
+		const targetKey = p2pTargetKey(target);
+		if (this.p2pReadyTargetKey !== targetKey) {
+			this.p2pReadyTargetKey = targetKey;
+			await this.sendP2pSignal('ready').catch(() => {
+				this.p2pReadyTargetKey = null;
+			});
+		}
+		if (!this.p2pPolite && !this.p2pInitialOfferSent) {
+			await this.createAndSendP2pOffer();
+		}
+	}
+
+	private async drainPendingP2pSignals(): Promise<void> {
+		if (!this.pendingP2pSignals.length) return;
+		const signals = this.pendingP2pSignals;
+		this.pendingP2pSignals = [];
+		for (const signal of signals) await this.handleP2pSignal(signal);
+	}
+
+	private async createAndSendP2pOffer(options: { iceRestart?: boolean } = {}): Promise<void> {
+		const peer = this.peer;
+		if (!peer || this.mediaProvider !== 'p2p_webrtc' || !this.activeCall || !this.sessionId) return;
+		if (!this.p2pTarget && !this.p2pTargetParticipant()) return;
+		if (this.p2pMakingOffer || peer.signalingState !== 'stable') return;
+		try {
+			this.p2pMakingOffer = true;
+			const offer = await createP2pOffer(peer, options);
+			await this.sendP2pSignal('offer', { description: offer });
+			this.p2pInitialOfferSent = true;
+		} catch (error) {
+			await peer.setLocalDescription({ type: 'rollback' }).catch(() => undefined);
+			this.lastError = displayError(error, 'Could not negotiate call media.');
+		} finally {
+			this.p2pMakingOffer = false;
+		}
+	}
+
+	private async sendP2pSignal(
+		type: CallSignalType,
+		payload: {
+			description?: CallRealtimeSessionDescription;
+			candidate?: CallIceCandidate;
+		} = {}
+	): Promise<boolean> {
+		const call = this.activeCall;
+		const target = this.p2pTarget ?? this.p2pTargetParticipant();
+		if (!call || !target) return false;
+		this.p2pTarget = target;
+		await api.sendCallSignal(call.callId, {
+			signalId: cryptoId('sig'),
+			targetPrincipalId: target.principalId,
+			targetDeviceId: target.deviceId,
+			sessionId: this.sessionId ?? undefined,
+			type,
+			...payload,
+			sequence: ++this.p2pSignalSequence
+		});
+		return true;
+	}
+
+	private p2pTargetParticipant(): P2pSignalTarget | null {
+		const principalId = auth.principal?.principalId;
+		const call = this.activeCall;
+		if (!call || !principalId) return null;
+		const participant = call.participants.find(
+			(candidate) =>
+				candidate.status === 'connected' &&
+				candidate.principalId !== principalId &&
+				!!candidate.deviceId
+		);
+		return participant?.deviceId
+			? {
+					principalId: participant.principalId,
+					deviceId: participant.deviceId
+				}
+			: null;
+	}
+
+	private isP2pPolite(call: Call): boolean {
+		const principalId = auth.principal?.principalId;
+		const deviceId = auth.device?.deviceId;
+		if (!principalId) return true;
+		return !(
+			call.createdByPrincipalId === principalId &&
+			(!call.createdByDeviceId || call.createdByDeviceId === deviceId)
+		);
+	}
+
+	private resetP2pState(options: { keepPendingSignals?: boolean } = {}): void {
+		this.p2pTarget = null;
+		this.p2pPolite = true;
+		this.p2pMakingOffer = false;
+		this.p2pSettingRemoteAnswerPending = false;
+		this.p2pIgnoreOffer = false;
+		this.p2pInitialOfferSent = false;
+		this.p2pInitialNegotiationComplete = false;
+		this.p2pReadyTargetKey = null;
+		this.p2pSignalSequence = 0;
+		this.p2pPendingCandidates = [];
+		if (!options.keepPendingSignals) this.pendingP2pSignals = [];
 	}
 
 	private setLocalMuted(muted: boolean): void {
@@ -1209,6 +1563,10 @@ class CallsStore {
 			}
 			return;
 		}
+		if (this.mediaProvider === 'p2p_webrtc' && !this.videoSender) {
+			if (notifyOnError) toasts.error('Camera is not available for this call yet.');
+			return;
+		}
 		try {
 			if (this.videoSender) {
 				await this.replaceCameraTrack(this.cameraFacingMode, this.activeVideoInputId || undefined);
@@ -1232,6 +1590,10 @@ class CallsStore {
 		if (!peer || !call || !sessionId || !this.mediaCallId || this.startingScreenShare) return;
 		if (!this.screenShareAvailable) {
 			toasts.error('Screen sharing is not available on this device.');
+			return;
+		}
+		if (this.mediaProvider === 'p2p_webrtc') {
+			toasts.error('Screen sharing is not available for this call yet.');
 			return;
 		}
 		this.startingScreenShare = true;
@@ -1520,9 +1882,11 @@ class CallsStore {
 		this.peer = null;
 		this.sessionId = null;
 		this.mediaCallId = null;
+		this.mediaProvider = null;
 		this.publishedMids = new Set();
 		this.subscribedTracks = new Set();
 		this.pendingRemoteVideoTracks = [];
+		this.resetP2pState();
 		this.audioSender = null;
 		this.videoSender = null;
 		this.screenSender = null;
@@ -1720,9 +2084,34 @@ async function createAnswer(peer: RTCPeerConnection): Promise<CallRealtimeSessio
 	return sessionDescription(peer.localDescription);
 }
 
+async function createP2pOffer(
+	peer: RTCPeerConnection,
+	options: { iceRestart?: boolean } = {}
+): Promise<CallRealtimeSessionDescription> {
+	const offer = await peer.createOffer(options.iceRestart ? { iceRestart: true } : undefined);
+	await peer.setLocalDescription(offer);
+	return sessionDescription(peer.localDescription);
+}
+
+async function createP2pAnswer(peer: RTCPeerConnection): Promise<CallRealtimeSessionDescription> {
+	const answer = await peer.createAnswer();
+	await peer.setLocalDescription(answer);
+	return sessionDescription(peer.localDescription);
+}
+
 function sessionDescription(description: RTCSessionDescription | null): CallRealtimeSessionDescription {
 	if (!description) throw new Error('Missing WebRTC session description.');
 	return { type: description.type, sdp: description.sdp };
+}
+
+function iceCandidate(candidate: RTCIceCandidate): CallIceCandidate {
+	const json = candidate.toJSON();
+	return {
+		candidate: json.candidate ?? candidate.candidate,
+		sdpMid: json.sdpMid ?? null,
+		sdpMLineIndex: json.sdpMLineIndex ?? null,
+		usernameFragment: json.usernameFragment ?? null
+	};
 }
 
 function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
@@ -1866,6 +2255,10 @@ function publishedTrackMids(config: CallRealtimeConfig, fallbackMids: Array<stri
 
 function remoteTrackKey(track: CallRealtimeTrack): string {
 	return `${track.kind}:${track.sessionId}:${track.trackName}`;
+}
+
+function p2pTargetKey(target: P2pSignalTarget): string {
+	return `${target.principalId}:${target.deviceId}`;
 }
 
 function canSubscribeTrackKind(kind: CallRealtimeTrackKind, callType: CallType): boolean {
