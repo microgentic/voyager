@@ -40,6 +40,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/calls/{callId}/realtime/tracks", stability: "future-sensitive" },
   { method: "POST", path: "/v1/calls/{callId}/realtime/renegotiate", stability: "future-sensitive" },
   { method: "POST", path: "/v1/calls/{callId}/realtime/tracks/close", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/calls/{callId}/media/signals", stability: "future-sensitive" },
   { method: "POST", path: "/v1/calls/{callId}/usage-report", stability: "future-sensitive" },
   { method: "GET", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/messages", stability: "stable/current" },
@@ -171,6 +172,7 @@ const CALL_RUNTIME_BOUNDARY_ROUTES = [
   ["POST", "/v1/calls/{callId}/realtime/tracks"],
   ["POST", "/v1/calls/{callId}/realtime/renegotiate"],
   ["POST", "/v1/calls/{callId}/realtime/tracks/close"],
+  ["POST", "/v1/calls/{callId}/media/signals"],
   ["POST", "/v1/calls/{callId}/usage-report"]
 ];
 
@@ -265,7 +267,7 @@ export function assertCallsResponse(payload, context) {
 export function assertCallRealtimeConfigResponse(payload, context) {
   const value = success(payload, context);
   const realtime = object(value.realtime, `${context}.realtime`);
-  literal(realtime.provider, "cloudflare_realtime", `${context}.realtime.provider`);
+  assertCallMediaProvider(realtime.provider, `${context}.realtime.provider`);
   boolean(realtime.configured, `${context}.realtime.configured`);
   if ("features" in realtime) assertCallFeatureFlags(realtime.features, `${context}.realtime.features`);
   string(realtime.callId, `${context}.realtime.callId`);
@@ -289,7 +291,7 @@ export function assertCallUsageReportResponse(payload, context) {
   const report = object(value.usageReport, `${context}.usageReport`);
   string(report.usageReportId, `${context}.usageReport.usageReportId`);
   string(report.callId, `${context}.usageReport.callId`);
-  literal(report.provider, "cloudflare_realtime", `${context}.usageReport.provider`);
+  assertCallMediaProvider(report.provider, `${context}.usageReport.provider`);
   nullableString(report.providerSessionId, `${context}.usageReport.providerSessionId`);
   enumValue(report.source, ["client_estimate", "provider_authoritative"], `${context}.usageReport.source`);
   [
@@ -308,7 +310,7 @@ export function assertCallUsageReportResponse(payload, context) {
 export function assertCallRealtimeStatusResponse(payload, context) {
   const value = success(payload, context);
   const realtime = object(value.realtime, `${context}.realtime`);
-  literal(realtime.provider, "cloudflare_realtime", `${context}.realtime.provider`);
+  assertCallMediaProvider(realtime.provider, `${context}.realtime.provider`);
   boolean(realtime.configured, `${context}.realtime.configured`);
   enumValue(realtime.status, ["configured", "not_configured", "disabled"], `${context}.realtime.status`);
   enumValue(realtime.configurationStatus, ["configured", "not_configured", "disabled"], `${context}.realtime.configurationStatus`);
@@ -328,6 +330,32 @@ export function assertCallRealtimeStatusResponse(payload, context) {
   string(realtime.estimatedSfuTurnEgressStatus, `${context}.realtime.estimatedSfuTurnEgressStatus`);
 }
 
+export function assertCallSignalResponse(payload, context) {
+  const value = success(payload, context);
+  boolean(value.delivered, `${context}.delivered`);
+  const signal = object(value.signal, `${context}.signal`);
+  literal(signal.type, "call.signal", `${context}.signal.type`);
+  string(signal.eventId, `${context}.signal.eventId`);
+  string(signal.createdAt, `${context}.signal.createdAt`);
+  string(signal.tenantId, `${context}.signal.tenantId`);
+  string(signal.roomId, `${context}.signal.roomId`);
+  string(signal.callId, `${context}.signal.callId`);
+  enumValue(signal.callType, ["audio", "video"], `${context}.signal.callType`);
+  string(signal.fromPrincipalId, `${context}.signal.fromPrincipalId`);
+  nullableString(signal.fromDeviceId, `${context}.signal.fromDeviceId`);
+  string(signal.toPrincipalId, `${context}.signal.toPrincipalId`);
+  nullableString(signal.toDeviceId, `${context}.signal.toDeviceId`);
+  nullableString(signal.sessionId, `${context}.signal.sessionId`);
+  string(signal.signalId, `${context}.signal.signalId`);
+  enumValue(signal.signalType, ["ready", "offer", "answer", "ice-candidate", "renegotiate", "ice-restart", "hangup"], `${context}.signal.signalType`);
+  if ("description" in signal && signal.description !== null) object(signal.description, `${context}.signal.description`);
+  if ("candidate" in signal && signal.candidate !== null) object(signal.candidate, `${context}.signal.candidate`);
+}
+
+function assertCallMediaProvider(provider, context) {
+  enumValue(provider, ["cloudflare_realtime", "p2p_webrtc"], context);
+}
+
 function assertCallFeatureFlags(payload, context) {
   const features = object(payload, context);
   [
@@ -337,6 +365,9 @@ function assertCallFeatureFlags(payload, context) {
     "screenShareEnabled",
     "realtimeMediaEnabled"
   ].forEach((key) => boolean(features[key], `${context}.${key}`));
+  if ("p2pCallsEnabled" in features) {
+    boolean(features.p2pCallsEnabled, `${context}.p2pCallsEnabled`);
+  }
 }
 
 export function assertPaginatedRoomsResponse(payload, context) {

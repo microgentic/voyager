@@ -21,7 +21,7 @@ type MessageCutoverResponseKind =
   | "threadState"
   | "attachment"
   | "ok";
-type CallCutoverResponseKind = "calls" | "call" | "realtime" | "usageReport";
+type CallCutoverResponseKind = "calls" | "call" | "realtime" | "signal" | "usageReport";
 
 const DEFAULT_APP_ID = "voyager";
 const DEFAULT_TENANT_DISPLAY_NAME = "Voyager";
@@ -958,6 +958,12 @@ function adaptCallCutoverPayload(payload: JsonObject, responseKind: CallCutoverR
   if (responseKind === "realtime") {
     return { realtime: adaptCallRealtimePayload(payload) };
   }
+  if (responseKind === "signal") {
+    return {
+      delivered: Boolean(payload.delivered),
+      signal: objectValue(payload.signal) ?? payload,
+    };
+  }
   return { usageReport: objectValue(payload.usageReport) ?? payload };
 }
 
@@ -984,13 +990,14 @@ function adaptCallRealtimePayload(payload: JsonObject): JsonObject {
 function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
   const features = objectValue(payload.features) ?? {};
   const calls = objectValue(payload.calls) ?? {};
+  const provider = callMediaProvider(calls);
   const realtimeMediaEnabled = Boolean(features.realtimeMedia);
-  const configured = Boolean(calls.realtimeMediaConfigured);
+  const configured = Boolean(calls.mediaConfigured ?? calls.realtimeMediaConfigured);
   const mock = Boolean(calls.mockEnabled);
   const configurationStatus = stringValue(payload.configurationStatus)
     ?? (realtimeMediaEnabled ? (configured ? "configured" : "not_configured") : "disabled");
   return {
-    provider: "cloudflare_realtime",
+    provider,
     configured,
     configurationStatus,
     status: configurationStatus,
@@ -1005,8 +1012,8 @@ function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
     estimatedSfuTurnEgressStatus: "owned_by_messaging_core",
     features: coreCallFeatureFlags(features),
     credentialState: {
-      appIdConfigured: configured && !mock,
-      appSecretConfigured: configured && !mock,
+      appIdConfigured: provider === "cloudflare_realtime" && configured && !mock,
+      appSecretConfigured: provider === "cloudflare_realtime" && configured && !mock,
       turnCredentialsConfigured: Boolean(calls.turnConfigured),
     },
     messagingCore: {
@@ -1017,17 +1024,31 @@ function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
   };
 }
 
+function callMediaProvider(calls: JsonObject): "cloudflare_realtime" | "p2p_webrtc" {
+  return stringValue(calls.mediaProvider) === "p2p_webrtc" || stringValue(calls.provider) === "p2p_webrtc"
+    ? "p2p_webrtc"
+    : "cloudflare_realtime";
+}
+
 function coreCallFeatureFlags(features: JsonObject): JsonObject {
   return {
     callsEnabled: Boolean(features.callsEnabled ?? features.calls),
     audioCallsEnabled: Boolean(features.audioCallsEnabled ?? features.audioCalls),
     videoCallsEnabled: Boolean(features.videoCallsEnabled ?? features.videoCalls),
     screenShareEnabled: Boolean(features.screenShareEnabled ?? features.screenShare),
+    p2pCallsEnabled: Boolean(features.p2pCallsEnabled ?? features.p2pCalls),
     realtimeMediaEnabled: Boolean(features.realtimeMediaEnabled ?? features.realtimeMedia),
   };
 }
 
 function coreCallRealtimeMessage(realtime: JsonObject): string {
+  const provider = callMediaProvider(realtime);
+  if (provider === "p2p_webrtc") {
+    if (!Boolean(realtime.configured)) {
+      return "P2P WebRTC media is not configured by Messaging Core.";
+    }
+    return "P2P WebRTC media is configured by Messaging Core.";
+  }
   if (!Boolean(realtime.configured)) {
     return "Cloudflare Realtime is not configured by Messaging Core.";
   }

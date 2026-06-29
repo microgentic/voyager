@@ -9,6 +9,7 @@ import {
   assertCallRealtimeStatusResponse,
   assertCallRealtimeConfigResponse,
   assertCallResponse,
+  assertCallSignalResponse,
   assertCallsResponse,
   assertCallUsageReportResponse,
   assertDeleteMessagesResponse,
@@ -44,6 +45,7 @@ const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const fetchTimeoutMs = Number(process.env.SMOKE_FETCH_TIMEOUT_MS ?? 10_000);
 const messagingCoreBridgeEnabled = process.env.SMOKE_MESSAGING_CORE_BRIDGE === "1";
 const messagingCoreSmokeSecret = process.env.SMOKE_MESSAGING_CORE_TOKEN_SECRET ?? "local-messaging-core-token-secret";
+const expectedCallMediaProvider = process.env.SMOKE_CALL_MEDIA_PROVIDER;
 
 async function api(path, options = {}) {
   const { response, payload } = await apiRaw(path, options);
@@ -788,7 +790,11 @@ assertRoomResponse(direct, "POST /v1/rooms/direct");
 
 const callRealtimeStatus = await api("/v1/admin/calls/realtime-status", { headers: ownerHeaders });
 assertCallRealtimeStatusResponse(callRealtimeStatus, "GET /v1/admin/calls/realtime-status");
+if (expectedCallMediaProvider && callRealtimeStatus.realtime.provider !== expectedCallMediaProvider) {
+  throw new Error(`call realtime status provider ${callRealtimeStatus.realtime.provider} did not match expected ${expectedCallMediaProvider}`);
+}
 const coreRealtimeMockEnabled = callRealtimeStatus.realtime.mock === true;
+const coreP2pMediaEnabled = callRealtimeStatus.realtime.provider === "p2p_webrtc" && callRealtimeStatus.realtime.configured === true;
 if (callRealtimeStatus.realtime.apiBase !== "managed-by-messaging-core") {
   throw new Error("call realtime status was not sourced from Messaging Core");
 }
@@ -882,7 +888,24 @@ if (fetchedCall.call.callId !== createdCall.call.callId) {
   throw new Error("call fetch returned the wrong call");
 }
 
+const earlyP2pSignalFailure = await expectFailure(`/v1/calls/${createdCall.call.callId}/media/signals`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    targetPrincipalId: accepted.principal.principalId,
+    targetDeviceId: accepted.device.deviceId,
+    type: "ready"
+  }
+}, coreP2pMediaEnabled ? 409 : 403);
+assertApiErrorShape(earlyP2pSignalFailure, "POST /v1/calls/{callId}/media/signals before P2P call is ready");
+const expectedEarlySignalError = coreP2pMediaEnabled ? "p2p_direct_call_required" : "feature_disabled";
+if (earlyP2pSignalFailure.error !== expectedEarlySignalError) {
+  throw new Error(`early P2P signal proxy returned unexpected error ${earlyP2pSignalFailure.error}`);
+}
+
 let mockAudioSessionId = null;
+let p2pOwnerSessionId = null;
+let p2pOwnerCoreSessionId = null;
 if (coreRealtimeMockEnabled) {
   const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
     method: "POST",
@@ -970,6 +993,58 @@ if (coreRealtimeMockEnabled) {
     duplicateRealtimeCloseTracksConfig,
     "POST /v1/calls/{callId}/realtime/tracks/close duplicate mock"
   );
+} else if (coreP2pMediaEnabled) {
+  const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
+    method: "POST",
+    headers: ownerHeaders
+  });
+  assertCallRealtimeConfigResponse(realtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session p2p");
+  if (
+    realtimeSessionConfig.realtime.provider !== "p2p_webrtc" ||
+    realtimeSessionConfig.realtime.configured !== true ||
+    !realtimeSessionConfig.realtime.session?.sessionId ||
+    !realtimeSessionConfig.realtime.session?.providerSessionId ||
+    !realtimeSessionConfig.realtime.session?.coreSessionId ||
+    realtimeSessionConfig.realtime.sessionDescription
+  ) {
+    throw new Error("P2P realtime session did not return provider-neutral configured session data");
+  }
+  p2pOwnerSessionId = realtimeSessionConfig.realtime.session.sessionId;
+  p2pOwnerCoreSessionId = realtimeSessionConfig.realtime.session.coreSessionId;
+  const realtimeTrackConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: p2pOwnerSessionId,
+      tracks: [{ location: "local", trackName: `audio-${suffix}`, kind: "audio", mid: "audio0" }]
+    }
+  });
+  assertCallRealtimeConfigResponse(realtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks p2p");
+  const audioTrack = realtimeTrackConfig.realtime.tracks?.find((track) => track.trackName === `audio-${suffix}`);
+  if (!audioTrack || audioTrack.kind !== "audio" || audioTrack.location !== "local") {
+    throw new Error("P2P realtime audio track was not persisted in the response");
+  }
+  const realtimeRenegotiateConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/renegotiate`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      sessionId: p2pOwnerSessionId,
+      sessionDescription: mockSessionDescription("audio-renegotiate")
+    }
+  });
+  assertCallRealtimeConfigResponse(realtimeRenegotiateConfig, "POST /v1/calls/{callId}/realtime/renegotiate p2p");
+  if (
+    realtimeRenegotiateConfig.realtime.configured !== true ||
+    realtimeRenegotiateConfig.realtime.session?.sessionId !== p2pOwnerSessionId
+  ) {
+    throw new Error("P2P realtime renegotiate did not preserve the public session id");
+  }
+  const realtimeCloseTracksConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/tracks/close`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: { sessionId: p2pOwnerSessionId, tracks: [{ mid: "audio0" }], force: true }
+  });
+  assertCallRealtimeConfigResponse(realtimeCloseTracksConfig, "POST /v1/calls/{callId}/realtime/tracks/close p2p");
 } else {
   const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
     method: "POST",
@@ -1024,6 +1099,58 @@ if (!joinedCallee || joinedCallee.status !== "connected" || joinedCallee.deviceI
   throw new Error("callee join did not bind the current device");
 }
 
+if (coreP2pMediaEnabled && p2pOwnerSessionId) {
+  const p2pCalleeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
+    method: "POST",
+    headers: userHeaders
+  });
+  assertCallRealtimeConfigResponse(p2pCalleeSessionConfig, "POST /v1/calls/{callId}/realtime/session p2p callee");
+  if (
+    p2pCalleeSessionConfig.realtime.provider !== "p2p_webrtc" ||
+    p2pCalleeSessionConfig.realtime.configured !== true ||
+    !p2pCalleeSessionConfig.realtime.session?.sessionId
+  ) {
+    throw new Error("P2P callee realtime session did not return configured session data");
+  }
+  const p2pSignalToken = await createMessagingCoreRealtimeToken(userHeaders, "POST /v1/messaging-core/realtime/token call signal");
+  const p2pSignalWatcher = await openRealtimeCallWatcher(p2pSignalToken, direct.room.roomId, "call.signal");
+  const p2pSignal = await api(`/v1/calls/${createdCall.call.callId}/media/signals`, {
+    method: "POST",
+    headers: ownerHeaders,
+    json: {
+      targetPrincipalId: accepted.principal.principalId,
+      targetDeviceId: relogin.device.deviceId,
+      sessionId: p2pOwnerSessionId,
+      type: "offer",
+      description: mockSessionDescription("p2p-offer"),
+      sequence: 1
+    }
+  });
+  assertCallSignalResponse(p2pSignal, "POST /v1/calls/{callId}/media/signals p2p offer");
+  if (
+    p2pSignal.delivered !== true ||
+    p2pSignal.signal.signalType !== "offer" ||
+    p2pSignal.signal.sessionId !== p2pOwnerCoreSessionId ||
+    p2pSignal.signal.toPrincipalId !== accepted.principal.principalId ||
+    p2pSignal.signal.toDeviceId !== relogin.device.deviceId
+  ) {
+    throw new Error("P2P signal proxy did not return the expected routed offer");
+  }
+  const p2pSignalEvent = await p2pSignalWatcher.wait;
+  assertRealtimeCallEvent(p2pSignalEvent, "GET /v1/calls/realtime call.signal p2p offer", "call.signal");
+  if (
+    p2pSignalEvent.signalType !== "offer" ||
+    p2pSignalEvent.signalId !== p2pSignal.signal.signalId ||
+    p2pSignalEvent.fromPrincipalId !== owner.principal.principalId ||
+    p2pSignalEvent.toPrincipalId !== accepted.principal.principalId ||
+    p2pSignalEvent.toDeviceId !== relogin.device.deviceId ||
+    p2pSignalEvent.description?.type !== "offer" ||
+    !p2pSignalEvent.description?.sdp?.includes("s=p2p-offer")
+  ) {
+    throw new Error(`P2P realtime signal event did not match the submitted offer: ${JSON.stringify(p2pSignalEvent)}`);
+  }
+}
+
 const mutedCall = await api(`/v1/calls/${createdCall.call.callId}/mute`, {
   method: "POST",
   headers: userHeaders
@@ -1071,11 +1198,12 @@ if (!explicitlyUnmutedParticipant || explicitlyUnmutedParticipant.mutedAt !== nu
   throw new Error("explicit unmute did not clear mutedAt");
 }
 
+const callUsageSessionId = mockAudioSessionId ?? p2pOwnerSessionId;
 const callUsageReport = await api(`/v1/calls/${createdCall.call.callId}/usage-report`, {
   method: "POST",
   headers: ownerHeaders,
   json: {
-    ...(mockAudioSessionId ? { sessionId: mockAudioSessionId } : {}),
+    ...(callUsageSessionId ? { sessionId: callUsageSessionId } : {}),
     durationMs: 42_000,
     bytesSentEstimate: 12_345,
     bytesReceivedEstimate: 67_890,
@@ -1105,7 +1233,7 @@ const duplicateCallUsageReport = await api(`/v1/calls/${createdCall.call.callId}
   method: "POST",
   headers: ownerHeaders,
   json: {
-    ...(mockAudioSessionId ? { sessionId: mockAudioSessionId } : {}),
+    ...(callUsageSessionId ? { sessionId: callUsageSessionId } : {}),
     durationMs: 99_000,
     bytesSentEstimate: 99,
     tracks: [{ kind: "audio", direction: "send", durationMs: 99_000 }]
@@ -1119,7 +1247,7 @@ const clientProviderEgressReport = await expectFailure(`/v1/calls/${createdCall.
   method: "POST",
   headers: ownerHeaders,
   json: {
-    ...(mockAudioSessionId ? { sessionId: mockAudioSessionId } : {}),
+    ...(callUsageSessionId ? { sessionId: callUsageSessionId } : {}),
     durationMs: 1_000,
     providerEgressBytes: 10_000,
     providerBillingSource: "client",
@@ -1138,12 +1266,12 @@ await expectFailure(`/v1/calls/${createdCall.call.callId}/usage-report`, {
     tracks: [{ kind: "audio", direction: "send", durationMs: 1 }]
   }
 }, 400);
-if (mockAudioSessionId) {
+if (callUsageSessionId) {
   const foreignUsageSession = await expectFailure(`/v1/calls/${createdCall.call.callId}/usage-report`, {
     method: "POST",
     headers: userHeaders,
     json: {
-      sessionId: mockAudioSessionId,
+      sessionId: callUsageSessionId,
       durationMs: 1_000,
       tracks: [{ kind: "audio", direction: "send", durationMs: 1_000 }]
     }
@@ -1177,12 +1305,12 @@ const endedHistoryCall = endedHistory.calls.find((call) => call.callId === creat
 if (!endedHistoryCall || endedHistoryCall.status !== "ended" || endedHistoryCall.endedReason !== "all_left") {
   throw new Error("room call history did not include the ended call state");
 }
-if (mockAudioSessionId) {
+if (callUsageSessionId) {
   await expectFailure(`/v1/calls/${createdCall.call.callId}/realtime/renegotiate`, {
     method: "POST",
     headers: ownerHeaders,
     json: {
-      sessionId: mockAudioSessionId,
+      sessionId: callUsageSessionId,
       sessionDescription: mockSessionDescription("audio-renegotiate-after-end")
     }
   }, 409);
@@ -1190,7 +1318,7 @@ if (mockAudioSessionId) {
     method: "POST",
     headers: ownerHeaders,
     json: {
-      sessionId: mockAudioSessionId,
+      sessionId: callUsageSessionId,
       tracks: [{ location: "local", trackName: `audio-after-end-${suffix}`, kind: "audio", mid: "audio-after-end" }]
     }
   }, 409);
@@ -1209,16 +1337,16 @@ await expectFailure(`/v1/calls/${videoCall.call.callId}`, {
   headers: inviteeHeaders
 }, 404);
 
-if (coreRealtimeMockEnabled) {
+if (coreRealtimeMockEnabled || coreP2pMediaEnabled) {
   const videoRealtimeSessionConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/session`, {
     method: "POST",
     headers: ownerHeaders,
     json: { sessionDescription: mockSessionDescription("video-session") }
   });
-  assertCallRealtimeConfigResponse(videoRealtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session video mock");
+  assertCallRealtimeConfigResponse(videoRealtimeSessionConfig, "POST /v1/calls/{callId}/realtime/session video configured");
   const videoSessionId = videoRealtimeSessionConfig.realtime.session?.sessionId;
   if (videoRealtimeSessionConfig.realtime.configured !== true || !videoSessionId) {
-    throw new Error("mock video realtime session config returned the wrong shape");
+    throw new Error("configured video realtime session config returned the wrong shape");
   }
   const videoRealtimeTrackConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/tracks`, {
     method: "POST",
@@ -1245,25 +1373,25 @@ if (coreRealtimeMockEnabled) {
       ]
     }
   });
-  assertCallRealtimeConfigResponse(videoRealtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks video mock");
+  assertCallRealtimeConfigResponse(videoRealtimeTrackConfig, "POST /v1/calls/{callId}/realtime/tracks video configured");
   const videoTrackKinds = new Set((videoRealtimeTrackConfig.realtime.tracks ?? []).map((track) => track.kind));
   if (!videoTrackKinds.has("audio") || !videoTrackKinds.has("video") || !videoTrackKinds.has("screen")) {
-    throw new Error("mock video realtime track config did not include audio, video, and screen tracks");
+    throw new Error("configured video realtime track config did not include audio, video, and screen tracks");
   }
   const videoOwnerMedia = await api(`/v1/calls/${videoCall.call.callId}`, { headers: ownerHeaders });
-  assertCallResponse(videoOwnerMedia, "GET /v1/calls/{callId} video owner media after mock tracks");
+  assertCallResponse(videoOwnerMedia, "GET /v1/calls/{callId} video owner media after configured tracks");
   const videoOwnerParticipant = videoOwnerMedia.call.participants.find(
     (participant) => participant.principalId === owner.principal.principalId
   );
   if (!videoOwnerParticipant?.audioEnabled || !videoOwnerParticipant.videoEnabled || !videoOwnerParticipant.screenEnabled) {
-    throw new Error("mock video track upsert did not enable owner audio/video/screen state");
+    throw new Error("configured video track upsert did not enable owner audio/video/screen state");
   }
   const videoCloseScreenConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/tracks/close`, {
     method: "POST",
     headers: ownerHeaders,
     json: { sessionId: videoSessionId, tracks: [{ mid: "video-screen0" }], force: true }
   });
-  assertCallRealtimeConfigResponse(videoCloseScreenConfig, "POST /v1/calls/{callId}/realtime/tracks/close screen mock");
+  assertCallRealtimeConfigResponse(videoCloseScreenConfig, "POST /v1/calls/{callId}/realtime/tracks/close screen configured");
   const videoOwnerMediaAfterScreenClose = await api(`/v1/calls/${videoCall.call.callId}`, { headers: ownerHeaders });
   assertCallResponse(videoOwnerMediaAfterScreenClose, "GET /v1/calls/{callId} video owner media after screen close");
   const videoOwnerAfterScreenClose = videoOwnerMediaAfterScreenClose.call.participants.find(
@@ -1274,7 +1402,7 @@ if (coreRealtimeMockEnabled) {
     !videoOwnerAfterScreenClose.videoEnabled ||
     videoOwnerAfterScreenClose.screenEnabled
   ) {
-    throw new Error("mock video screen close did not preserve audio/video and clear screen state");
+    throw new Error("configured video screen close did not preserve audio/video and clear screen state");
   }
 } else {
   const videoRealtimeSessionConfig = await api(`/v1/calls/${videoCall.call.callId}/realtime/session`, {

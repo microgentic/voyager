@@ -414,13 +414,13 @@ async function runCallLifecycleMiniSmoke(roomId, ownerHeaders, receiverHeaders) 
         throw new Error("REALTIME_SMOKE_MEDIA=1 requires Cloudflare Realtime to be configured");
       }
       const message = String(realtimeSession.payload.realtime.message ?? "");
-      if (!message.includes("Cloudflare Realtime is not configured")) {
+      if (!/media|Realtime|WebRTC/i.test(message) || !/not configured/i.test(message)) {
         throw new Error("remote unconfigured realtime session returned unexpected message");
       }
     } else {
       providerSessionId = realtimeSession.payload.realtime.session?.sessionId ?? null;
       if (!REALTIME_SMOKE_MEDIA) {
-        console.warn("Remote smoke found Cloudflare Realtime configured; set REALTIME_SMOKE_MEDIA=1 for opt-in provider media assertions.");
+        console.warn("Remote smoke found call media configured; set REALTIME_SMOKE_MEDIA=1 for opt-in provider media assertions.");
       }
     }
   } else if (realtimeSession.payload?.error === "realtime_provider_error") {

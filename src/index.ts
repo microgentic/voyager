@@ -1505,7 +1505,7 @@ async function messagingCoreCallCutoverRoute(
   path: string;
   query?: URLSearchParams;
   body?: Record<string, unknown>;
-  responseKind: "calls" | "call" | "realtime" | "usageReport";
+  responseKind: "calls" | "call" | "realtime" | "signal" | "usageReport";
 } | null> {
   const roomCallsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/calls$/, url.pathname);
   if (roomCallsMatch) {
@@ -1544,7 +1544,7 @@ async function messagingCoreCallCutoverRoute(
     return {
       method: "POST",
       path: `/calls/${callRealtimeRenegotiateMatch[1]}/realtime/renegotiate`,
-      body: await readOptionalJsonObject(request),
+      body: messagingCoreProviderSessionBody(await readOptionalJsonObject(request)),
       responseKind: "realtime",
     };
   }
@@ -1555,7 +1555,7 @@ async function messagingCoreCallCutoverRoute(
     return {
       method: "POST",
       path: `/calls/${callRealtimeCloseTracksMatch[1]}/realtime/tracks/close`,
-      body: await readOptionalJsonObject(request),
+      body: messagingCoreProviderSessionBody(await readOptionalJsonObject(request)),
       responseKind: "realtime",
     };
   }
@@ -1566,8 +1566,22 @@ async function messagingCoreCallCutoverRoute(
     return {
       method: "POST",
       path: `/calls/${callRealtimeMatch[1]}/realtime/${callRealtimeMatch[2]}`,
-      body: await readOptionalJsonObject(request),
+      body:
+        callRealtimeMatch[2] === "tracks"
+          ? messagingCoreProviderSessionBody(await readOptionalJsonObject(request))
+          : await readOptionalJsonObject(request),
       responseKind: "realtime",
+    };
+  }
+
+  const callMediaSignalsMatch = routeParams(/^\/v1\/calls\/([^/]+)\/media\/signals$/, url.pathname);
+  if (callMediaSignalsMatch) {
+    requireMethod(request, "POST");
+    return {
+      method: "POST",
+      path: `/calls/${callMediaSignalsMatch[1]}/media/signals`,
+      body: messagingCoreProviderSessionBody(await readJsonObject(request)),
+      responseKind: "signal",
     };
   }
 
@@ -1605,6 +1619,13 @@ async function messagingCoreCallCutoverRoute(
   return null;
 }
 
+function messagingCoreProviderSessionBody(body?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!body || typeof body.providerSessionId === "string" || typeof body.sessionId !== "string") {
+    return body;
+  }
+  return { ...body, providerSessionId: body.sessionId };
+}
+
 function messagingCoreRoomTimingMetric(route: { method: string; path: string; responseKind: string }): string {
   if (route.method === "PATCH" && /^\/rooms\/[^/]+$/.test(route.path)) return "roomUpdate";
   if (route.method === "POST" && route.path.endsWith("/archive")) return "roomArchive";
@@ -1622,6 +1643,7 @@ function messagingCoreRoomTimingMetric(route: { method: string; path: string; re
 function messagingCoreCallTimingMetric(route: { method: string; path: string; responseKind: string }): string {
   if (route.responseKind === "calls") return "calls";
   if (route.responseKind === "realtime") return "callRealtime";
+  if (route.responseKind === "signal") return "callSignal";
   if (route.responseKind === "usageReport") return "callUsageReport";
   if (route.path.endsWith("/join")) return "callJoin";
   if (route.path.endsWith("/leave")) return "callLeave";
