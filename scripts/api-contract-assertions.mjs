@@ -319,12 +319,19 @@ export function assertCallRealtimeStatusResponse(payload, context) {
   nullableString(realtime.providerHealthCheckedAt, `${context}.realtime.providerHealthCheckedAt`);
   boolean(realtime.mock, `${context}.realtime.mock`);
   string(realtime.apiBase, `${context}.realtime.apiBase`);
+  boolean(realtime.stunConfigured, `${context}.realtime.stunConfigured`);
   boolean(realtime.turnConfigured, `${context}.realtime.turnConfigured`);
+  enumValue(realtime.turnCredentialMode, ["none", "static", "ephemeral"], `${context}.realtime.turnCredentialMode`);
+  enumValue(realtime.releaseReadiness, ["not_configured", "dev_only", "production_ready"], `${context}.realtime.releaseReadiness`);
+  array(realtime.releaseBlockers, `${context}.realtime.releaseBlockers`).forEach((blocker, index) => {
+    string(blocker, `${context}.realtime.releaseBlockers[${index}]`);
+  });
   assertCallFeatureFlags(realtime.features, `${context}.realtime.features`);
   const credentialState = object(realtime.credentialState, `${context}.realtime.credentialState`);
   boolean(credentialState.appIdConfigured, `${context}.realtime.credentialState.appIdConfigured`);
   boolean(credentialState.appSecretConfigured, `${context}.realtime.credentialState.appSecretConfigured`);
   boolean(credentialState.turnCredentialsConfigured, `${context}.realtime.credentialState.turnCredentialsConfigured`);
+  enumValue(credentialState.turnCredentialMode, ["none", "static", "ephemeral"], `${context}.realtime.credentialState.turnCredentialMode`);
   nullableString(realtime.lastProviderCheckAt, `${context}.realtime.lastProviderCheckAt`);
   enumValue(realtime.lastProviderCheckStatus, ["not_checked", "ok", "error"], `${context}.realtime.lastProviderCheckStatus`);
   string(realtime.estimatedSfuTurnEgressStatus, `${context}.realtime.estimatedSfuTurnEgressStatus`);

@@ -804,6 +804,14 @@ if (callRealtimeStatus.realtime.messagingCore?.source !== "core") {
 if (callRealtimeStatus.realtime.mock && !callRealtimeStatus.realtime.configured) {
   throw new Error("call realtime mock mode should still be reported as configured by Core");
 }
+if (coreP2pMediaEnabled && !callRealtimeStatus.realtime.turnConfigured) {
+  if (callRealtimeStatus.realtime.releaseReadiness !== "dev_only") {
+    throw new Error("P2P media without TURN should report dev_only release readiness");
+  }
+  if (!callRealtimeStatus.realtime.releaseBlockers.includes("owned_turn_not_configured")) {
+    throw new Error("P2P media without TURN should report owned_turn_not_configured");
+  }
+}
 const retiredCallRealtimeToken = await expectFailure("/v1/calls/realtime/token", {
   method: "POST",
   headers: userHeaders

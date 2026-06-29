@@ -1006,7 +1006,11 @@ function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
     providerHealthCheckedAt: null,
     mock,
     apiBase: "managed-by-messaging-core",
+    stunConfigured: Boolean(calls.stunConfigured),
     turnConfigured: Boolean(calls.turnConfigured),
+    turnCredentialMode: turnCredentialMode(calls),
+    releaseReadiness: callReleaseReadiness(calls),
+    releaseBlockers: stringArrayValue(calls.releaseBlockers),
     lastProviderCheckAt: null,
     lastProviderCheckStatus: "not_checked",
     estimatedSfuTurnEgressStatus: "owned_by_messaging_core",
@@ -1015,6 +1019,7 @@ function coreRealtimeStatusPayload(payload: JsonObject): JsonObject {
       appIdConfigured: provider === "cloudflare_realtime" && configured && !mock,
       appSecretConfigured: provider === "cloudflare_realtime" && configured && !mock,
       turnCredentialsConfigured: Boolean(calls.turnConfigured),
+      turnCredentialMode: turnCredentialMode(calls),
     },
     messagingCore: {
       source: "core",
@@ -1028,6 +1033,20 @@ function callMediaProvider(calls: JsonObject): "cloudflare_realtime" | "p2p_webr
   return stringValue(calls.mediaProvider) === "p2p_webrtc" || stringValue(calls.provider) === "p2p_webrtc"
     ? "p2p_webrtc"
     : "cloudflare_realtime";
+}
+
+function turnCredentialMode(calls: JsonObject): "none" | "static" | "ephemeral" {
+  const mode = stringValue(calls.turnCredentialMode);
+  return mode === "static" || mode === "ephemeral" ? mode : "none";
+}
+
+function callReleaseReadiness(calls: JsonObject): "not_configured" | "dev_only" | "production_ready" {
+  const readiness = stringValue(calls.releaseReadiness);
+  return readiness === "dev_only" || readiness === "production_ready" ? readiness : "not_configured";
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
 function coreCallFeatureFlags(features: JsonObject): JsonObject {
