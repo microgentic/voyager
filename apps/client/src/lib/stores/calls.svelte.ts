@@ -37,6 +37,7 @@ export interface RemoteVideoStream {
 	stream: MediaStream;
 	kind: 'video' | 'screen';
 	displayName?: string | null;
+	active?: boolean;
 }
 
 export interface CallConnectionStatus {
@@ -138,6 +139,10 @@ const VIDEO_QUALITY_OPTIONS: CallVideoQualityOption[] = [
 const CALL_HISTORY_LIMIT = 50;
 const MEDIA_HEARTBEAT_MS = 25_000;
 const CALL_STATS_POLL_MS = 5_000;
+const P2P_ICE_RESTART_MAX_ATTEMPTS = 2;
+const P2P_ICE_RESTART_DELAY_MS = 1_500;
+const P2P_ICE_RESTART_SETTLE_MS = 6_000;
+const P2P_DISCONNECTED_GRACE_MS = 4_000;
 const CALL_DEVICE_PREFERENCES_KEY = 'voyager.callDevicePreferences.v1';
 const CALL_VIDEO_QUALITY_KEY = 'voyager.callVideoQuality.v1';
 const DEFAULT_CALL_FEATURES: CallFeatureFlags = {
@@ -243,6 +248,7 @@ class CallsStore {
 	private pendingRemoteVideoTracks: CallRealtimeTrack[] = [];
 	private audioSender: RTCRtpSender | null = null;
 	private videoSender: RTCRtpSender | null = null;
+	private videoTransceiver: RTCRtpTransceiver | null = null;
 	private screenSender: RTCRtpSender | null = null;
 	private screenTrackMid: string | null = null;
 	private subscribing = false;
@@ -264,6 +270,9 @@ class CallsStore {
 	private p2pSignalSequence = 0;
 	private p2pPendingCandidates: CallIceCandidate[] = [];
 	private pendingP2pSignals: CallSignalEvent[] = [];
+	private p2pIceRestartTimer: ReturnType<typeof setTimeout> | null = null;
+	private p2pIceRestartAttempts = 0;
+	private p2pRecoveryNotified = false;
 
 	constructor() {
 		this.loadDevicePreferences();
@@ -946,6 +955,7 @@ class CallsStore {
 			}
 			this.activeCall = call;
 			this.upsertRoomHistory(call);
+			this.syncP2pRemoteMediaState();
 		} catch {
 			/* keep the current call until an explicit terminal event arrives */
 		}
@@ -989,6 +999,8 @@ class CallsStore {
 			this.localVideoStream = null;
 			this.localScreenStream = null;
 			this.audioSender = null;
+			this.videoSender = null;
+			this.videoTransceiver = null;
 			this.cameraEnabled = false;
 			this.screenShareEnabled = false;
 			this.screenSender = null;
@@ -1044,6 +1056,7 @@ class CallsStore {
 				const videoTrack = this.localStream.getVideoTracks()[0];
 				if (!videoTrack) throw new Error('Camera did not provide a video track.');
 				const videoTransceiver = addCameraTransceiver(peer, videoTrack, this.localStream);
+				this.videoTransceiver = videoTransceiver;
 				this.videoSender = videoTransceiver.sender;
 				publishMids.push(videoTransceiver.mid);
 				publishTracks.push({
@@ -1119,6 +1132,7 @@ class CallsStore {
 		this.localScreenStream = null;
 		this.audioSender = null;
 		this.videoSender = null;
+		this.videoTransceiver = null;
 		this.cameraEnabled = false;
 		this.screenShareEnabled = false;
 		this.screenSender = null;
@@ -1174,6 +1188,7 @@ class CallsStore {
 			const videoTrack = this.localStream.getVideoTracks()[0];
 			if (!videoTrack) throw new Error('Camera did not provide a video track.');
 			const videoTransceiver = addCameraTransceiver(peer, videoTrack, this.localStream);
+			this.videoTransceiver = videoTransceiver;
 			this.videoSender = videoTransceiver.sender;
 			publishMids.push(videoTransceiver.mid ?? 'video');
 			publishTracks.push({
@@ -1227,17 +1242,21 @@ class CallsStore {
 			const id = event.track.id || event.transceiver.mid || cryptoId('remote');
 			if (event.track.kind === 'video') {
 				const metadata = this.pendingRemoteVideoTracks.shift();
+				const kind: RemoteVideoStream['kind'] = metadata?.kind === 'screen' ? 'screen' : 'video';
 				if (!this.remoteVideoStreams.some((candidate) => candidate.id === id)) {
 					this.remoteVideoStreams = [
 						...this.remoteVideoStreams,
 						{
 							id,
 							stream,
-							kind: metadata?.kind === 'screen' ? 'screen' : 'video',
-							displayName: metadata?.displayName
+							kind,
+							displayName: metadata?.displayName,
+							active: !event.track.muted && this.remoteVideoKindEnabled(kind)
 						}
 					];
 				}
+				event.track.onmute = () => this.setRemoteVideoStreamActive(id, false);
+				event.track.onunmute = () => this.setRemoteVideoStreamActive(id, this.remoteVideoKindEnabled(kind));
 			} else if (!this.remoteStreams.some((candidate) => candidate.id === id)) {
 				this.remoteStreams = [...this.remoteStreams, { id, stream }];
 			}
@@ -1254,6 +1273,7 @@ class CallsStore {
 			if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
 				this.lastError = 'Call media connection was interrupted.';
 			}
+			this.handleP2pConnectionStateChange(peer);
 		};
 		peer.onicecandidate = (event) => {
 			if (this.mediaProvider !== 'p2p_webrtc' || !event.candidate) return;
@@ -1266,7 +1286,10 @@ class CallsStore {
 			if (this.p2pPolite && !this.p2pInitialNegotiationComplete) return;
 			void this.createAndSendP2pOffer();
 		};
-		peer.oniceconnectionstatechange = updateConnectionState;
+		peer.oniceconnectionstatechange = () => {
+			updateConnectionState();
+			this.handleP2pConnectionStateChange(peer);
+		};
 		peer.onicegatheringstatechange = updateConnectionState;
 		peer.onsignalingstatechange = updateConnectionState;
 	}
@@ -1342,6 +1365,121 @@ class CallsStore {
 				sessionDescription: answer
 			});
 		}
+	}
+
+	private handleP2pConnectionStateChange(peer: RTCPeerConnection): void {
+		if (peer !== this.peer || this.mediaProvider !== 'p2p_webrtc') return;
+		if (
+			peer.connectionState === 'connected' ||
+			peer.iceConnectionState === 'connected' ||
+			peer.iceConnectionState === 'completed'
+		) {
+			this.clearP2pIceRestartTimer();
+			this.p2pIceRestartAttempts = 0;
+			this.p2pRecoveryNotified = false;
+			if (this.mediaState === 'error') this.mediaState = 'active';
+			if (this.lastError === 'Call media connection was interrupted.' || this.lastError === 'Reconnecting call media.') {
+				this.lastError = null;
+			}
+			return;
+		}
+		if (peer.connectionState === 'failed' || peer.iceConnectionState === 'failed') {
+			this.scheduleP2pIceRestart('failed', 0);
+			return;
+		}
+		if (peer.connectionState === 'disconnected' || peer.iceConnectionState === 'disconnected') {
+			this.scheduleP2pIceRestart('disconnected', P2P_DISCONNECTED_GRACE_MS);
+		}
+	}
+
+	private scheduleP2pIceRestart(reason: 'failed' | 'disconnected', delayMs: number): void {
+		if (!this.peer || !this.activeCall || !this.sessionId || this.mediaProvider !== 'p2p_webrtc') return;
+		if (this.mediaState === 'ending' || this.mediaState === 'error' || this.peer.connectionState === 'closed') return;
+		if (this.p2pIceRestartTimer) return;
+		this.lastError = reason === 'failed' ? 'Reconnecting call media.' : 'Call media connection was interrupted.';
+		this.p2pIceRestartTimer = setTimeout(() => {
+			this.p2pIceRestartTimer = null;
+			void this.attemptP2pIceRestart();
+		}, delayMs);
+	}
+
+	private async attemptP2pIceRestart(): Promise<void> {
+		const peer = this.peer;
+		if (!peer || !this.activeCall || !this.sessionId || this.mediaProvider !== 'p2p_webrtc') return;
+		if (
+			peer.connectionState === 'connected' ||
+			peer.iceConnectionState === 'connected' ||
+			peer.iceConnectionState === 'completed'
+		) {
+			this.p2pIceRestartAttempts = 0;
+			this.p2pRecoveryNotified = false;
+			return;
+		}
+		if (this.p2pIceRestartAttempts >= P2P_ICE_RESTART_MAX_ATTEMPTS) {
+			this.mediaState = 'error';
+			this.lastError = 'Could not reconnect call media. Leave and rejoin the call to try again.';
+			if (!this.p2pRecoveryNotified) {
+				this.p2pRecoveryNotified = true;
+				toasts.error(this.lastError);
+			}
+			return;
+		}
+		this.p2pIceRestartAttempts += 1;
+		this.lastError = 'Reconnecting call media.';
+		const sent = await this.createAndSendP2pOffer({ iceRestart: true });
+		if (!sent && this.peer === peer && this.mediaProvider === 'p2p_webrtc') {
+			this.scheduleP2pIceRestart('failed', P2P_ICE_RESTART_DELAY_MS);
+		} else if (this.peer === peer && this.mediaProvider === 'p2p_webrtc') {
+			this.scheduleP2pIceRestart('failed', P2P_ICE_RESTART_SETTLE_MS);
+		}
+	}
+
+	private clearP2pIceRestartTimer(): void {
+		if (this.p2pIceRestartTimer) clearTimeout(this.p2pIceRestartTimer);
+		this.p2pIceRestartTimer = null;
+	}
+
+	private syncP2pRemoteMediaState(): void {
+		if (this.mediaProvider !== 'p2p_webrtc' || !this.activeCall) return;
+		const principalId = auth.principal?.principalId;
+		const remoteParticipant = this.activeCall.participants.find(
+			(participant) => participant.status === 'connected' && participant.principalId !== principalId
+		);
+		if (!remoteParticipant) return;
+		this.setRemoteVideoStreamsActive('video', remoteParticipant.videoEnabled);
+		this.setRemoteVideoStreamsActive('screen', remoteParticipant.screenEnabled);
+	}
+
+	private setRemoteVideoStreamActive(id: string, active: boolean): void {
+		const current = this.remoteVideoStreams.find((stream) => stream.id === id);
+		if (!current || (current.active ?? true) === active) return;
+		this.remoteVideoStreams = this.remoteVideoStreams.map((stream) => (stream.id === id ? { ...stream, active } : stream));
+		if (!active && this.featuredVideoId === id) {
+			this.featuredVideoId = null;
+		}
+	}
+
+	private setRemoteVideoStreamsActive(kind: RemoteVideoStream['kind'], active: boolean): void {
+		const affectedIds = new Set(
+			this.remoteVideoStreams.filter((stream) => stream.kind === kind && (stream.active ?? true) !== active).map((stream) => stream.id)
+		);
+		if (!affectedIds.size) return;
+		this.remoteVideoStreams = this.remoteVideoStreams.map((stream) =>
+			affectedIds.has(stream.id) ? { ...stream, active } : stream
+		);
+		if (!active && this.featuredVideoId && affectedIds.has(this.featuredVideoId)) {
+			this.featuredVideoId = null;
+		}
+	}
+
+	private remoteVideoKindEnabled(kind: RemoteVideoStream['kind']): boolean {
+		if (this.mediaProvider !== 'p2p_webrtc' || !this.activeCall) return true;
+		const principalId = auth.principal?.principalId;
+		const remoteParticipant = this.activeCall.participants.find(
+			(participant) => participant.status === 'connected' && participant.principalId !== principalId
+		);
+		if (!remoteParticipant) return true;
+		return kind === 'screen' ? remoteParticipant.screenEnabled : remoteParticipant.videoEnabled;
 	}
 
 	private async handleP2pSignal(event: CallSignalEvent): Promise<void> {
@@ -1453,19 +1591,21 @@ class CallsStore {
 		for (const signal of signals) await this.handleP2pSignal(signal);
 	}
 
-	private async createAndSendP2pOffer(options: { iceRestart?: boolean } = {}): Promise<void> {
+	private async createAndSendP2pOffer(options: { iceRestart?: boolean } = {}): Promise<boolean> {
 		const peer = this.peer;
-		if (!peer || this.mediaProvider !== 'p2p_webrtc' || !this.activeCall || !this.sessionId) return;
-		if (!this.p2pTarget && !this.p2pTargetParticipant()) return;
-		if (this.p2pMakingOffer || peer.signalingState !== 'stable') return;
+		if (!peer || this.mediaProvider !== 'p2p_webrtc' || !this.activeCall || !this.sessionId) return false;
+		if (!this.p2pTarget && !this.p2pTargetParticipant()) return false;
+		if (this.p2pMakingOffer || peer.signalingState !== 'stable') return false;
 		try {
 			this.p2pMakingOffer = true;
 			const offer = await createP2pOffer(peer, options);
 			await this.sendP2pSignal('offer', { description: offer });
 			this.p2pInitialOfferSent = true;
+			return true;
 		} catch (error) {
 			await peer.setLocalDescription({ type: 'rollback' }).catch(() => undefined);
 			this.lastError = displayError(error, 'Could not negotiate call media.');
+			return false;
 		} finally {
 			this.p2pMakingOffer = false;
 		}
@@ -1523,6 +1663,7 @@ class CallsStore {
 	}
 
 	private resetP2pState(options: { keepPendingSignals?: boolean } = {}): void {
+		this.clearP2pIceRestartTimer();
 		this.p2pTarget = null;
 		this.p2pPolite = true;
 		this.p2pMakingOffer = false;
@@ -1533,6 +1674,8 @@ class CallsStore {
 		this.p2pReadyTargetKey = null;
 		this.p2pSignalSequence = 0;
 		this.p2pPendingCandidates = [];
+		this.p2pIceRestartAttempts = 0;
+		this.p2pRecoveryNotified = false;
 		if (!options.keepPendingSignals) this.pendingP2pSignals = [];
 	}
 
@@ -1546,6 +1689,10 @@ class CallsStore {
 	private async setCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
 		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
 		const notifyOnError = options.notifyOnError ?? true;
+		if (this.mediaProvider === 'p2p_webrtc') {
+			await this.setP2pCameraEnabled(enabled, { notifyOnError });
+			return;
+		}
 		if (!enabled) {
 			const currentTrack = this.localStream.getVideoTracks()[0];
 			try {
@@ -1563,10 +1710,6 @@ class CallsStore {
 			}
 			return;
 		}
-		if (this.mediaProvider === 'p2p_webrtc' && !this.videoSender) {
-			if (notifyOnError) toasts.error('Camera is not available for this call yet.');
-			return;
-		}
 		try {
 			if (this.videoSender) {
 				await this.replaceCameraTrack(this.cameraFacingMode, this.activeVideoInputId || undefined);
@@ -1578,6 +1721,54 @@ class CallsStore {
 		} catch (error) {
 			this.cameraEnabled = false;
 			this.updateLocalVideoStream();
+			void this.syncParticipantMediaState({ videoEnabled: false });
+			if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
+		}
+	}
+
+	private async setP2pCameraEnabled(enabled: boolean, options: { notifyOnError?: boolean } = {}): Promise<void> {
+		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
+		const notifyOnError = options.notifyOnError ?? true;
+		if (!enabled) {
+			const currentTrack = this.localStream.getVideoTracks()[0];
+			try {
+				await this.videoSender?.replaceTrack(null);
+				if (this.videoTransceiver && this.videoTransceiver.direction !== 'inactive') {
+					this.videoTransceiver.direction = 'inactive';
+					await this.createAndSendP2pOffer();
+				}
+			} catch (error) {
+				if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera off.'));
+			} finally {
+				if (currentTrack) {
+					currentTrack.stop();
+					this.localStream.removeTrack(currentTrack);
+				}
+				this.cameraEnabled = false;
+				this.updateLocalVideoStream();
+				void this.syncParticipantMediaState({ videoEnabled: false });
+			}
+			return;
+		}
+		try {
+			if (this.videoSender) {
+				const needsRenegotiation = this.videoTransceiver?.direction !== 'sendonly';
+				await this.replaceCameraTrack(this.cameraFacingMode, this.activeVideoInputId || undefined);
+				if (this.videoTransceiver && needsRenegotiation) {
+					this.videoTransceiver.direction = 'sendonly';
+					const negotiated = await this.createAndSendP2pOffer();
+					if (!negotiated) throw new Error('Could not negotiate camera media.');
+				}
+			} else {
+				await this.publishP2pCameraTrack();
+			}
+			this.cameraEnabled = true;
+			await this.syncParticipantMediaState({ videoEnabled: true });
+		} catch (error) {
+			await this.videoSender?.replaceTrack(null).catch(() => undefined);
+			if (this.videoTransceiver) this.videoTransceiver.direction = 'inactive';
+			this.stopLocalCameraTrack();
+			this.cameraEnabled = false;
 			void this.syncParticipantMediaState({ videoEnabled: false });
 			if (notifyOnError) toasts.error(displayError(error, 'Could not turn camera on.'));
 		}
@@ -1657,6 +1848,10 @@ class CallsStore {
 	}
 
 	private async publishCameraTrack(): Promise<void> {
+		if (this.mediaProvider === 'p2p_webrtc') {
+			await this.publishP2pCameraTrack();
+			return;
+		}
 		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
 		let nextTrack: MediaStreamTrack | null = null;
 		let addedToStream = false;
@@ -1674,6 +1869,7 @@ class CallsStore {
 			this.localStream.addTrack(nextTrack);
 			addedToStream = true;
 			transceiver = addCameraTransceiver(this.peer, nextTrack, this.localStream);
+			this.videoTransceiver = transceiver;
 			this.videoSender = transceiver.sender;
 			const offer = await createOffer(this.peer);
 			const trackConfig = await api.getCallRealtimeTrackConfig(this.activeCall.callId, {
@@ -1699,6 +1895,60 @@ class CallsStore {
 				nextTrack.stop();
 			}
 			this.videoSender = null;
+			this.videoTransceiver = null;
+			throw error;
+		}
+	}
+
+	private async publishP2pCameraTrack(): Promise<void> {
+		if (!this.peer || !this.localStream || !this.activeCall || !this.sessionId) return;
+		let nextTrack: MediaStreamTrack | null = null;
+		let addedToStream = false;
+		let transceiver: RTCRtpTransceiver | null = null;
+		try {
+			const cameraStream = await navigator.mediaDevices.getUserMedia({
+				audio: false,
+				video: videoConstraints(this.cameraFacingMode, this.activeVideoInputId || undefined)
+			});
+			nextTrack = cameraStream.getVideoTracks()[0] ?? null;
+			if (!nextTrack) {
+				for (const track of cameraStream.getTracks()) track.stop();
+				throw new Error('Camera did not provide a video track.');
+			}
+			this.localStream.addTrack(nextTrack);
+			addedToStream = true;
+			transceiver = addCameraTransceiver(this.peer, nextTrack, this.localStream);
+			this.videoTransceiver = transceiver;
+			this.videoSender = transceiver.sender;
+			this.cameraEnabled = true;
+			this.updateLocalVideoStream();
+			const negotiated = await this.createAndSendP2pOffer();
+			if (!negotiated) throw new Error('Could not negotiate camera media.');
+			const trackConfig = await api.getCallRealtimeTrackConfig(this.activeCall.callId, {
+				sessionId: this.sessionId,
+				tracks: [
+					{
+						location: 'local',
+						trackName: localTrackName(this.activeCall, 'video'),
+						kind: 'video',
+						mid: transceiver.mid ?? 'video'
+					}
+				]
+			});
+			this.publishedMids = new Set([...this.publishedMids, ...publishedTrackMids(trackConfig, [transceiver.mid ?? 'video'])]);
+		} catch (error) {
+			if (transceiver) {
+				await transceiver.sender.replaceTrack(null).catch(() => undefined);
+				transceiver.stop();
+			}
+			if (nextTrack) {
+				if (addedToStream) this.localStream.removeTrack(nextTrack);
+				nextTrack.stop();
+			}
+			this.videoSender = null;
+			this.videoTransceiver = null;
+			this.cameraEnabled = false;
+			this.updateLocalVideoStream();
 			throw error;
 		}
 	}
@@ -1734,6 +1984,17 @@ class CallsStore {
 		const videoTracks = this.localStream?.getVideoTracks().filter((track) => track.readyState === 'live') ?? [];
 		this.localVideoStream = videoTracks.length ? new MediaStream(videoTracks) : null;
 		if (!videoTracks.length) this.cameraEnabled = false;
+	}
+
+	private stopLocalCameraTrack(): void {
+		const currentTrack = this.localStream?.getVideoTracks()[0];
+		if (!currentTrack) {
+			this.updateLocalVideoStream();
+			return;
+		}
+		currentTrack.stop();
+		this.localStream?.removeTrack(currentTrack);
+		this.updateLocalVideoStream();
 	}
 
 	private startMediaHeartbeat(): void {
@@ -1795,8 +2056,8 @@ class CallsStore {
 			video: Boolean(this.videoSender),
 			screen: Boolean(this.screenSender),
 			remoteAudio: this.remoteStreams.length > 0,
-			remoteVideo: this.remoteVideoStreams.some((stream) => stream.kind === 'video'),
-			remoteScreen: this.remoteVideoStreams.some((stream) => stream.kind === 'screen')
+			remoteVideo: this.remoteVideoStreams.some((stream) => stream.kind === 'video' && stream.active !== false),
+			remoteScreen: this.remoteVideoStreams.some((stream) => stream.kind === 'screen' && stream.active !== false)
 		});
 		try {
 			await api.reportCallUsage(callId, {
@@ -1889,6 +2150,7 @@ class CallsStore {
 		this.resetP2pState();
 		this.audioSender = null;
 		this.videoSender = null;
+		this.videoTransceiver = null;
 		this.screenSender = null;
 		this.screenTrackMid = null;
 		this.remoteStreams = [];
