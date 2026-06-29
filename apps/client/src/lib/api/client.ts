@@ -15,6 +15,8 @@ import type {
 	CallRealtimeRenegotiateInput,
 	CallRealtimeSessionInput,
 	CallRealtimeTracksInput,
+	CallSignalInput,
+	CallSignalResponse,
 	CallUsageReport,
 	CallUsageReportInput,
 	CreateCallInput,
@@ -562,6 +564,18 @@ export class VoyagerClient {
 			{ json: input as unknown as Json }
 		);
 		return res.realtime;
+	}
+
+	async sendCallSignal(callId: string, input: CallSignalInput): Promise<CallSignalResponse> {
+		const res = await this.request<CallSignalResponse>(
+			'POST',
+			`/v1/calls/${encodeURIComponent(callId)}/media/signals`,
+			{ json: input as unknown as Json }
+		);
+		return {
+			delivered: res.delivered,
+			signal: res.signal
+		};
 	}
 
 	async reportCallUsage(callId: string, input: CallUsageReportInput): Promise<CallUsageReport> {

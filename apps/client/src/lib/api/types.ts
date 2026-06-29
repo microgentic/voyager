@@ -539,9 +539,27 @@ export interface CallIceServer {
 	credential?: string;
 }
 
+export type CallMediaProvider = 'cloudflare_realtime' | 'p2p_webrtc';
+
 export interface CallRealtimeSessionDescription {
 	type: 'offer' | 'answer' | 'pranswer' | 'rollback';
 	sdp: string;
+}
+
+export type CallSignalType =
+	| 'ready'
+	| 'offer'
+	| 'answer'
+	| 'ice-candidate'
+	| 'renegotiate'
+	| 'ice-restart'
+	| 'hangup';
+
+export interface CallIceCandidate {
+	candidate: string;
+	sdpMid?: string | null;
+	sdpMLineIndex?: number | null;
+	usernameFragment?: string | null;
 }
 
 export type CallRealtimeTrackLocation = 'local' | 'remote';
@@ -554,6 +572,8 @@ export interface CallRealtimeSimulcastPolicy {
 
 export interface CallRealtimeSession {
 	sessionId: string;
+	coreSessionId?: string | null;
+	providerSessionId?: string | null;
 	status?: 'active' | 'closed' | 'failed';
 	createdAt?: string;
 	updatedAt?: string;
@@ -613,11 +633,12 @@ export interface CallFeatureFlags {
 	audioCallsEnabled: boolean;
 	videoCallsEnabled: boolean;
 	screenShareEnabled: boolean;
+	p2pCallsEnabled?: boolean;
 	realtimeMediaEnabled: boolean;
 }
 
 export interface CallRealtimeConfig {
-	provider: 'cloudflare_realtime';
+	provider: CallMediaProvider;
 	configured: boolean;
 	features?: CallFeatureFlags;
 	callId: string;
@@ -630,6 +651,43 @@ export interface CallRealtimeConfig {
 	availableTracks?: CallRealtimeTrack[];
 	requiresImmediateRenegotiation?: boolean;
 	message: string;
+}
+
+export interface CallSignalInput {
+	signalId?: string;
+	targetPrincipalId: string;
+	targetDeviceId?: string | null;
+	sessionId?: string;
+	providerSessionId?: string;
+	type: CallSignalType;
+	description?: CallRealtimeSessionDescription;
+	candidate?: CallIceCandidate;
+	sequence?: number;
+}
+
+export interface CallSignalEvent {
+	type: 'call.signal';
+	eventId: string;
+	createdAt: string;
+	tenantId: string;
+	roomId: string;
+	callId: string;
+	callType: CallType;
+	fromPrincipalId: string;
+	fromDeviceId: string | null;
+	toPrincipalId: string;
+	toDeviceId: string | null;
+	sessionId: string | null;
+	signalId: string;
+	signalType: CallSignalType;
+	description?: CallRealtimeSessionDescription;
+	candidate?: CallIceCandidate;
+	sequence?: number;
+}
+
+export interface CallSignalResponse {
+	delivered: boolean;
+	signal: CallSignalEvent;
 }
 
 export interface CallUsageReportTrackInput {
@@ -657,7 +715,7 @@ export interface CallUsageReportInput {
 export interface CallUsageReport {
 	usageReportId: string;
 	callId: string;
-	provider: 'cloudflare_realtime';
+	provider: CallMediaProvider;
 	providerSessionId: string | null;
 	source: 'client_estimate' | 'provider_authoritative';
 	durationMs: number;

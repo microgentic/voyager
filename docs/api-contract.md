@@ -218,6 +218,7 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/renegotiate` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/tracks/close` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/media/signals` | `{ delivered, signal }` |
 | `POST` | `/v1/calls/{callId}/usage-report` | `{ usageReport }` |
 | `GET` | `/v1/rooms/{roomId}/messages` | `{ messages }` |
 | `POST` | `/v1/rooms/{roomId}/messages` | `{ message }` |
@@ -348,6 +349,7 @@ Provider HTTP negotiation can happen outside Core's serialized mutation path, bu
 | `POST` | `/v1/calls/{callId}/realtime/tracks` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/renegotiate` | `{ realtime }` |
 | `POST` | `/v1/calls/{callId}/realtime/tracks/close` | `{ realtime }` |
+| `POST` | `/v1/calls/{callId}/media/signals` | `{ delivered, signal }` |
 | `POST` | `/v1/calls/{callId}/usage-report` | `{ usageReport }` |
 
 `POST /v1/rooms/{roomId}/calls` accepts:
@@ -429,7 +431,9 @@ Realtime session responses may include:
 }
 ```
 
-`POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates or returns the caller's active Cloudflare Realtime session. Duplicate active session requests from the same connected participant return the existing active session when no new offer is supplied; when a new `sessionDescription` is supplied for an existing active session, the backend renegotiates with the provider and returns a fresh answer. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. Stored track metadata includes the requested quality layer when present; duplicate local track publication upserts the existing session/track row. Media content is never stored. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription` and records metadata-only renegotiation state. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session; duplicate close is safe from the D1 perspective.
+`provider` may be `cloudflare_realtime` or `p2p_webrtc`, depending on Messaging Core deployment configuration. `POST /v1/calls/{callId}/realtime/session` accepts an optional `sessionDescription` and creates or returns the caller's active media session. Duplicate active session requests from the same connected participant return the existing active session when no new offer is supplied; when a new `sessionDescription` is supplied for an existing active Cloudflare Realtime session, the backend renegotiates with the provider and returns a fresh answer. For `p2p_webrtc`, Core returns session metadata and ICE servers without provider SDP. `POST /v1/calls/{callId}/realtime/tracks` accepts `sessionId`, optional `sessionDescription`, and a `tracks` array with `location`, `trackName`, `kind`, optional `mid`, optional `simulcast`, and remote `sessionId` when subscribing to another participant's track. The optional `simulcast` object is passed through for remote video/screen subscriptions and may include `preferredRid`, `priorityOrdering`, and `ridNotAvailable`. Stored track metadata includes the requested quality layer when present; duplicate local track publication upserts the existing session/track row. Media content is never stored. `POST /v1/calls/{callId}/realtime/renegotiate` forwards a required `sessionDescription` for provider-backed calls and records metadata-only renegotiation state. `POST /v1/calls/{callId}/realtime/tracks/close` closes active track mids for the caller's session; duplicate close is safe from the D1 perspective.
+
+`POST /v1/calls/{callId}/media/signals` proxies P2P WebRTC signaling to Messaging Core. It accepts `targetPrincipalId`, optional `targetDeviceId`, optional `signalId`, `sessionId` or `providerSessionId` for non-ready signals, `type` (`ready`, `offer`, `answer`, `ice-candidate`, `renegotiate`, `ice-restart`, or `hangup`), optional SDP `description`, optional ICE `candidate`, and optional numeric `sequence`. Voyager returns Core's `{ delivered, signal }` payload. SDP and ICE candidates are transient signaling data and are not stored by Voyager.
 
 ### Attachments
 
@@ -672,7 +676,7 @@ These routes are intentionally not ordinary product UI surface:
 | `DELETE` | `/v1/admin/accounts/{accountId}/roles/{roleName}` | revoke admin role |
 | `GET` | `/v1/admin/policies` | list policies |
 | `GET` | `/v1/admin/usage` | usage summary |
-| `GET` | `/v1/admin/calls/realtime-status` | Cloudflare Realtime configuration and feature-flag status |
+| `GET` | `/v1/admin/calls/realtime-status` | provider-neutral call media configuration and feature-flag status |
 | `GET` | `/v1/admin/audit-events` | audit event list |
 | `GET` | `/v1/admin/rooms` | admin room list |
 | `POST` | `/v1/admin/devices/test-cleanup` | stale test-device cleanup |
@@ -720,14 +724,14 @@ Admin hierarchy is part of the security contract: only platform owners may admin
 }
 ```
 
-`callMedia` is an operations surface derived from durable call/session/track metadata, failure events, and metadata-only client usage reports. Client reports provide aggregate byte and duration estimates; provider egress/TURN bytes remain marked unavailable unless a trustworthy provider-specific byte source is supplied. Local configured-success smoke may use `CLOUDFLARE_REALTIME_MOCK=1`; production configuration still depends on Cloudflare Realtime secrets.
+`callMedia` is an operations surface derived from durable call/session/track metadata, failure events, and metadata-only client usage reports. Client reports provide aggregate byte and duration estimates; provider egress/TURN bytes remain marked unavailable unless a trustworthy provider-specific byte source is supplied. Local configured-success smoke may use `CLOUDFLARE_REALTIME_MOCK=1`; production configuration depends on the selected Messaging Core call media provider.
 
-`GET /v1/admin/calls/realtime-status` requires `quota_operator`, `security_admin`, or `auditor` and never returns secrets. It reports local configuration and feature-flag state. It does not perform a live Cloudflare Realtime health check, so provider health fields remain `not_checked`/`null` unless a future explicit provider check is added.
+`GET /v1/admin/calls/realtime-status` requires `quota_operator`, `security_admin`, or `auditor` and never returns secrets. It reports provider-neutral Messaging Core media configuration and feature-flag state. It does not perform a live media-provider health check, so provider health fields remain `not_checked`/`null` unless a future explicit provider check is added.
 
 ```json
 {
   "realtime": {
-    "provider": "cloudflare_realtime",
+    "provider": "p2p_webrtc",
     "configured": true,
     "status": "configured",
     "configurationStatus": "configured",
@@ -735,23 +739,24 @@ Admin hierarchy is part of the security contract: only platform owners may admin
     "providerHealthStatus": "not_checked",
     "providerHealthCheckedAt": null,
     "mock": false,
-    "apiBase": "https://rtc.live.cloudflare.com/v1",
-    "turnConfigured": false,
+    "apiBase": "managed-by-messaging-core",
+    "turnConfigured": true,
     "features": {
       "callsEnabled": true,
       "audioCallsEnabled": true,
       "videoCallsEnabled": true,
       "screenShareEnabled": true,
+      "p2pCallsEnabled": true,
       "realtimeMediaEnabled": true
     },
     "credentialState": {
-      "appIdConfigured": true,
-      "appSecretConfigured": true,
-      "turnCredentialsConfigured": false
+      "appIdConfigured": false,
+      "appSecretConfigured": false,
+      "turnCredentialsConfigured": true
     },
     "lastProviderCheckAt": null,
     "lastProviderCheckStatus": "not_checked",
-    "estimatedSfuTurnEgressStatus": "unavailable_provider_metric"
+    "estimatedSfuTurnEgressStatus": "owned_by_messaging_core"
   }
 }
 ```

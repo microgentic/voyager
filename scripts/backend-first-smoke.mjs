@@ -882,6 +882,20 @@ if (fetchedCall.call.callId !== createdCall.call.callId) {
   throw new Error("call fetch returned the wrong call");
 }
 
+const p2pSignalWhileCloudflareProvider = await expectFailure(`/v1/calls/${createdCall.call.callId}/media/signals`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    targetPrincipalId: accepted.principal.principalId,
+    targetDeviceId: accepted.device.deviceId,
+    type: "ready"
+  }
+}, 403);
+assertApiErrorShape(p2pSignalWhileCloudflareProvider, "POST /v1/calls/{callId}/media/signals with Cloudflare provider");
+if (p2pSignalWhileCloudflareProvider.error !== "feature_disabled") {
+  throw new Error(`P2P signal proxy returned unexpected error ${p2pSignalWhileCloudflareProvider.error}`);
+}
+
 let mockAudioSessionId = null;
 if (coreRealtimeMockEnabled) {
   const realtimeSessionConfig = await api(`/v1/calls/${createdCall.call.callId}/realtime/session`, {
