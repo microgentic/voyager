@@ -852,7 +852,7 @@ export interface RealtimeRoomThreadEvent {
 	alsoSentToRoom: boolean;
 }
 
-export interface RealtimeCallEvent {
+export interface RealtimeCallLifecycleEvent {
 	type: 'call.invite' | 'call.ringing' | 'call.joined' | 'call.left' | 'call.ended' | 'call.updated';
 	eventId: string;
 	createdAt: string;
@@ -866,6 +866,8 @@ export interface RealtimeCallEvent {
 	reason?: string;
 	endedReason?: string;
 }
+
+export type RealtimeCallEvent = RealtimeCallLifecycleEvent | CallSignalEvent;
 
 export type RealtimeEvent =
 	| RealtimeReadyEvent
