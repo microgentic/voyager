@@ -97,8 +97,8 @@
 	const isBusy = $derived(!!calls.busyCallId || calls.mediaState === 'connecting' || calls.mediaState === 'ending');
 	const isVideoCall = $derived(calls.activeCall?.callType === 'video');
 	const videoTiles = $derived.by((): VideoTile[] => {
-		const remoteScreens = calls.remoteVideoStreams.filter((remote) => remote.kind === 'screen');
-		const remoteCameras = calls.remoteVideoStreams.filter((remote) => remote.kind === 'video');
+		const remoteScreens = calls.remoteVideoStreams.filter((remote) => remote.kind === 'screen' && remote.active !== false);
+		const remoteCameras = calls.remoteVideoStreams.filter((remote) => remote.kind === 'video' && remote.active !== false);
 		const cameraStreamCount = remoteCameras.length + (calls.localVideoStream ? 1 : 0);
 		const placeholderCount = Math.max(0, calls.connectedParticipants.length - cameraStreamCount);
 		const tiles: VideoTile[] = [];

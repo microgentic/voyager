@@ -37,6 +37,7 @@ export interface RemoteVideoStream {
 	stream: MediaStream;
 	kind: 'video' | 'screen';
 	displayName?: string | null;
+	active?: boolean;
 }
 
 export interface CallConnectionStatus {
@@ -1241,17 +1242,21 @@ class CallsStore {
 			const id = event.track.id || event.transceiver.mid || cryptoId('remote');
 			if (event.track.kind === 'video') {
 				const metadata = this.pendingRemoteVideoTracks.shift();
+				const kind: RemoteVideoStream['kind'] = metadata?.kind === 'screen' ? 'screen' : 'video';
 				if (!this.remoteVideoStreams.some((candidate) => candidate.id === id)) {
 					this.remoteVideoStreams = [
 						...this.remoteVideoStreams,
 						{
 							id,
 							stream,
-							kind: metadata?.kind === 'screen' ? 'screen' : 'video',
-							displayName: metadata?.displayName
+							kind,
+							displayName: metadata?.displayName,
+							active: !event.track.muted && this.remoteVideoKindEnabled(kind)
 						}
 					];
 				}
+				event.track.onmute = () => this.setRemoteVideoStreamActive(id, false);
+				event.track.onunmute = () => this.setRemoteVideoStreamActive(id, this.remoteVideoKindEnabled(kind));
 			} else if (!this.remoteStreams.some((candidate) => candidate.id === id)) {
 				this.remoteStreams = [...this.remoteStreams, { id, stream }];
 			}
@@ -1441,20 +1446,40 @@ class CallsStore {
 			(participant) => participant.status === 'connected' && participant.principalId !== principalId
 		);
 		if (!remoteParticipant) return;
-		if (!remoteParticipant.videoEnabled) {
-			const removedIds = new Set(this.remoteVideoStreams.filter((stream) => stream.kind === 'video').map((stream) => stream.id));
-			this.remoteVideoStreams = this.remoteVideoStreams.filter((stream) => stream.kind !== 'video');
-			if (this.featuredVideoId && removedIds.has(this.featuredVideoId)) {
-				this.featuredVideoId = null;
-			}
+		this.setRemoteVideoStreamsActive('video', remoteParticipant.videoEnabled);
+		this.setRemoteVideoStreamsActive('screen', remoteParticipant.screenEnabled);
+	}
+
+	private setRemoteVideoStreamActive(id: string, active: boolean): void {
+		const current = this.remoteVideoStreams.find((stream) => stream.id === id);
+		if (!current || (current.active ?? true) === active) return;
+		this.remoteVideoStreams = this.remoteVideoStreams.map((stream) => (stream.id === id ? { ...stream, active } : stream));
+		if (!active && this.featuredVideoId === id) {
+			this.featuredVideoId = null;
 		}
-		if (!remoteParticipant.screenEnabled) {
-			const removedIds = new Set(this.remoteVideoStreams.filter((stream) => stream.kind === 'screen').map((stream) => stream.id));
-			this.remoteVideoStreams = this.remoteVideoStreams.filter((stream) => stream.kind !== 'screen');
-			if (this.featuredVideoId && removedIds.has(this.featuredVideoId)) {
-				this.featuredVideoId = null;
-			}
+	}
+
+	private setRemoteVideoStreamsActive(kind: RemoteVideoStream['kind'], active: boolean): void {
+		const affectedIds = new Set(
+			this.remoteVideoStreams.filter((stream) => stream.kind === kind && (stream.active ?? true) !== active).map((stream) => stream.id)
+		);
+		if (!affectedIds.size) return;
+		this.remoteVideoStreams = this.remoteVideoStreams.map((stream) =>
+			affectedIds.has(stream.id) ? { ...stream, active } : stream
+		);
+		if (!active && this.featuredVideoId && affectedIds.has(this.featuredVideoId)) {
+			this.featuredVideoId = null;
 		}
+	}
+
+	private remoteVideoKindEnabled(kind: RemoteVideoStream['kind']): boolean {
+		if (this.mediaProvider !== 'p2p_webrtc' || !this.activeCall) return true;
+		const principalId = auth.principal?.principalId;
+		const remoteParticipant = this.activeCall.participants.find(
+			(participant) => participant.status === 'connected' && participant.principalId !== principalId
+		);
+		if (!remoteParticipant) return true;
+		return kind === 'screen' ? remoteParticipant.screenEnabled : remoteParticipant.videoEnabled;
 	}
 
 	private async handleP2pSignal(event: CallSignalEvent): Promise<void> {
@@ -2031,8 +2056,8 @@ class CallsStore {
 			video: Boolean(this.videoSender),
 			screen: Boolean(this.screenSender),
 			remoteAudio: this.remoteStreams.length > 0,
-			remoteVideo: this.remoteVideoStreams.some((stream) => stream.kind === 'video'),
-			remoteScreen: this.remoteVideoStreams.some((stream) => stream.kind === 'screen')
+			remoteVideo: this.remoteVideoStreams.some((stream) => stream.kind === 'video' && stream.active !== false),
+			remoteScreen: this.remoteVideoStreams.some((stream) => stream.kind === 'screen' && stream.active !== false)
 		});
 		try {
 			await api.reportCallUsage(callId, {
