@@ -726,7 +726,7 @@ Admin hierarchy is part of the security contract: only platform owners may admin
 
 `callMedia` is an operations surface derived from durable call/session/track metadata, failure events, and metadata-only client usage reports. Client reports provide aggregate byte and duration estimates; provider egress/TURN bytes remain marked unavailable unless a trustworthy provider-specific byte source is supplied. Local configured-success smoke may use `CLOUDFLARE_REALTIME_MOCK=1`; production configuration depends on the selected Messaging Core call media provider.
 
-`GET /v1/admin/calls/realtime-status` requires `quota_operator`, `security_admin`, or `auditor` and never returns secrets. It reports provider-neutral Messaging Core media configuration and feature-flag state. It does not perform a live media-provider health check, so provider health fields remain `not_checked`/`null` unless a future explicit provider check is added.
+`GET /v1/admin/calls/realtime-status` requires `quota_operator`, `security_admin`, or `auditor` and never returns secrets. It reports provider-neutral Messaging Core media configuration, STUN/TURN readiness, TURN credential mode, release readiness, and feature-flag state. It does not perform a live media-provider health check, so provider health fields remain `not_checked`/`null` unless a future explicit provider check is added.
 
 ```json
 {
@@ -740,7 +740,11 @@ Admin hierarchy is part of the security contract: only platform owners may admin
     "providerHealthCheckedAt": null,
     "mock": false,
     "apiBase": "managed-by-messaging-core",
+    "stunConfigured": true,
     "turnConfigured": true,
+    "turnCredentialMode": "ephemeral",
+    "releaseReadiness": "production_ready",
+    "releaseBlockers": [],
     "features": {
       "callsEnabled": true,
       "audioCallsEnabled": true,
@@ -752,7 +756,8 @@ Admin hierarchy is part of the security contract: only platform owners may admin
     "credentialState": {
       "appIdConfigured": false,
       "appSecretConfigured": false,
-      "turnCredentialsConfigured": true
+      "turnCredentialsConfigured": true,
+      "turnCredentialMode": "ephemeral"
     },
     "lastProviderCheckAt": null,
     "lastProviderCheckStatus": "not_checked",
