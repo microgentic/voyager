@@ -1345,11 +1345,11 @@ class CallsStore {
 	}
 
 	private async handleP2pSignal(event: CallSignalEvent): Promise<void> {
-		if (event.callId !== this.activeCall?.callId || event.callId !== this.mediaCallId) return;
+		if (event.callId !== this.activeCall?.callId) return;
 		if (event.fromPrincipalId === auth.principal?.principalId) return;
 		if (event.toPrincipalId !== auth.principal?.principalId) return;
 		if (event.toDeviceId && event.toDeviceId !== auth.device?.deviceId) return;
-		if (this.mediaProvider !== 'p2p_webrtc' || !this.peer) {
+		if (event.callId !== this.mediaCallId || this.mediaProvider !== 'p2p_webrtc' || !this.peer) {
 			this.pendingP2pSignals = [...this.pendingP2pSignals, event].slice(-50);
 			return;
 		}
@@ -1563,6 +1563,10 @@ class CallsStore {
 			}
 			return;
 		}
+		if (this.mediaProvider === 'p2p_webrtc' && !this.videoSender) {
+			if (notifyOnError) toasts.error('Camera is not available for this call yet.');
+			return;
+		}
 		try {
 			if (this.videoSender) {
 				await this.replaceCameraTrack(this.cameraFacingMode, this.activeVideoInputId || undefined);
@@ -1586,6 +1590,10 @@ class CallsStore {
 		if (!peer || !call || !sessionId || !this.mediaCallId || this.startingScreenShare) return;
 		if (!this.screenShareAvailable) {
 			toasts.error('Screen sharing is not available on this device.');
+			return;
+		}
+		if (this.mediaProvider === 'p2p_webrtc') {
+			toasts.error('Screen sharing is not available for this call yet.');
 			return;
 		}
 		this.startingScreenShare = true;
