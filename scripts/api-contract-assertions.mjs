@@ -18,9 +18,11 @@ export const endpointStabilityCatalog = [
   { method: "GET", path: "/v1/threads", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/direct", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/groups", stability: "stable/current" },
+  { method: "POST", path: "/v1/rooms/delete", stability: "stable/current" },
   { method: "GET", path: "/v1/rooms/{roomId}", stability: "stable/current" },
   { method: "PATCH", path: "/v1/rooms/{roomId}", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/archive", stability: "stable/current" },
+  { method: "DELETE", path: "/v1/rooms/{roomId}/visibility", stability: "stable/current" },
   { method: "POST", path: "/v1/rooms/{roomId}/members", stability: "stable/current" },
   { method: "PATCH", path: "/v1/rooms/{roomId}/members/{principalId}/role", stability: "stable/current" },
   { method: "DELETE", path: "/v1/rooms/{roomId}/members/{principalId}", stability: "stable/current" },
@@ -123,9 +125,11 @@ const CORE_RUNTIME_BOUNDARY_ROUTES = [
   ["GET", "/v1/threads"],
   ["POST", "/v1/rooms/direct"],
   ["POST", "/v1/rooms/groups"],
+  ["POST", "/v1/rooms/delete"],
   ["GET", "/v1/rooms/{roomId}"],
   ["PATCH", "/v1/rooms/{roomId}"],
   ["POST", "/v1/rooms/{roomId}/archive"],
+  ["DELETE", "/v1/rooms/{roomId}/visibility"],
   ["POST", "/v1/rooms/{roomId}/members"],
   ["PATCH", "/v1/rooms/{roomId}/members/{principalId}/role"],
   ["DELETE", "/v1/rooms/{roomId}/members/{principalId}"],
@@ -418,6 +422,16 @@ export function assertDeleteMessagesResponse(payload, context) {
   array(deleted.envelopeIds, `${context}.deleted.envelopeIds`).forEach((envelopeId, index) =>
     string(envelopeId, `${context}.deleted.envelopeIds[${index}]`)
   );
+}
+
+export function assertDeleteRoomsResponse(payload, context) {
+  const value = success(payload, context);
+  const deleted = object(value.deleted, `${context}.deleted`);
+  literal(deleted.scope, "for_me", `${context}.deleted.scope`);
+  array(deleted.roomIds, `${context}.deleted.roomIds`).forEach((roomId, index) =>
+    string(roomId, `${context}.deleted.roomIds[${index}]`)
+  );
+  string(deleted.hiddenAt, `${context}.deleted.hiddenAt`);
 }
 
 export function assertMessageResponse(payload, context) {

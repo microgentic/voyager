@@ -13,6 +13,7 @@ import {
   assertCallsResponse,
   assertCallUsageReportResponse,
   assertDeleteMessagesResponse,
+  assertDeleteRoomsResponse,
   assertEndpointCatalog,
   assertKeyPackageResponse,
   assertKeyPackagesResponse,
@@ -833,6 +834,92 @@ await expectFailure("/v1/rooms/direct", {
   headers: ownerHeaders,
   json: { principalIds: [accepted.principal.principalId, acceptedInvitee.principal.principalId], name: "Invalid direct" }
 }, 400);
+
+const deleteForMeDirect = await api("/v1/rooms/direct", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { principalIds: [acceptedInvitee.principal.principalId], name: "Smoke delete-for-me direct" }
+});
+assertRoomResponse(deleteForMeDirect, "POST /v1/rooms/direct delete-for-me");
+const deleteForMeRoomId = deleteForMeDirect.room.roomId;
+const deleteForMeMessage = await api(`/v1/rooms/${deleteForMeRoomId}/messages`, {
+  method: "POST",
+  headers: ownerHeaders,
+  json: {
+    idempotencyKey: `room-delete-message-${suffix}`,
+    protocolType: "opaque-test",
+    ciphertext: "encrypted-room-delete-smoke-payload"
+  }
+});
+assertMessageResponse(deleteForMeMessage, "POST /v1/rooms/{roomId}/messages delete-for-me setup");
+const deleteForMeResult = await apiRaw("/v1/rooms/delete", {
+  method: "POST",
+  headers: inviteeHeaders,
+  json: { roomIds: [deleteForMeRoomId], scope: "me" }
+});
+if (!deleteForMeResult.response.ok) {
+  throw new Error(`POST /v1/rooms/delete failed ${deleteForMeResult.response.status}: ${JSON.stringify(deleteForMeResult.payload)}`);
+}
+assertServerTiming(deleteForMeResult.response.headers.get("server-timing") ?? "", ["roomDelete"], "POST /v1/rooms/delete");
+assertDeleteRoomsResponse(deleteForMeResult.payload, "POST /v1/rooms/delete");
+if (!deleteForMeResult.payload.deleted.roomIds.includes(deleteForMeRoomId)) {
+  throw new Error("room delete-for-me did not return the deleted room id");
+}
+const hiddenRoomsPage = await api("/v1/rooms?limit=200", { headers: inviteeHeaders });
+assertPaginatedRoomsResponse(hiddenRoomsPage, "GET /v1/rooms after room delete-for-me");
+if (hiddenRoomsPage.rooms.some((room) => room.roomId === deleteForMeRoomId)) {
+  throw new Error("room delete-for-me room remained visible to deleting principal list");
+}
+const senderRoomsPage = await api("/v1/rooms?limit=200", { headers: ownerHeaders });
+assertPaginatedRoomsResponse(senderRoomsPage, "GET /v1/rooms sender after room delete-for-me");
+if (!senderRoomsPage.rooms.some((room) => room.roomId === deleteForMeRoomId)) {
+  throw new Error("room delete-for-me hid the room from another member");
+}
+const hiddenRoomSync = await api("/v1/sync", { headers: inviteeHeaders });
+assertSyncResponse(hiddenRoomSync, "GET /v1/sync after room delete-for-me");
+if (
+  hiddenRoomSync.sync.rooms.some((room) => room.roomId === deleteForMeRoomId) ||
+  hiddenRoomSync.sync.pendingMessages.some((message) => message.roomId === deleteForMeRoomId)
+) {
+  throw new Error("room delete-for-me room remained visible to deleting principal sync");
+}
+const hiddenRoomBootstrapResult = await apiRaw("/v1/app/bootstrap?limit=100", { headers: inviteeHeaders });
+if (!hiddenRoomBootstrapResult.response.ok) {
+  throw new Error(`GET bootstrap after room delete-for-me failed ${hiddenRoomBootstrapResult.response.status}: ${JSON.stringify(hiddenRoomBootstrapResult.payload)}`);
+}
+assertBootstrapResponse(hiddenRoomBootstrapResult.payload, "GET /v1/app/bootstrap after room delete-for-me");
+if (
+  hiddenRoomBootstrapResult.payload.bootstrap.rooms.some((room) => room.roomId === deleteForMeRoomId) ||
+  hiddenRoomBootstrapResult.payload.bootstrap.pendingMessages.some((message) => message.roomId === deleteForMeRoomId)
+) {
+  throw new Error("room delete-for-me room remained visible to deleting principal bootstrap");
+}
+
+const visibilityDirect = await api("/v1/rooms/direct", {
+  method: "POST",
+  headers: ownerHeaders,
+  json: { principalIds: [resetComplete.principal.principalId], name: "Smoke visibility delete direct" }
+});
+assertRoomResponse(visibilityDirect, "POST /v1/rooms/direct visibility delete");
+const visibilityDeleteResult = await apiRaw(`/v1/rooms/${visibilityDirect.room.roomId}/visibility`, {
+  method: "DELETE",
+  headers: ownerHeaders
+});
+if (!visibilityDeleteResult.response.ok) {
+  throw new Error(`DELETE /v1/rooms/{roomId}/visibility failed ${visibilityDeleteResult.response.status}: ${JSON.stringify(visibilityDeleteResult.payload)}`);
+}
+assertServerTiming(visibilityDeleteResult.response.headers.get("server-timing") ?? "", ["roomDelete"], "DELETE /v1/rooms/{roomId}/visibility");
+assertDeleteRoomsResponse(visibilityDeleteResult.payload, "DELETE /v1/rooms/{roomId}/visibility");
+const ownerRoomsAfterVisibilityDelete = await api("/v1/rooms?limit=200", { headers: ownerHeaders });
+assertPaginatedRoomsResponse(ownerRoomsAfterVisibilityDelete, "GET /v1/rooms owner after visibility delete");
+if (ownerRoomsAfterVisibilityDelete.rooms.some((room) => room.roomId === visibilityDirect.room.roomId)) {
+  throw new Error("room visibility delete remained visible to deleting owner list");
+}
+const resetRoomsAfterVisibilityDelete = await api("/v1/rooms?limit=200", { headers: resetHeaders });
+assertPaginatedRoomsResponse(resetRoomsAfterVisibilityDelete, "GET /v1/rooms other member after visibility delete");
+if (!resetRoomsAfterVisibilityDelete.rooms.some((room) => room.roomId === visibilityDirect.room.roomId)) {
+  throw new Error("room visibility delete hid the room from another member");
+}
 
 const callRealtimeToken = await createMessagingCoreRealtimeToken(userHeaders, "POST /v1/messaging-core/realtime/token call invite");
 const callInviteWatcher = await openRealtimeCallWatcher(callRealtimeToken, direct.room.roomId, "call.invite");
