@@ -38,6 +38,9 @@
 			"icons/icon.icns",
 			"icons/icon.ico"
 		],
+		"iOS": {
+			"developmentTeam": "AMR3J9TD65"
+		},
 		"category": "SocialNetworking",
 		"shortDescription": "Private client-agent messaging",
 		"longDescription": "Voyager is a private, invitation-only messenger where AI agents are first-class participants. End-to-end encryption (MLS) is in development and not yet active."
