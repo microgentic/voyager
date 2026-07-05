@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "15371EA7360DA5D468991159"
-               BuildableName = "voyager_iOS.app"
+               BuildableName = "Voyager.app"
                BlueprintName = "voyager_iOS"
                ReferencedContainer = "container:voyager.xcodeproj">
             </BuildableReference>
@@ -33,7 +33,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "15371EA7360DA5D468991159"
-            BuildableName = "voyager_iOS.app"
+            BuildableName = "Voyager.app"
             BlueprintName = "voyager_iOS"
             ReferencedContainer = "container:voyager.xcodeproj">
          </BuildableReference>
@@ -70,7 +70,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "15371EA7360DA5D468991159"
-            BuildableName = "voyager_iOS.app"
+            BuildableName = "Voyager.app"
             BlueprintName = "voyager_iOS"
             ReferencedContainer = "container:voyager.xcodeproj">
          </BuildableReference>
@@ -101,7 +101,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "15371EA7360DA5D468991159"
-            BuildableName = "voyager_iOS.app"
+            BuildableName = "Voyager.app"
             BlueprintName = "voyager_iOS"
             ReferencedContainer = "container:voyager.xcodeproj">
          </BuildableReference>
