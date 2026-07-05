@@ -52,6 +52,116 @@ jobs:
         env:
           MESSAGING_CORE_SERVICE_ROOT: ${{ github.workspace }}/messaging-core-service
 
+      - name: Create Messaging Core deploy config
+        if: github.event_name != 'pull_request'
+        working-directory: messaging-core-service
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { writeFileSync } from "node:fs";
+
+          const databaseName = "voyager-messaging-control";
+          const d1List = JSON.parse(execFileSync("npx", ["wrangler", "d1", "list", "--json"], {
+            encoding: "utf8",
+            env: process.env
+          }));
+          const database = d1List.find((candidate) => candidate.name === databaseName);
+          const databaseId = database?.uuid ?? database?.id;
+          if (!databaseId) {
+            throw new Error(`Could not find D1 database ${databaseName}`);
+          }
+
+          const config = {
+            $schema: "node_modules/wrangler/config-schema.json",
+            account_id: process.env.CLOUDFLARE_ACCOUNT_ID,
+            name: "voyager-messaging-worker",
+            main: "apps/voyager-messaging-worker.example/src/index.ts",
+            compatibility_date: "2026-06-22",
+            vars: {
+              MESSAGING_SERVICE_NAME: "voyager-messaging",
+              MESSAGING_ROUTE_PREFIX: "/",
+              CORS_ALLOWED_ORIGINS: "https://voyager-web.pages.dev",
+              MESSAGING_TOKEN_ISSUER_ALLOWLIST: "voyager",
+              MESSAGING_TOKEN_AUDIENCE: "messaging-core",
+              MESSAGING_INTERNAL_SERVICE_ISSUER_ALLOWLIST: "voyager",
+              MESSAGING_INTERNAL_SERVICE_AUDIENCE: "messaging-core-internal",
+              MESSAGING_REALTIME_PROTOCOL: "messaging.realtime.v1",
+              MESSAGING_REALTIME_ACCEPT_LEGACY_PROTOCOLS: "voyager.realtime.v1",
+              MESSAGING_EVENT_OUTBOX_ENABLED: "1",
+              MESSAGING_EVENT_QUEUE_BINDING: "EVENT_QUEUE",
+              MESSAGING_EVENT_REDRIVE_SCHEDULED_ENABLED: "1",
+              MESSAGING_EVENT_DEAD_LETTER_ALERT_THRESHOLD: "1",
+              CALLS_ENABLED: "1",
+              AUDIO_CALLS_ENABLED: "1",
+              VIDEO_CALLS_ENABLED: "1",
+              SCREEN_SHARE_ENABLED: "1",
+              CALLS_REALTIME_MEDIA_ENABLED: "1",
+              CLOUDFLARE_REALTIME_MOCK: "0"
+            },
+            triggers: {
+              crons: ["*/5 * * * *"]
+            },
+            d1_databases: [
+              {
+                binding: "CONTROL_DB",
+                database_name: databaseName,
+                database_id: databaseId,
+                migrations_dir: "packages/messaging-core/migrations"
+              }
+            ],
+            r2_buckets: [
+              {
+                binding: "ATTACHMENTS_BUCKET",
+                bucket_name: "voyager-messaging-attachments"
+              }
+            ],
+            queues: {
+              producers: [
+                {
+                  binding: "EVENT_QUEUE",
+                  queue: "voyager-messaging-events"
+                }
+              ]
+            },
+            durable_objects: {
+              bindings: [
+                { name: "REALTIME_MAILBOX", class_name: "RealtimeMailbox" },
+                { name: "CONVERSATION_COORDINATOR", class_name: "ConversationCoordinator" },
+                { name: "CALL_COORDINATOR", class_name: "CallCoordinator" }
+              ]
+            },
+            migrations: [
+              { tag: "v1-realtime-mailbox", new_sqlite_classes: ["RealtimeMailbox"] },
+              { tag: "v2-conversation-coordinator", new_sqlite_classes: ["ConversationCoordinator"] },
+              { tag: "v3-call-coordinator", new_sqlite_classes: ["CallCoordinator"] }
+            ],
+            observability: {
+              enabled: true
+            }
+          };
+
+          writeFileSync("wrangler.voyager-dev.jsonc", `${JSON.stringify(config, null, 2)}\n`);
+          NODE
+
+      - name: Apply Messaging Core D1 migrations
+        if: github.event_name != 'pull_request'
+        working-directory: messaging-core-service
+        run: npx wrangler d1 migrations apply voyager-messaging-control --remote --config wrangler.voyager-dev.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Deploy Messaging Core Worker
+        if: github.event_name != 'pull_request'
+        working-directory: messaging-core-service
+        run: npx wrangler deploy --config wrangler.voyager-dev.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Apply D1 migrations
         if: github.event_name != 'pull_request'
         run: npm run db:migrate:remote
@@ -72,3 +182,9 @@ jobs:
           VOYAGER_LOGIN_EMAIL: ada@example.com
           VOYAGER_LOGIN_PASSWORD: voyager-demo-pass
           SMOKE_MESSAGING_CORE_ALL_CUTOVER: "1"
+
+      - name: Remote post-deploy smoke
+        if: github.event_name != 'pull_request'
+        run: npm run smoke:backend:remote
+        env:
+          BASE_URL: https://voyager-api-dev.microgentic-voyager.workers.dev
