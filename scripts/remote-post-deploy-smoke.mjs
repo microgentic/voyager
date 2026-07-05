@@ -15,8 +15,8 @@ import {
 } from "./api-contract-assertions.mjs";
 
 const BASE_URL = process.env.BASE_URL ?? "https://voyager-api-dev.microgentic-voyager.workers.dev";
-const OWNER_EMAIL = process.env.REMOTE_SMOKE_OWNER_EMAIL ?? "ada@example.com";
-const RECEIVER_EMAIL = process.env.REMOTE_SMOKE_RECEIVER_EMAIL ?? "grace@example.com";
+const OWNER_EMAIL = process.env.REMOTE_SMOKE_OWNER_EMAIL ?? "grace@example.com";
+const RECEIVER_EMAIL = process.env.REMOTE_SMOKE_RECEIVER_EMAIL ?? "alan@example.com";
 const PASSWORD = process.env.REMOTE_SMOKE_PASSWORD ?? "voyager-demo-pass";
 const KEEP_DEVICES = process.env.REMOTE_SMOKE_KEEP_DEVICES === "1";
 const TIMEOUT_MS = Number(process.env.REMOTE_SMOKE_TIMEOUT_MS ?? 20_000);

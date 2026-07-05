@@ -37,7 +37,7 @@ Worker and seeded disposable test accounts.
 `npm run smoke:backend:remote` checks:
 
 - `GET /health` returns a healthy Worker with D1 and Messaging Core service bindings.
-- Seeded `ada@example.com` and `grace@example.com` password login works.
+- Seeded `grace@example.com` and `alan@example.com` password login works.
 - `GET /v1/app/bootstrap?limit=100` returns the stable startup contract.
 - Legacy `/v1/realtime` and `/v1/realtime/token` routes return 404.
 - `POST /v1/messaging-core/realtime/token` returns a valid short-lived Core socket token.
@@ -77,8 +77,8 @@ Optional overrides:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
-REMOTE_SMOKE_OWNER_EMAIL=ada@example.com \
-REMOTE_SMOKE_RECEIVER_EMAIL=grace@example.com \
+REMOTE_SMOKE_OWNER_EMAIL=grace@example.com \
+REMOTE_SMOKE_RECEIVER_EMAIL=alan@example.com \
 REMOTE_SMOKE_PASSWORD=voyager-demo-pass \
 npm run smoke:backend:remote
 ```
