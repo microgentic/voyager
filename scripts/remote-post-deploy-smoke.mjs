@@ -267,13 +267,8 @@ async function cleanupSmokeArtifacts() {
     });
   }
 
-  if (cleanupState.createdRoom && cleanupState.roomId && cleanupState.ownerToken) {
-    await api(`/v1/rooms/${cleanupState.roomId}/archive`, {
-      method: "POST",
-      headers: auth(cleanupState.ownerToken)
-    }).catch((error) => {
-      console.warn(`Could not archive remote smoke room ${cleanupState.roomId}: ${error.message ?? error}`);
-    });
+  if (cleanupState.createdRoom && cleanupState.roomId) {
+    console.log(`Leaving remote smoke room ${cleanupState.roomId} active so future runs can reuse it.`);
   }
 }
 

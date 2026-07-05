@@ -121,14 +121,16 @@ let normalSyncCutover = false;
 let normalThreadInbox = false;
 let normalAttachmentWrite = false;
 let normalRealtimeMessage = false;
-const firstRoomId = coreRooms.rooms[0]?.roomId;
+const firstRoom = coreRooms.rooms.find((room) => room.status === "active");
+const firstRoomId = firstRoom?.roomId;
 if (!firstRoomId) {
-  throw new Error("Core /rooms returned no rooms; populate the Core dev deployment before parity smoke.");
+  throw new Error("Core /rooms returned no active rooms; populate the Core dev deployment with a writable room before parity checks.");
 }
 if (firstRoomId) {
   const encodedRoomId = encodeURIComponent(firstRoomId);
   const coreRoom = await coreApi(coreBaseUrl, `/rooms/${encodedRoomId}`, messagingCore.token);
   assertEqual(coreRoom.room?.roomId, firstRoomId, "Core room detail roomId");
+  assertEqual(coreRoom.room?.status, "active", "Core room detail active status");
   assertArray(coreRoom.members, "Core room detail members");
   directCoreRoomDetail = true;
 

@@ -58,11 +58,12 @@ Worker and seeded disposable test accounts.
 - Receiver recovery reads work through `GET /v1/rooms/{roomId}`,
   `GET /v1/rooms/{roomId}/messages`, and `GET /v1/sync`.
 
-The smoke prefers an existing seeded Ada/Grace direct room so each run does not
+The smoke prefers an existing seeded Grace/Alan direct room so each run does not
 create another room. If no active direct room exists, it creates a fallback room
-and archives it during cleanup. The smoke also acknowledges the sent message,
-deletes any unreferenced smoke attachment, leaves any smoke call, and revokes
-temporary `probe` devices at the end of a successful or failed run when possible.
+and leaves it active so later runs can reuse it. The smoke also acknowledges the
+sent message, deletes any unreferenced smoke attachment, leaves any smoke call,
+and revokes temporary `probe` devices at the end of a successful or failed run
+when possible.
 
 ## Manual Run
 
