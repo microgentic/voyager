@@ -1,6 +1,6 @@
 import { api } from '$lib/api';
 import type { Membership, Room } from '$lib/api/types';
-import { loadCachedRooms, removeCachedRoom, saveCachedRooms } from '$lib/local-cache';
+import { clientCacheScope, loadCachedRooms, removeCachedRoom, saveCachedRooms } from '$lib/local-cache';
 import { parseServerDate } from '$lib/utils/time';
 import { auth } from './auth.svelte';
 
@@ -24,9 +24,13 @@ class RoomsStore {
 		auth.onSignOut(() => this.reset());
 	}
 
+	private cacheScope(): string | null {
+		return clientCacheScope(auth.account?.accountId, auth.principal?.principalId);
+	}
+
 	async hydrateFromCache(): Promise<boolean> {
 		if (this.loaded) return this.list.length > 0;
-		const cached = await loadCachedRooms();
+		const cached = await loadCachedRooms(this.cacheScope());
 		if (!cached.length) return false;
 		this.list = cached;
 		this.loaded = true;
@@ -41,7 +45,7 @@ class RoomsStore {
 			const page = await api.listRooms({ limit: 200 });
 			this.list = page.items;
 			this.loaded = true;
-			void saveCachedRooms(page.items);
+			void saveCachedRooms(this.cacheScope(), page.items);
 		} finally {
 			this.loading = false;
 		}
@@ -52,14 +56,14 @@ class RoomsStore {
 		const map = new Map(this.list.map((r) => [r.roomId, r]));
 		for (const r of rooms) map.set(r.roomId, r);
 		this.list = [...map.values()];
-		void saveCachedRooms(rooms);
+		void saveCachedRooms(this.cacheScope(), rooms);
 	}
 
 	hydrate(nextRooms: Room[]): void {
 		this.list = nextRooms;
 		this.loaded = true;
 		this.loading = false;
-		void saveCachedRooms(nextRooms);
+		void saveCachedRooms(this.cacheScope(), nextRooms);
 	}
 
 	upsert(room: Room): void {
@@ -73,7 +77,7 @@ class RoomsStore {
 
 	remove(roomId: string): void {
 		this.list = this.list.filter((r) => r.roomId !== roomId);
-		void removeCachedRoom(roomId);
+		void removeCachedRoom(this.cacheScope(), roomId);
 	}
 
 	async refresh(roomId: string): Promise<Room | undefined> {

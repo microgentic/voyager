@@ -12,7 +12,7 @@ The preferred client restore path is:
 
 1. load the bearer token and cached identity;
 2. paint the authenticated shell immediately when cached identity exists;
-3. hydrate cached rooms and recent messages from IndexedDB;
+3. hydrate account/principal-scoped cached rooms and recent messages from IndexedDB;
 4. refresh product identity through `GET /v1/app/session`;
 5. run `GET /v1/sync` in the background;
 6. connect Messaging Core realtime for foreground hints.
@@ -68,7 +68,7 @@ Inspect startup performance in browser DevTools or curl by checking the `Server-
 - `GET /v1/room-invitations`
 - `GET /v1/sidebar-collections`
 
-Login timing reports password verification, device/session creation, audit, and route total. Read endpoints report auth/context time, read time, and route total; bootstrap also reports room and pending-message reads. Web client reopen performance should also be inspected with the IndexedDB `voyager-client-cache` stores for rooms, messages, and sync state.
+Login timing reports password verification, device/session creation, audit, and route total. Read endpoints report auth/context time, read time, and route total; bootstrap also reports room and pending-message reads. Web client reopen performance should also be inspected with the IndexedDB `voyager-client-cache` stores for rooms, messages, and sync state; cache rows are keyed by the authenticated account/principal scope and cleared on local sign-out.
 
 ## Future Work
 

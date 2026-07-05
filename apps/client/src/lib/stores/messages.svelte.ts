@@ -14,7 +14,7 @@ import type {
 	AttachmentVariant,
 	AttachmentVariantName
 } from '$lib/api/types';
-import { clearClientCache, loadCachedRoomCursor, loadCachedRoomMessages, saveCachedMessages } from '$lib/local-cache';
+import { clientCacheScope, loadCachedRoomCursor, loadCachedRoomMessages, saveCachedMessages } from '$lib/local-cache';
 import {
 	messageCodec,
 	type AttachmentRef,
@@ -169,19 +169,22 @@ class MessagesStore {
 		auth.onSignOut(() => this.reset());
 	}
 
-		reset(): void {
-			this.byRoom = {};
-			this.threads = {};
+	private cacheScope(): string | null {
+		return clientCacheScope(auth.account?.accountId, auth.principal?.principalId);
+	}
+
+	reset(): void {
+		this.byRoom = {};
+		this.threads = {};
 		this.threadOlderCursors = {};
 		this.lastReadSeq = {};
 		this.cursor = {};
 		this.acked.clear();
-			this.pendingReadAcks.clear();
-			this.readAckFlush = null;
-			this.loadedRooms.clear();
-			this.loadingRoom = null;
-			void clearClientCache();
-		}
+		this.pendingReadAcks.clear();
+		this.readAckFlush = null;
+		this.loadedRooms.clear();
+		this.loadingRoom = null;
+	}
 
 	list(roomId: string): ChatMessage[] {
 		return this.byRoom[roomId] ?? [];
@@ -289,12 +292,12 @@ class MessagesStore {
 				touchedThreads.add(root);
 			}
 		}
-			for (const roomId of touchedRooms) nextRooms[roomId] = sortMessages(nextRooms[roomId]);
-			for (const root of touchedThreads) nextThreads[root] = sortMessages(nextThreads[root]);
-			if (touchedRooms.size) this.byRoom = nextRooms;
-			if (touchedThreads.size) this.threads = nextThreads;
-			void saveCachedMessages(decoded);
-		}
+		for (const roomId of touchedRooms) nextRooms[roomId] = sortMessages(nextRooms[roomId]);
+		for (const root of touchedThreads) nextThreads[root] = sortMessages(nextThreads[root]);
+		if (touchedRooms.size) this.byRoom = nextRooms;
+		if (touchedThreads.size) this.threads = nextThreads;
+		void saveCachedMessages(this.cacheScope(), decoded);
+	}
 
 	threadList(rootEnvelopeId: string): ChatMessage[] {
 		return this.threads[rootEnvelopeId] ?? [];
@@ -371,25 +374,26 @@ class MessagesStore {
 		await this.ingest(envelopes.filter((envelope) => envelope.serverSequence === serverSequence));
 	}
 
-		async ensureLoaded(roomId: string): Promise<void> {
-			if (this.loadedRooms.has(roomId)) return;
-			this.loadingRoom = roomId;
-			try {
-				const cached = await loadCachedRoomMessages(roomId, PAGE);
-				if (cached.length) {
-					this.applyMessages(cached);
-					this.cursor[roomId] = Math.max(
-						this.cursor[roomId] ?? 0,
-						await loadCachedRoomCursor(roomId),
-						...cached.map((message) => message.serverSequence)
-					);
-				}
-				await this.fetchNew(roomId, { overlap: cached.length ? 20 : 0 });
-				this.loadedRooms.add(roomId);
-			} finally {
-				if (this.loadingRoom === roomId) this.loadingRoom = null;
+	async ensureLoaded(roomId: string): Promise<void> {
+		if (this.loadedRooms.has(roomId)) return;
+		this.loadingRoom = roomId;
+		try {
+			const scope = this.cacheScope();
+			const cached = await loadCachedRoomMessages(scope, roomId, PAGE);
+			if (cached.length) {
+				this.applyMessages(cached);
+				this.cursor[roomId] = Math.max(
+					this.cursor[roomId] ?? 0,
+					await loadCachedRoomCursor(scope, roomId),
+					...cached.map((message) => message.serverSequence)
+				);
 			}
+			await this.fetchNew(roomId, { overlap: cached.length ? 20 : 0 });
+			this.loadedRooms.add(roomId);
+		} finally {
+			if (this.loadingRoom === roomId) this.loadingRoom = null;
 		}
+	}
 
 	async sendText(roomId: string, content: MessageContent, options: SendRetryOptions = {}): Promise<void> {
 		const principalId = auth.principal?.principalId;

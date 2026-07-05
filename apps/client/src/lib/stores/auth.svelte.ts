@@ -1,6 +1,7 @@
-import { api, isApiError } from '$lib/api';
+import { api } from '$lib/api';
 import type { Account, AuthResult, BootstrapResult, Device, Principal } from '$lib/api/types';
 import { APP_VERSION, CLIENT_PROTOCOL_VERSION } from '$lib/config';
+import { clearClientCache } from '$lib/local-cache';
 import { deviceLabel, devicePlatform } from '$lib/platform';
 import {
 	clearSession,
@@ -176,6 +177,7 @@ class AuthStore {
 		this.roles = [];
 		this.pendingBootstrap = null;
 		this.status = 'anon';
+		void clearClientCache();
 		for (const handler of this.resetHandlers) handler();
 	}
 

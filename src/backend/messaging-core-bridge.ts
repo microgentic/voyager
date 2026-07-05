@@ -249,7 +249,8 @@ export async function fetchMessagingCoreSyncCutoverProxy(
   const route = appendQuery("/sync", query);
   const upstream = await getPublicCoreJson(config, token, route);
   const coreRooms = arrayField(upstream.payload, "rooms");
-  let roomViews = jsonObjectArrayValue(upstream.payload.roomViews);
+  const upstreamRoomViews = jsonObjectArrayValue(upstream.payload.roomViews);
+  let roomViews = upstreamRoomViews.length === coreRooms.length ? upstreamRoomViews : [];
   let roomDetailFanoutCount = 0;
   if (!roomViews.length && coreRooms.length) {
     roomViews = [];
@@ -668,7 +669,7 @@ async function adaptRoomCutoverPayload(
     const page = roomCutoverPage(options.query);
     const pagedCoreRooms = coreRooms.slice(page.offset, page.offset + page.limit);
     const coreRoomViews = jsonObjectArrayValue(payload.roomViews);
-    let roomViews = coreRoomViews.length
+    let roomViews = coreRoomViews.length === coreRooms.length
       ? coreRoomViews.slice(page.offset, page.offset + page.limit)
       : [];
     if (!roomViews.length && pagedCoreRooms.length) {

@@ -2,18 +2,26 @@ import type { Room } from '$lib/api/types';
 import type { ChatMessage } from '$lib/stores/messages.svelte';
 
 const DB_NAME = 'voyager-client-cache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const ROOM_STORE = 'rooms';
 const MESSAGE_STORE = 'messages';
 const SYNC_STORE = 'syncState';
 const ROOM_CURSOR_PREFIX = 'roomCursor:';
 
-interface CachedRoom extends Room {
+type CacheScope = string | null | undefined;
+
+interface CachedRoom {
+	cacheKey: string;
+	scopeKey: string;
+	roomId: string;
+	updatedAt: string;
 	cachedAt: string;
+	room: Room;
 }
 
 interface CachedMessage {
 	cacheKey: string;
+	scopeKey: string;
 	roomId: string;
 	serverSequence: number;
 	cachedAt: string;
@@ -39,17 +47,14 @@ function openDatabase(): Promise<IDBDatabase | null> {
 		const request = indexedDB.open(DB_NAME, DB_VERSION);
 		request.onupgradeneeded = () => {
 			const db = request.result;
-			if (!db.objectStoreNames.contains(ROOM_STORE)) {
-				db.createObjectStore(ROOM_STORE, { keyPath: 'roomId' });
-			}
-			if (!db.objectStoreNames.contains(MESSAGE_STORE)) {
-				const store = db.createObjectStore(MESSAGE_STORE, { keyPath: 'cacheKey' });
-				store.createIndex('roomId', 'roomId');
-				store.createIndex('roomSequence', ['roomId', 'serverSequence']);
-			}
-			if (!db.objectStoreNames.contains(SYNC_STORE)) {
-				db.createObjectStore(SYNC_STORE, { keyPath: 'key' });
-			}
+			if (db.objectStoreNames.contains(ROOM_STORE)) db.deleteObjectStore(ROOM_STORE);
+			if (db.objectStoreNames.contains(MESSAGE_STORE)) db.deleteObjectStore(MESSAGE_STORE);
+			if (db.objectStoreNames.contains(SYNC_STORE)) db.deleteObjectStore(SYNC_STORE);
+			const roomStore = db.createObjectStore(ROOM_STORE, { keyPath: 'cacheKey' });
+			roomStore.createIndex('scopeUpdated', ['scopeKey', 'updatedAt']);
+			const messageStore = db.createObjectStore(MESSAGE_STORE, { keyPath: 'cacheKey' });
+			messageStore.createIndex('roomSequence', ['scopeKey', 'roomId', 'serverSequence']);
+			db.createObjectStore(SYNC_STORE, { keyPath: 'key' });
 		};
 		request.onsuccess = () => resolve(request.result);
 		request.onerror = () => resolve(null);
@@ -108,39 +113,62 @@ async function writeStores(
 	}
 }
 
-function roomCursorKey(roomId: string): string {
-	return `${ROOM_CURSOR_PREFIX}${roomId}`;
+export function clientCacheScope(accountId: string | null | undefined, principalId: string | null | undefined): string | null {
+	if (!accountId || !principalId) return null;
+	return `${accountId}:${principalId}`;
 }
 
-function stableMessageCacheKey(message: ChatMessage): string | null {
+function scopedKey(scopeKey: string, id: string): string {
+	return `${scopeKey}:${id}`;
+}
+
+function roomCursorKey(scopeKey: string, roomId: string): string {
+	return scopedKey(scopeKey, `${ROOM_CURSOR_PREFIX}${roomId}`);
+}
+
+function stableMessageCacheKey(scopeKey: string, message: ChatMessage): string | null {
 	if (!message.envelopeId || message.serverSequence <= 0) return null;
-	return `${message.roomId}:${message.envelopeId}`;
+	return scopedKey(scopeKey, `${message.roomId}:${message.envelopeId}`);
 }
 
-export async function loadCachedRooms(): Promise<Room[]> {
-	const rows = await readStore<CachedRoom[]>(ROOM_STORE, (store) =>
-		requestResult(store.getAll() as IDBRequest<CachedRoom[]>)
-	);
-	return (rows ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+export async function loadCachedRooms(scopeKey: CacheScope): Promise<Room[]> {
+	if (!scopeKey) return [];
+	const rows = await readStore<CachedRoom[]>(ROOM_STORE, (store) => {
+		const index = store.index('scopeUpdated');
+		const range = IDBKeyRange.bound([scopeKey, ''], [scopeKey, '\uffff']);
+		return requestResult(index.getAll(range) as IDBRequest<CachedRoom[]>);
+	});
+	return (rows ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((row) => row.room);
 }
 
-export async function saveCachedRooms(rooms: Room[]): Promise<void> {
-	if (!rooms.length) return;
+export async function saveCachedRooms(scopeKey: CacheScope, rooms: Room[]): Promise<void> {
+	if (!scopeKey || !rooms.length) return;
 	const cachedAt = new Date().toISOString();
 	await writeStores(ROOM_STORE, (stores) => {
 		const store = stores.get(ROOM_STORE)!;
-		for (const room of rooms) store.put({ ...room, cachedAt } satisfies CachedRoom);
+		for (const room of rooms) {
+			store.put({
+				cacheKey: scopedKey(scopeKey, room.roomId),
+				scopeKey,
+				roomId: room.roomId,
+				updatedAt: room.updatedAt,
+				cachedAt,
+				room
+			} satisfies CachedRoom);
+		}
 	});
 }
 
-export async function removeCachedRoom(roomId: string): Promise<void> {
-	await writeStores(ROOM_STORE, (stores) => stores.get(ROOM_STORE)!.delete(roomId));
+export async function removeCachedRoom(scopeKey: CacheScope, roomId: string): Promise<void> {
+	if (!scopeKey) return;
+	await writeStores(ROOM_STORE, (stores) => stores.get(ROOM_STORE)!.delete(scopedKey(scopeKey, roomId)));
 }
 
-export async function loadCachedRoomMessages(roomId: string, limit = 200): Promise<ChatMessage[]> {
+export async function loadCachedRoomMessages(scopeKey: CacheScope, roomId: string, limit = 200): Promise<ChatMessage[]> {
+	if (!scopeKey) return [];
 	const rows = await readStore<CachedMessage[]>(MESSAGE_STORE, (store) => {
 		const index = store.index('roomSequence');
-		const range = IDBKeyRange.bound([roomId, 0], [roomId, Number.MAX_SAFE_INTEGER]);
+		const range = IDBKeyRange.bound([scopeKey, roomId, 0], [scopeKey, roomId, Number.MAX_SAFE_INTEGER]);
 		return new Promise((resolve, reject) => {
 			const messages: CachedMessage[] = [];
 			const request = index.openCursor(range, 'prev');
@@ -159,9 +187,10 @@ export async function loadCachedRoomMessages(roomId: string, limit = 200): Promi
 	return (rows ?? []).map((row) => row.message);
 }
 
-export async function saveCachedMessages(messages: ChatMessage[]): Promise<void> {
+export async function saveCachedMessages(scopeKey: CacheScope, messages: ChatMessage[]): Promise<void> {
+	if (!scopeKey) return;
 	const stableMessages = messages
-		.map((message) => ({ message, cacheKey: stableMessageCacheKey(message) }))
+		.map((message) => ({ message, cacheKey: stableMessageCacheKey(scopeKey, message) }))
 		.filter((entry): entry is { message: ChatMessage; cacheKey: string } => Boolean(entry.cacheKey));
 	if (!stableMessages.length) return;
 	const cachedAt = new Date().toISOString();
@@ -172,6 +201,7 @@ export async function saveCachedMessages(messages: ChatMessage[]): Promise<void>
 		for (const { message, cacheKey } of stableMessages) {
 			messageStore.put({
 				cacheKey,
+				scopeKey,
 				roomId: message.roomId,
 				serverSequence: message.serverSequence,
 				cachedAt,
@@ -181,7 +211,7 @@ export async function saveCachedMessages(messages: ChatMessage[]): Promise<void>
 		}
 		for (const [roomId, cursor] of maxByRoom) {
 			syncStore.put({
-				key: roomCursorKey(roomId),
+				key: roomCursorKey(scopeKey, roomId),
 				value: cursor,
 				updatedAt: cachedAt
 			} satisfies SyncStateRow);
@@ -189,9 +219,10 @@ export async function saveCachedMessages(messages: ChatMessage[]): Promise<void>
 	});
 }
 
-export async function loadCachedRoomCursor(roomId: string): Promise<number> {
+export async function loadCachedRoomCursor(scopeKey: CacheScope, roomId: string): Promise<number> {
+	if (!scopeKey) return 0;
 	const row = await readStore<SyncStateRow | undefined>(SYNC_STORE, (store) =>
-		requestResult(store.get(roomCursorKey(roomId)) as IDBRequest<SyncStateRow | undefined>)
+		requestResult(store.get(roomCursorKey(scopeKey, roomId)) as IDBRequest<SyncStateRow | undefined>)
 	);
 	const value = row?.value;
 	return typeof value === 'number' && Number.isFinite(value) ? value : 0;
