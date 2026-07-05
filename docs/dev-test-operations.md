@@ -201,8 +201,12 @@ run:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
-VOYAGER_LOGIN_EMAIL=ada@example.com \
+VOYAGER_LOGIN_EMAIL=grace@example.com \
 VOYAGER_LOGIN_PASSWORD=voyager-demo-pass \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_INVITEE_EMAIL=alan@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_TRANSFER_EMAIL=katherine@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_DECLINE_EMAIL=dorothy@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_DIRECT_EMAIL=margaret@example.com \
   npm run smoke:messaging-core-parity
 ```
 
@@ -213,12 +217,17 @@ internal service secret configured, then run:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
-VOYAGER_LOGIN_EMAIL=ada@example.com \
+VOYAGER_LOGIN_EMAIL=grace@example.com \
 VOYAGER_LOGIN_PASSWORD=voyager-demo-pass \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_INVITEE_EMAIL=alan@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_TRANSFER_EMAIL=katherine@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_DECLINE_EMAIL=dorothy@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_DIRECT_EMAIL=margaret@example.com \
   npm run smoke:messaging-core-parity
 ```
 
-That smoke exercises normal Voyager login, Core session minting, bootstrap,
+That smoke uses distinct seeded human accounts for the primary login and
+room-write subflows. It exercises normal Voyager login, Core session minting, bootstrap,
 room list/detail, room writes, message send/list, sync, attachment
 upload/download, thread inbox, Core realtime `ready`/`pong`, and Core
 `room.message` delivery for a message sent through the normal Voyager route.
