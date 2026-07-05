@@ -63,23 +63,49 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN"
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
-          import { writeFileSync } from "node:fs";
+          import { appendFileSync, writeFileSync } from "node:fs";
 
-          const databaseName = "voyager-messaging-control";
+          const workerName = "voyager-messaging-worker";
+          let databaseName = "voyager-messaging-control";
+          let databaseId = null;
           const d1List = JSON.parse(execFileSync("npx", ["wrangler", "d1", "list", "--json"], {
             encoding: "utf8",
             env: process.env
           }));
-          const database = d1List.find((candidate) => candidate.name === databaseName);
-          const databaseId = database?.uuid ?? database?.id;
+
+          try {
+            const response = await fetch(
+              `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${workerName}/settings`,
+              { headers: { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } }
+            );
+            const payload = await response.json();
+            if (!response.ok || payload.success === false) {
+              throw new Error(JSON.stringify(payload.errors ?? payload));
+            }
+            const bindings = payload.result?.bindings ?? payload.result?.settings?.bindings ?? [];
+            const d1Binding = bindings.find((binding) => {
+              const type = String(binding.type ?? binding.binding_type ?? "");
+              return binding.name === "CONTROL_DB" && /d1/i.test(type);
+            });
+            databaseId = d1Binding?.id ?? d1Binding?.database_id ?? d1Binding?.databaseId ?? null;
+            databaseName = d1Binding?.database_name ?? d1Binding?.databaseName ?? databaseName;
+          } catch (error) {
+            console.warn(`Could not read existing ${workerName} D1 binding: ${error.message ?? error}`);
+          }
+
+          const database = d1List.find((candidate) => candidate.name === databaseName || candidate.uuid === databaseId || candidate.id === databaseId);
+          databaseId = databaseId ?? database?.uuid ?? database?.id ?? null;
+          databaseName = database?.name ?? databaseName;
+
           if (!databaseId) {
-            throw new Error(`Could not find D1 database ${databaseName}`);
+            const names = d1List.map((candidate) => candidate.name).join(", ");
+            throw new Error(`Could not find D1 database for ${workerName}. Available D1 databases: ${names}`);
           }
 
           const config = {
             $schema: "node_modules/wrangler/config-schema.json",
             account_id: process.env.CLOUDFLARE_ACCOUNT_ID,
-            name: "voyager-messaging-worker",
+            name: workerName,
             main: "apps/voyager-messaging-worker.example/src/index.ts",
             compatibility_date: "2026-06-22",
             vars: {
@@ -146,12 +172,13 @@ jobs:
           };
 
           writeFileSync("wrangler.voyager-dev.jsonc", `${JSON.stringify(config, null, 2)}\n`);
+          appendFileSync(process.env.GITHUB_ENV, `MESSAGING_CORE_D1_DATABASE_NAME=${databaseName}\n`);
           NODE
 
       - name: Apply Messaging Core D1 migrations
         if: github.event_name != 'pull_request'
         working-directory: messaging-core-service
-        run: npx wrangler d1 migrations apply voyager-messaging-control --remote --config wrangler.voyager-dev.jsonc
+        run: npx wrangler d1 migrations apply "$MESSAGING_CORE_D1_DATABASE_NAME" --remote --config wrangler.voyager-dev.jsonc
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
