@@ -176,9 +176,9 @@ and a basic audio call lifecycle plus aggregate call usage reporting in an
 existing Grace/Alan room when available,
 sends a direct message, waits for the exact matching Core `room.message`, then verifies
 idempotent retry, Conversation DO timing headers, and HTTP recovery reads. It
-acknowledges the smoke message, archives only a fallback room it had to create,
-leaves any smoke call, deletes any unreferenced smoke attachment, and revokes the
-temporary smoke devices when possible.
+acknowledges the smoke message, leaves any fallback direct room active for future
+reuse, leaves any smoke call, deletes any unreferenced smoke attachment, and
+revokes the temporary smoke devices when possible.
 
 Manual run:
 
@@ -235,7 +235,8 @@ room-write subflows. It exercises normal Voyager login, Core session minting, bo
 room list/detail, room writes, message send/list, sync, attachment
 upload/download, thread inbox, Core realtime `ready`/`pong`, and Core
 `room.message` delivery for a message sent through the normal Voyager route.
-It fails if any JSON response contains `source: "voyager_legacy"`.
+It selects an active room for message writes because Core keeps archived rooms
+readable for history while correctly rejecting writes to them. It fails if any JSON response contains `source: "voyager_legacy"`.
 The old read-only `/v1/messaging-core/*` validation proxies and the
 `/v1/admin/messaging-core/backfill-readonly` parity backfill utility have been
 removed; the parity smoke now uses `/v1/me` for the Core session, direct Core
