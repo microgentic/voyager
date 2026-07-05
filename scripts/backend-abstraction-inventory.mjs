@@ -133,6 +133,7 @@ function classifyRoute(route) {
     path.startsWith("/v1/sessions/") ||
     path === "/v1/devices" ||
     path === "/v1/devices/{deviceId}/revoke" ||
+    path === "/v1/app/session" ||
     path === "/v1/invitations/accept" ||
     path.startsWith("/v1/admin/")
   ) {

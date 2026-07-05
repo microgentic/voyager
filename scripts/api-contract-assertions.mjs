@@ -5,6 +5,7 @@ export const endpointStabilityCatalog = [
   { method: "POST", path: "/v1/auth/logout", stability: "stable/current" },
   { method: "POST", path: "/v1/auth/password/change", stability: "stable/current" },
   { method: "POST", path: "/v1/auth/password/reset/complete", stability: "stable/current" },
+  { method: "GET", path: "/v1/app/session", stability: "stable/current" },
   { method: "GET", path: "/v1/me", stability: "stable/current" },
   { method: "GET", path: "/v1/app/bootstrap", stability: "stable/current" },
   { method: "GET", path: "/v1/sessions", stability: "stable/current" },

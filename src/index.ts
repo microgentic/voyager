@@ -290,6 +290,21 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return backendFirstResponse;
   }
 
+  if (url.pathname === "/v1/app/session") {
+    requireMethod(request, "GET");
+    const startedAt = performance.now();
+    return json(
+      {
+        ok: true,
+        account: publicAccount(auth.account),
+        principal: publicPrincipal(auth.principal),
+        device: publicDevice(auth.device),
+        roles: auth.roles,
+      },
+      { headers: readTimingHeaders("session", authTimingMs, startedAt) }
+    );
+  }
+
   if (url.pathname === "/v1/me") {
     requireMethod(request, "GET");
     const startedAt = performance.now();

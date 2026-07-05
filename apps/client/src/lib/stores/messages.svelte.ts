@@ -14,6 +14,7 @@ import type {
 	AttachmentVariant,
 	AttachmentVariantName
 } from '$lib/api/types';
+import { clientCacheScope, loadCachedRoomCursor, loadCachedRoomMessages, saveCachedMessages } from '$lib/local-cache';
 import {
 	messageCodec,
 	type AttachmentRef,
@@ -168,6 +169,10 @@ class MessagesStore {
 		auth.onSignOut(() => this.reset());
 	}
 
+	private cacheScope(): string | null {
+		return clientCacheScope(auth.account?.accountId, auth.principal?.principalId);
+	}
+
 	reset(): void {
 		this.byRoom = {};
 		this.threads = {};
@@ -291,6 +296,7 @@ class MessagesStore {
 		for (const root of touchedThreads) nextThreads[root] = sortMessages(nextThreads[root]);
 		if (touchedRooms.size) this.byRoom = nextRooms;
 		if (touchedThreads.size) this.threads = nextThreads;
+		void saveCachedMessages(this.cacheScope(), decoded);
 	}
 
 	threadList(rootEnvelopeId: string): ChatMessage[] {
@@ -372,7 +378,17 @@ class MessagesStore {
 		if (this.loadedRooms.has(roomId)) return;
 		this.loadingRoom = roomId;
 		try {
-			await this.fetchNew(roomId);
+			const scope = this.cacheScope();
+			const cached = await loadCachedRoomMessages(scope, roomId, PAGE);
+			if (cached.length) {
+				this.applyMessages(cached);
+				this.cursor[roomId] = Math.max(
+					this.cursor[roomId] ?? 0,
+					await loadCachedRoomCursor(scope, roomId),
+					...cached.map((message) => message.serverSequence)
+				);
+			}
+			await this.fetchNew(roomId, { overlap: cached.length ? 20 : 0 });
 			this.loadedRooms.add(roomId);
 		} finally {
 			if (this.loadingRoom === roomId) this.loadingRoom = null;

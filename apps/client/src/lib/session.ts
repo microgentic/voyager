@@ -3,10 +3,10 @@ import type { Account, Device, Principal } from '$lib/api/types';
 // Local persistence of the session.
 //
 // What lives here is intentionally minimal: the bearer session token, a cached
-// copy of the signed-in identity (so the shell can paint instantly before /v1/me
+// copy of the signed-in identity (so the shell can paint instantly before /v1/app/session
 // confirms), and the enrolled deviceId keyed by email (so password login reuses
-// the device instead of burning device quota). None of this is message content;
-// readable history will live in a local encrypted DB once the native core lands.
+// the device instead of burning device quota). Message and room snapshots live
+// in the IndexedDB-backed local cache, not in this localStorage session layer.
 
 const TOKEN_KEY = 'voyager.session.token';
 const IDENTITY_KEY = 'voyager.session.identity';

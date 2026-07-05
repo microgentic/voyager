@@ -249,10 +249,16 @@ export async function fetchMessagingCoreSyncCutoverProxy(
   const route = appendQuery("/sync", query);
   const upstream = await getPublicCoreJson(config, token, route);
   const coreRooms = arrayField(upstream.payload, "rooms");
-  const roomViews: JsonObject[] = [];
-  for (const coreRoom of coreRooms) {
-    const roomId = requiredCoreString(coreRoom, "roomId");
-    roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
+  const upstreamRoomViews = jsonObjectArrayValue(upstream.payload.roomViews);
+  let roomViews = upstreamRoomViews.length === coreRooms.length ? upstreamRoomViews : [];
+  let roomDetailFanoutCount = 0;
+  if (!roomViews.length && coreRooms.length) {
+    roomViews = [];
+    for (const coreRoom of coreRooms) {
+      const roomId = requiredCoreString(coreRoom, "roomId");
+      roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
+    }
+    roomDetailFanoutCount = roomViews.length;
   }
   const rooms = await adaptCoreRoomViews(env, roomViews);
   await syncVoyagerRoomShadows(env, rooms);
@@ -270,6 +276,7 @@ export async function fetchMessagingCoreSyncCutoverProxy(
       messagingCoreCutover: cutoverDiagnostics(config, {
         route,
         upstreamStatus: upstream.status,
+        roomDetailFanoutCount,
       }),
     },
   };
@@ -622,6 +629,7 @@ function cutoverDiagnostics(
   options: {
     route: string;
     upstreamStatus: number;
+    roomDetailFanoutCount?: number;
     fallbackReason?: string | null;
   },
 ): JsonObject {
@@ -630,6 +638,7 @@ function cutoverDiagnostics(
     fallbackReason: options.fallbackReason ?? null,
     route: options.route,
     upstreamStatus: options.upstreamStatus,
+    roomDetailFanoutCount: options.roomDetailFanoutCount ?? 0,
     flags: cutoverFlagSnapshot(config),
   };
 }
@@ -659,10 +668,16 @@ async function adaptRoomCutoverPayload(
     const coreRooms = arrayField(payload, "rooms");
     const page = roomCutoverPage(options.query);
     const pagedCoreRooms = coreRooms.slice(page.offset, page.offset + page.limit);
-    const roomViews: JsonObject[] = [];
-    for (const coreRoom of pagedCoreRooms) {
-      const roomId = requiredCoreString(coreRoom, "roomId");
-      roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
+    const coreRoomViews = jsonObjectArrayValue(payload.roomViews);
+    let roomViews = coreRoomViews.length === coreRooms.length
+      ? coreRoomViews.slice(page.offset, page.offset + page.limit)
+      : [];
+    if (!roomViews.length && pagedCoreRooms.length) {
+      roomViews = [];
+      for (const coreRoom of pagedCoreRooms) {
+        const roomId = requiredCoreString(coreRoom, "roomId");
+        roomViews.push((await getPublicCoreJson(config, token, `/rooms/${encodeURIComponent(roomId)}`)).payload);
+      }
     }
     return {
       rooms: await adaptCoreRoomViews(env, roomViews),

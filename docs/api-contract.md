@@ -80,19 +80,27 @@ Read and startup endpoints expose timing diagnostics through the `Server-Timing`
 
 ## Official Startup Flow
 
-`GET /v1/app/bootstrap?limit=100` is the official first authenticated data request after a client has a session token.
+Web and desktop clients should treat session restore as a local-first flow. A
+stored token plus cached identity is enough to paint the authenticated shell;
+the client then refreshes product identity with `GET /v1/app/session`, hydrates
+cached rooms/messages from local storage, and starts background sync/realtime.
+
+`GET /v1/app/bootstrap?limit=100` remains available as a compatibility and
+first-device fallback endpoint, but it is no longer the preferred route for
+normal reopen.
 
 The startup sequence is:
 
 1. `POST /v1/auth/password/login`
 2. Store the returned `sessionToken`
-3. `GET /v1/app/bootstrap?limit=100`
-4. Hydrate identity, roles, rooms, and pending messages from the bootstrap payload
-5. `POST /v1/messaging-core/realtime/token`
-6. Open the returned Messaging Core `connectPath` with the returned short-lived `mrt_...` token for foreground messaging event hints
-7. Defer supporting reads such as principals, room invitations, and sidebar collections until after first paint
+3. Paint the app shell from cached identity/rooms/messages when present
+4. `GET /v1/app/session` to refresh account, principal, device, and roles without minting a Messaging Core token
+5. `GET /v1/sync` in the background to reconcile rooms and pending messages
+6. `POST /v1/messaging-core/realtime/token`
+7. Open the returned Messaging Core `connectPath` with the returned short-lived `mrt_...` token for foreground messaging event hints
+8. Defer supporting reads such as principals, room invitations, and sidebar collections until after first paint
 
-`GET /v1/me`, `GET /v1/rooms`, and `GET /v1/sync` remain supported for compatibility and recovery.
+`GET /v1/me`, `GET /v1/app/bootstrap`, `GET /v1/rooms`, and `GET /v1/sync` remain supported for compatibility and recovery.
 
 Bootstrap response:
 
@@ -130,6 +138,7 @@ Bootstrap response:
 | `POST` | `/v1/auth/logout` | `{ ok: true }` |
 | `POST` | `/v1/auth/password/change` | `{ ok: true }` |
 | `POST` | `/v1/auth/password/reset/complete` | `{ account, principal, device, sessionToken, messagingCore? }` |
+| `GET` | `/v1/app/session` | `{ account, principal, device, roles }` |
 | `GET` | `/v1/me` | `{ account, principal, device, roles, messagingCore? }` |
 | `POST` | `/v1/messaging-core/realtime/token` | `{ messagingCore, realtime, proxied }` |
 | `GET` | `/v1/sessions` | `{ sessions }` |
@@ -152,7 +161,7 @@ Normal Voyager message, thread, and attachment routes proxy to the matching Core
 
 Legacy Voyager-only hidden-message rows, legacy Voyager-only attachment rows, and non-pending room-invitation history are retained in the pre-cleanup D1/R2 backups and rollback tag for audit/rollback reference, but they are not migrated into the Core-only runtime unless a future production data-retention decision explicitly requires it. Current delete-for-me, completed-attachment, pending-invitation, invitation accept, and invitation decline behavior is owned by Messaging Core and covered by the all-Core parity smoke.
 
-Normal `GET /v1/sync` calls Core `/sync`, expands Core room summaries through Core room detail, adapts rooms and pending messages back to Voyager-compatible shapes, and returns the existing `{ ok, sync }` envelope plus `messagingCoreCutover` diagnostics. Normal `GET /v1/app/bootstrap` keeps Voyager product identity/session fields but sources rooms and pending messages through the same Core sync bridge.
+Normal `GET /v1/sync` calls Core `/sync`, prefers Core `roomViews` when available, adapts rooms and pending messages back to Voyager-compatible shapes, and returns the existing `{ ok, sync }` envelope plus `messagingCoreCutover` diagnostics. If an older Core deployment does not include `roomViews`, Voyager falls back to the older per-room detail expansion and reports the fanout count in diagnostics. Normal `GET /v1/app/bootstrap` keeps Voyager product identity/session fields but sources rooms and pending messages through the same Core sync bridge.
 
 Current boundary classification: room/message/attachment/thread/sync, app-bootstrap, and call lifecycle/media routes are `core-runtime`; messaging identity/key-package routes are `product-token-bridge`; `/v1/calls/realtime/token` and `/v1/calls/realtime` are retired; Voyager admin, auth, account/device-management, sidebar, agent provisioning/review, and product usage/audit routes are `product-only`. Default responses must not emit `messagingCoreCutover.source: "voyager_legacy"`.
 

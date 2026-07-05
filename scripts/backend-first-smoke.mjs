@@ -353,6 +353,13 @@ const owner = await api("/v1/admin/bootstrap", {
 });
 assertAuthResult(owner, "POST /v1/admin/bootstrap");
 const ownerHeaders = auth(owner.sessionToken);
+const ownerSession = await api("/v1/app/session", { headers: ownerHeaders });
+if (ownerSession.account.accountId !== owner.account.accountId) {
+  throw new Error("GET /v1/app/session account did not match bootstrap account");
+}
+if ("messagingCore" in ownerSession) {
+  throw new Error("GET /v1/app/session should not include a Messaging Core session payload");
+}
 if (messagingCoreBridgeEnabled) {
   assertMessagingCoreBridgeSession(owner.messagingCore, owner, "POST /v1/admin/bootstrap");
   const me = await api("/v1/me", { headers: ownerHeaders });

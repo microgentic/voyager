@@ -106,7 +106,7 @@ class SyncStore {
 	private async runFullSync(): Promise<void> {
 		const startedAt = performance.now();
 		const result = await api.sync({ limit: 100 });
-		rooms.merge(result.rooms);
+		rooms.hydrate(result.rooms);
 		await messages.ingest(result.pendingMessages);
 		if (this.activeRoomId) {
 			await this.runRoomSync(this.activeRoomId).catch(() => undefined);

@@ -1,6 +1,7 @@
-import { api, isApiError } from '$lib/api';
+import { api } from '$lib/api';
 import type { Account, AuthResult, BootstrapResult, Device, Principal } from '$lib/api/types';
 import { APP_VERSION, CLIENT_PROTOCOL_VERSION } from '$lib/config';
+import { clearClientCache } from '$lib/local-cache';
 import { deviceLabel, devicePlatform } from '$lib/platform';
 import {
 	clearSession,
@@ -57,7 +58,7 @@ class AuthStore {
 		};
 	}
 
-	/** Restore a persisted session and hydrate first-load app data with /v1/app/bootstrap. */
+	/** Restore a persisted session without blocking first paint on the messaging bootstrap. */
 	async init(): Promise<void> {
 		const token = loadToken();
 		if (!token) {
@@ -66,31 +67,29 @@ class AuthStore {
 		}
 		api.setToken(token);
 		const cached = loadIdentity();
+		if (cached) {
+			this.apply(cached);
+			this.status = 'authed';
+			void this.refresh();
+			return;
+		}
 		try {
-			const bootstrap = await api.bootstrap({ limit: 100 });
+			const me = await api.session();
 			this.apply({
-				account: bootstrap.account,
-				principal: bootstrap.principal,
-				device: bootstrap.device,
-				roles: bootstrap.roles
+				account: me.account,
+				principal: me.principal,
+				device: me.device,
+				roles: me.roles
 			});
-			this.pendingBootstrap = bootstrap;
 			saveIdentity({
-				account: bootstrap.account,
-				principal: bootstrap.principal,
-				device: bootstrap.device,
-				roles: bootstrap.roles
+				account: me.account,
+				principal: me.principal,
+				device: me.device,
+				roles: me.roles
 			});
 			this.status = 'authed';
-		} catch (error) {
-			if (isApiError(error) && error.isUnauthorized) {
-				this.signOutLocal();
-			} else if (cached) {
-				this.apply(cached);
-				this.status = 'authed';
-			} else {
-				this.signOutLocal();
-			}
+		} catch {
+			this.signOutLocal();
 		}
 	}
 
@@ -111,14 +110,19 @@ class AuthStore {
 
 	async refresh(): Promise<void> {
 		try {
-			const me = await api.me();
+			const me = await api.session();
 			this.apply({
 				account: me.account,
 				principal: me.principal,
 				device: me.device,
 				roles: me.roles
 			});
-			saveIdentity({ ...me });
+			saveIdentity({
+				account: me.account,
+				principal: me.principal,
+				device: me.device,
+				roles: me.roles
+			});
 		} catch {
 			/* leave current state */
 		}
@@ -141,16 +145,6 @@ class AuthStore {
 		this.principal = result.principal;
 		this.device = result.device;
 		this.roles = [];
-		try {
-			const bootstrap = await api.bootstrap({ limit: 100 });
-			this.account = bootstrap.account;
-			this.principal = bootstrap.principal;
-			this.device = bootstrap.device;
-			this.roles = bootstrap.roles;
-			this.pendingBootstrap = bootstrap;
-		} catch {
-			/* keep auth-result identity */
-		}
 		saveIdentity({
 			account: this.account,
 			principal: this.principal,
@@ -158,6 +152,7 @@ class AuthStore {
 			roles: this.roles
 		});
 		this.status = 'authed';
+		void this.refresh();
 	}
 
 	consumeBootstrap(): BootstrapResult | null {
@@ -182,6 +177,7 @@ class AuthStore {
 		this.roles = [];
 		this.pendingBootstrap = null;
 		this.status = 'anon';
+		void clearClientCache();
 		for (const handler of this.resetHandlers) handler();
 	}
 
