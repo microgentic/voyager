@@ -846,7 +846,7 @@ async function messagingCoreRoomCutoverRoute(
   path: string;
   query?: URLSearchParams;
   body?: Record<string, unknown>;
-  responseKind: "rooms" | "room" | "member" | "invitation" | "invitations" | "transfer" | "ok";
+  responseKind: "rooms" | "room" | "deletedRooms" | "member" | "invitation" | "invitations" | "transfer" | "ok";
   memberPrincipalId?: string;
 } | null> {
   if (url.pathname === "/v1/rooms" && request.method === "GET") {
@@ -868,6 +868,15 @@ async function messagingCoreRoomCutoverRoute(
       path: "/rooms/groups",
       body: messagingCoreGroupRoomBody(await readJsonObject(request)),
       responseKind: "room",
+    };
+  }
+
+  if (url.pathname === "/v1/rooms/delete" && request.method === "POST") {
+    return {
+      method: "POST",
+      path: "/rooms/delete",
+      body: messagingCoreDeleteRoomsBody(await readJsonObject(request)),
+      responseKind: "deletedRooms",
     };
   }
 
@@ -944,6 +953,15 @@ async function messagingCoreRoomCutoverRoute(
       method: "DELETE",
       path: `/rooms/${roomMemberRemoveMatch[1]}/members/${roomMemberRemoveMatch[2]}`,
       responseKind: "ok",
+    };
+  }
+
+  const roomVisibilityMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/visibility$/, url.pathname);
+  if (request.method === "DELETE" && roomVisibilityMatch) {
+    return {
+      method: "DELETE",
+      path: `/rooms/${roomVisibilityMatch[1]}/visibility`,
+      responseKind: "deletedRooms",
     };
   }
 
@@ -1036,6 +1054,13 @@ function messagingCorePublicSendBody(body: Record<string, unknown>): Record<stri
 function messagingCoreDeleteMessagesBody(body: Record<string, unknown>): Record<string, unknown> {
   return {
     ...body,
+    scope: body.scope === "me" ? "for_me" : body.scope,
+  };
+}
+
+function messagingCoreDeleteRoomsBody(body: Record<string, unknown>): Record<string, unknown> {
+  return {
+    roomIds: stringArrayField(body, "roomIds", { maxItems: 100, maxLength: 128 }),
     scope: body.scope === "me" ? "for_me" : body.scope,
   };
 }
@@ -1637,6 +1662,8 @@ function messagingCoreRoomTimingMetric(route: { method: string; path: string; re
   if (route.method === "POST" && route.path.includes("/ownership-transfers")) return "roomOwnershipTransfer";
   if (route.method === "POST" && route.path === "/rooms/direct") return "roomDirectCreate";
   if (route.method === "POST" && route.path === "/rooms/groups") return "roomGroupCreate";
+  if (route.method === "POST" && route.path === "/rooms/delete") return "roomDelete";
+  if (route.method === "DELETE" && route.path.endsWith("/visibility")) return "roomDelete";
   return route.responseKind === "rooms" ? "rooms" : "room";
 }
 

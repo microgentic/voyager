@@ -412,6 +412,7 @@ export function messagingCoreAttachmentCompleteBody(body: Record<string, unknown
 type RoomCutoverResponseKind =
   | "rooms"
   | "room"
+  | "deletedRooms"
   | "member"
   | "invitation"
   | "invitations"
@@ -672,6 +673,17 @@ async function adaptRoomCutoverPayload(
   if (options.responseKind === "room") {
     const room = (await adaptCoreRoomViews(env, [payload]))[0];
     return { room };
+  }
+
+  if (options.responseKind === "deletedRooms") {
+    const deleted = objectField(payload, "deleted");
+    return {
+      deleted: {
+        scope: requiredCoreString(deleted, "scope"),
+        roomIds: requiredCoreStringArray(deleted, "roomIds"),
+        hiddenAt: requiredCoreString(deleted, "hiddenAt"),
+      },
+    };
   }
 
   if (options.responseKind === "member") {
@@ -2251,6 +2263,19 @@ function arrayField(value: JsonObject, key: string): JsonObject[] {
     );
   }
   return field as JsonObject[];
+}
+
+function requiredCoreStringArray(value: JsonObject, key: string): string[] {
+  const field = value[key];
+  if (!Array.isArray(field) || field.some((item) => typeof item !== "string")) {
+    throw new HttpError(
+      502,
+      "messaging_core_proxy_invalid_response",
+      "Messaging Core proxy response is missing the expected string array field.",
+      { field: key },
+    );
+  }
+  return field;
 }
 
 function jsonObjectArrayValue(value: unknown): JsonObject[] {

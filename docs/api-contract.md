@@ -196,9 +196,11 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `GET` | `/v1/threads` | `{ items, nextCursor }` |
 | `POST` | `/v1/rooms/direct` | `{ room }` |
 | `POST` | `/v1/rooms/groups` | `{ room }` |
+| `POST` | `/v1/rooms/delete` | `{ deleted: { scope, roomIds, hiddenAt } }` |
 | `GET` | `/v1/rooms/{roomId}` | `{ room }` |
 | `PATCH` | `/v1/rooms/{roomId}` | `{ room }` |
 | `POST` | `/v1/rooms/{roomId}/archive` | `{ room }` |
+| `DELETE` | `/v1/rooms/{roomId}/visibility` | `{ deleted: { scope, roomIds, hiddenAt } }` |
 | `POST` | `/v1/rooms/{roomId}/members` | `{ member }` |
 | `PATCH` | `/v1/rooms/{roomId}/members/{principalId}/role` | `{ member }` |
 | `DELETE` | `/v1/rooms/{roomId}/members/{principalId}` | `{ ok: true }` |
@@ -237,6 +239,8 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `GET` | `/v1/sync` | `{ sync: { rooms, roomsNextCursor, pendingMessages } }` |
 
 Group creation rejects initial `memberPrincipalIds`. Human members join through room invitations. Agent principals may be added through the explicit member endpoint.
+
+`POST /v1/rooms/delete` accepts `{ "roomIds": ["room_..."], "scope": "for_me" }` and hides the listed rooms for the caller only. `DELETE /v1/rooms/{roomId}/visibility` is the single-room alias. Hidden rooms are excluded from the caller's room list, sync, and bootstrap payloads, including pending messages from those rooms; other room members keep their own visibility.
 
 Message sends require an `idempotencyKey`, `protocolType`, and opaque `ciphertext`. `serverSequence` is assigned by the backend. `GET /v1/rooms/{roomId}/messages` supports forward reads with `after` and `limit`.
 
