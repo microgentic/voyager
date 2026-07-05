@@ -5,8 +5,10 @@ import {
   assertCallRealtimeConfigResponse,
   assertCallResponse,
   assertCallUsageReportResponse,
+  assertDeleteRoomsResponse,
   assertMessageResponse,
   assertMessagesResponse,
+  assertPaginatedRoomsResponse,
   assertRealtimeRoomMessageEvent,
   assertRoomResponse,
   assertSyncResponse
@@ -307,6 +309,53 @@ async function findDirectRoom(headers, counterpartPrincipalId) {
   return room ?? null;
 }
 
+async function runRoomDeleteForMeMiniSmoke(headers) {
+  const group = await api("/v1/rooms/groups", {
+    method: "POST",
+    headers,
+    json: {
+      name: `Remote delete-for-me ${runId}`,
+      description: "Temporary room for post-deploy route coverage."
+    }
+  });
+  assertRoomResponse(group, "POST /v1/rooms/groups room delete-for-me setup");
+  const roomId = group.room.roomId;
+
+  const deleted = await apiRaw("/v1/rooms/delete", {
+    method: "POST",
+    headers,
+    json: { roomIds: [roomId], scope: "for_me" }
+  });
+  if (!deleted.response.ok || !deleted.payload || deleted.payload.ok === false) {
+    throw new Error(`POST /v1/rooms/delete remote smoke failed ${deleted.response.status}: ${JSON.stringify(deleted.payload)}`);
+  }
+  assertServerTiming(deleted.response.headers.get("server-timing") ?? "", ["roomDelete"], "POST /v1/rooms/delete remote smoke");
+  assertDeleteRoomsResponse(deleted.payload, "POST /v1/rooms/delete remote smoke");
+  if (!deleted.payload.deleted.roomIds.includes(roomId)) {
+    throw new Error("remote room delete-for-me response did not include hidden room id");
+  }
+
+  const rooms = await api("/v1/rooms?limit=200", { headers });
+  assertPaginatedRoomsResponse(rooms, "GET /v1/rooms after room delete-for-me remote smoke");
+  if (rooms.rooms.some((candidate) => candidate.roomId === roomId)) {
+    throw new Error("room delete-for-me room remained visible in remote room list");
+  }
+
+  const sync = await api("/v1/sync?limit=100", { headers });
+  assertSyncResponse(sync, "GET /v1/sync after room delete-for-me remote smoke");
+  if (sync.sync.rooms.some((candidate) => candidate.roomId === roomId)) {
+    throw new Error("room delete-for-me room remained visible in remote sync");
+  }
+
+  const bootstrap = await api("/v1/app/bootstrap?limit=100", { headers });
+  assertBootstrapResponse(bootstrap, "GET /v1/app/bootstrap after room delete-for-me remote smoke");
+  if (bootstrap.bootstrap.rooms.some((candidate) => candidate.roomId === roomId)) {
+    throw new Error("room delete-for-me room remained visible in remote bootstrap");
+  }
+
+  return roomId;
+}
+
 async function runAttachmentMiniSmoke(roomId, ownerHeaders) {
   const originalBody = new TextEncoder().encode(`remote attachment original ${runId}`);
   const thumbnailBody = new TextEncoder().encode(`remote attachment thumbnail ${runId}`);
@@ -548,6 +597,7 @@ async function main() {
   assertBootstrapResponse(await api("/v1/app/bootstrap?limit=100", { headers: receiverHeaders }), "GET /v1/app/bootstrap receiver");
 
   await expectLegacyRealtimeRoutesRemoved(receiver.sessionToken);
+  const hiddenRoomId = await runRoomDeleteForMeMiniSmoke(ownerHeaders);
 
   let room = await findDirectRoom(ownerHeaders, receiver.principal.principalId);
   if (!room) {
@@ -633,6 +683,7 @@ async function main() {
         ok: true,
         baseUrl: base,
         runId,
+        hiddenRoomId,
         roomId,
         messageId: message.message.envelopeId,
         attachmentId,
