@@ -232,3 +232,6 @@ jobs:
         run: npm run smoke:backend:remote
         env:
           BASE_URL: https://voyager-api-dev.microgentic-voyager.workers.dev
+          REMOTE_SMOKE_OWNER_EMAIL: grace@example.com
+          REMOTE_SMOKE_RECEIVER_EMAIL: alan@example.com
+          REMOTE_SMOKE_PASSWORD: voyager-demo-pass

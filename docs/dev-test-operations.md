@@ -146,8 +146,12 @@ smoke because the dev deployment path uses `npm run deploy:dev`:
 
 ```bash
 BASE_URL=https://voyager-api-dev.microgentic-voyager.workers.dev \
-VOYAGER_LOGIN_EMAIL=ada@example.com \
+VOYAGER_LOGIN_EMAIL=grace@example.com \
 VOYAGER_LOGIN_PASSWORD=voyager-demo-pass \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_INVITEE_EMAIL=alan@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_TRANSFER_EMAIL=katherine@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_DECLINE_EMAIL=dorothy@example.com \
+SMOKE_MESSAGING_CORE_ROOM_WRITE_DIRECT_EMAIL=margaret@example.com \
 SMOKE_MESSAGING_CORE_ALL_CUTOVER=1 \
 npm run smoke:messaging-core-parity
 ```
@@ -169,7 +173,7 @@ That smoke logs in with the disposable seeded accounts, verifies
 `/v1/app/bootstrap`, proves legacy `/v1/realtime` routes are gone, mints a
 short-lived Messaging Core realtime token, exercises attachment upload/download/delete
 and a basic audio call lifecycle plus aggregate call usage reporting in an
-existing Ada/Grace room when available,
+existing Grace/Alan room when available,
 sends a direct message, waits for the exact matching Core `room.message`, then verifies
 idempotent retry, Conversation DO timing headers, and HTTP recovery reads. It
 acknowledges the smoke message, archives only a fallback room it had to create,
