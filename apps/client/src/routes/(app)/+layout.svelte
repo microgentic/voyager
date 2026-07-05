@@ -10,23 +10,32 @@
 	let { children } = $props();
 
 	onMount(() => {
+		let stopped = false;
 		const bootstrap = auth.consumeBootstrap();
-		if (bootstrap) {
-			rooms.hydrate(bootstrap.rooms);
-			void messages.ingest(bootstrap.pendingMessages);
-		}
-		sync.start({ immediate: !bootstrap });
 		realtime.start();
-		void recoverCalls(!!bootstrap);
-		deferNonCriticalLoads();
+		void (async () => {
+			let hasStartupRooms = false;
+			if (bootstrap) {
+				rooms.hydrate(bootstrap.rooms);
+				void messages.ingest(bootstrap.pendingMessages);
+				hasStartupRooms = bootstrap.rooms.length > 0;
+			} else {
+				hasStartupRooms = await rooms.hydrateFromCache();
+			}
+			if (stopped) return;
+			sync.start({ immediate: true });
+			void recoverCalls(hasStartupRooms);
+			deferNonCriticalLoads();
+		})();
 		return () => {
+			stopped = true;
 			realtime.stop();
 			sync.stop();
 		};
 	});
 
-	async function recoverCalls(hasBootstrap: boolean): Promise<void> {
-		if (!hasBootstrap) await rooms.load();
+	async function recoverCalls(hasStartupRooms: boolean): Promise<void> {
+		if (!hasStartupRooms && rooms.list.length === 0) await rooms.load();
 		await calls.recoverLiveCalls();
 	}
 

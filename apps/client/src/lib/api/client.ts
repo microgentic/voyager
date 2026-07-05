@@ -219,6 +219,10 @@ export class VoyagerClient {
 		return this.request('GET', '/v1/me');
 	}
 
+	session(): Promise<MeResult> {
+		return this.request('GET', '/v1/app/session');
+	}
+
 	async bootstrap(opts: { limit?: number } = {}): Promise<BootstrapResult> {
 		const res = await this.request<{ bootstrap: BootstrapResult }>('GET', '/v1/app/bootstrap', {
 			query: { limit: opts.limit }
