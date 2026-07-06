@@ -9,6 +9,12 @@ const SESSION_DAYS = 30;
 const INVITATION_DAYS = 7;
 const CREDENTIAL_RESET_DAYS = 3;
 const AUTH_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+const DEVICE_REENROLL_HINT = {
+  canReenroll: true,
+  clearStoredDeviceId: true,
+  retryWithoutDeviceId: true,
+  reason: "device_revoked_or_missing",
+};
 
 export interface LoginWithPasswordMetrics {
   accountMs: number;
@@ -693,7 +699,12 @@ async function getOrCreateLoginDevice(env: Env, accountId: string, principalId: 
     .bind(deviceId, accountId, principalId)
     .first<DeviceRow>();
   if (!device) {
-    throw new HttpError(403, "device_not_available", "Device is not enrolled or has been revoked");
+    throw new HttpError(
+      403,
+      "device_not_available",
+      "This device enrollment is no longer available. Sign in again to register this device.",
+      DEVICE_REENROLL_HINT,
+    );
   }
   await env.CONTROL_DB.prepare("UPDATE devices SET last_seen_at = CURRENT_TIMESTAMP WHERE device_id = ?").bind(deviceId).run();
   return getDevice(env, deviceId);
