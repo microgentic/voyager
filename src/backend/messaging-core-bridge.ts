@@ -261,8 +261,15 @@ export async function fetchMessagingCoreSyncCutoverProxy(
     roomDetailFanoutCount = roomViews.length;
   }
   const rooms = await adaptCoreRoomViews(env, roomViews);
-  await syncVoyagerRoomShadows(env, rooms);
   const pendingMessages = await adaptCoreMessages(env, arrayField(upstream.payload, "pendingMessages"));
+  const changes = await adaptCoreSyncChanges(env, jsonObjectArrayValue(upstream.payload.changes));
+  await syncVoyagerRoomShadows(env, [
+    ...rooms,
+    ...changes.flatMap((change) => {
+      const room = objectValue(change.room);
+      return room ? [room] : [];
+    }),
+  ]);
   return {
     status: upstream.status,
     payload: {
@@ -271,6 +278,10 @@ export async function fetchMessagingCoreSyncCutoverProxy(
         rooms,
         roomsNextCursor: stringValue(upstream.payload.roomsNextCursor),
         pendingMessages,
+        syncCursor: stringValue(upstream.payload.syncCursor),
+        nextSyncCursor: stringValue(upstream.payload.nextSyncCursor),
+        hasMore: Boolean(upstream.payload.hasMore),
+        changes,
         serverTime: stringValue(upstream.payload.serverTime),
       },
       messagingCoreCutover: cutoverDiagnostics(config, {
@@ -280,6 +291,63 @@ export async function fetchMessagingCoreSyncCutoverProxy(
       }),
     },
   };
+}
+
+type CoreSyncChangeType = "room.upsert" | "room.remove" | "message.upsert" | "message.remove";
+
+async function adaptCoreSyncChanges(env: Env, changes: JsonObject[]): Promise<JsonObject[]> {
+  if (!changes.length) return [];
+  const roomViews: JsonObject[] = [];
+  const messages: JsonObject[] = [];
+  const roomIndexes = new Map<number, number>();
+  const messageIndexes = new Map<number, number>();
+  const adapted: JsonObject[] = [];
+  for (const change of changes) {
+    const type = syncChangeType(stringValue(change.type));
+    if (!type) continue;
+    const base: JsonObject = {
+      cursor: stringValue(change.cursor),
+      type,
+      roomId: stringValue(change.roomId),
+      envelopeId: stringValue(change.envelopeId),
+      rootEnvelopeId: stringValue(change.rootEnvelopeId),
+      targetPrincipalId: stringValue(change.targetPrincipalId),
+      reason: stringValue(change.reason),
+      createdAt: stringValue(change.createdAt),
+    };
+    const roomView = objectValue(change.roomView);
+    if (type === "room.upsert" && roomView) {
+      roomIndexes.set(adapted.length, roomViews.length);
+      roomViews.push(roomView);
+    }
+    const message = objectValue(change.message);
+    if (type === "message.upsert" && message) {
+      messageIndexes.set(adapted.length, messages.length);
+      messages.push(message);
+    }
+    adapted.push(base);
+  }
+  const adaptedRooms = await adaptCoreRoomViews(env, roomViews);
+  const adaptedMessages = await adaptCoreMessages(env, messages);
+  for (const [changeIndex, roomIndex] of roomIndexes) {
+    adapted[changeIndex] = { ...adapted[changeIndex], room: adaptedRooms[roomIndex] };
+  }
+  for (const [changeIndex, messageIndex] of messageIndexes) {
+    adapted[changeIndex] = { ...adapted[changeIndex], message: adaptedMessages[messageIndex] };
+  }
+  return adapted;
+}
+
+function syncChangeType(value: string | null): CoreSyncChangeType | null {
+  if (
+    value === "room.upsert" ||
+    value === "room.remove" ||
+    value === "message.upsert" ||
+    value === "message.remove"
+  ) {
+    return value;
+  }
+  return null;
 }
 
 export async function fetchMessagingCoreRealtimeTokenProxy(

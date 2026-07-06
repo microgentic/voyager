@@ -18,6 +18,7 @@
 			if (bootstrap) {
 				rooms.hydrate(bootstrap.rooms);
 				void messages.ingest(bootstrap.pendingMessages);
+				sync.rememberCursor(bootstrap.nextSyncCursor ?? bootstrap.syncCursor);
 				hasStartupRooms = bootstrap.rooms.length > 0;
 			} else {
 				hasStartupRooms = await rooms.hydrateFromCache();

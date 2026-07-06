@@ -1,4 +1,6 @@
 import { api } from '$lib/api';
+import type { MessageEnvelope, SyncChange, SyncResult } from '$lib/api/types';
+import { clientCacheScope, loadCachedSyncCursor, saveCachedSyncCursor } from '$lib/local-cache';
 import { auth } from './auth.svelte';
 import { messages } from './messages.svelte';
 import { rooms } from './rooms.svelte';
@@ -28,6 +30,10 @@ class SyncStore {
 		auth.onSignOut(() => this.stop());
 	}
 
+	private cacheScope(): string | null {
+		return clientCacheScope(auth.account?.accountId, auth.principal?.principalId);
+	}
+
 	start(options: { immediate?: boolean } = {}): void {
 		if (this.active) return;
 		this.active = true;
@@ -47,6 +53,10 @@ class SyncStore {
 
 	setActiveRoom(roomId: string | null): void {
 		this.activeRoomId = roomId;
+	}
+
+	rememberCursor(cursor: string | null | undefined): void {
+		void saveCachedSyncCursor(this.cacheScope(), cursor);
 	}
 
 	/** Force an immediate sync (e.g. right after sending or a membership change). */
@@ -105,14 +115,65 @@ class SyncStore {
 
 	private async runFullSync(): Promise<void> {
 		const startedAt = performance.now();
-		const result = await api.sync({ limit: 100 });
-		rooms.hydrate(result.rooms);
-		await messages.ingest(result.pendingMessages);
+		const scope = this.cacheScope();
+		const cachedCursor = await loadCachedSyncCursor(scope);
+		let result = await api.sync({ limit: 100, since: cachedCursor });
+		if (cachedCursor && this.isDeltaSync(result)) {
+			const seenCursors = new Set<string>();
+			while (true) {
+				await this.applyDeltaChanges(result.changes ?? []);
+				await this.saveSyncCursor(scope, result);
+				const nextCursor = result.nextSyncCursor;
+				if (!result.hasMore || !nextCursor || seenCursors.has(nextCursor)) break;
+				seenCursors.add(nextCursor);
+				result = await api.sync({ limit: 100, since: nextCursor });
+			}
+		} else {
+			rooms.hydrate(result.rooms);
+			await messages.ingest(result.pendingMessages);
+			await this.saveSyncCursor(scope, result);
+		}
 		if (this.activeRoomId) {
 			await this.runRoomSync(this.activeRoomId).catch(() => undefined);
 		}
 		this.lastSyncedAt = new Date();
 		this.lastSyncDurationMs = Math.round(performance.now() - startedAt);
+	}
+
+	private isDeltaSync(result: SyncResult): boolean {
+		return (
+			Array.isArray(result.changes) &&
+			result.rooms.length === 0 &&
+			result.pendingMessages.length === 0 &&
+			Boolean(result.nextSyncCursor ?? result.syncCursor)
+		);
+	}
+
+	private async applyDeltaChanges(changes: SyncChange[]): Promise<void> {
+		const messageUpserts: MessageEnvelope[] = [];
+		for (const change of changes) {
+			if (change.type === 'room.upsert' && change.room) {
+				rooms.upsert(change.room);
+				continue;
+			}
+			if (change.type === 'room.remove' && change.roomId) {
+				rooms.remove(change.roomId);
+				messages.dropRoom(change.roomId);
+				continue;
+			}
+			if (change.type === 'message.upsert' && change.message) {
+				messageUpserts.push(change.message);
+				continue;
+			}
+			if (change.type === 'message.remove' && change.roomId && change.envelopeId) {
+				messages.removeEnvelopeIds(change.roomId, [change.envelopeId]);
+			}
+		}
+		await messages.ingest(messageUpserts);
+	}
+
+	private async saveSyncCursor(scope: string | null, result: SyncResult): Promise<void> {
+		await saveCachedSyncCursor(scope, result.nextSyncCursor ?? result.syncCursor);
 	}
 
 	private async runRoomSync(roomId: string, serverSequences: number[] = []): Promise<void> {

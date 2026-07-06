@@ -2,7 +2,7 @@
 
 ## Summary
 
-This pass optimizes Voyager's first authenticated load and read-heavy startup path without changing the security model. The web app restores from cached identity, rooms, and recent messages first; refreshes product identity through a lightweight session endpoint; and lets background sync/realtime reconcile newer data. Messaging Core sync now exposes batched `roomViews`, so the Voyager facade no longer needs one Core room-detail request per room when Core is up to date.
+This pass optimizes Voyager's first authenticated load and read-heavy startup path without changing the security model. The web app restores from cached identity, rooms, and recent messages first; refreshes product identity through a lightweight session endpoint; and lets background sync/realtime reconcile newer data. Messaging Core sync now exposes batched `roomViews`, so the Voyager facade no longer needs one Core room-detail request per room when Core is up to date. When Core exposes durable sync cursors, the web client stores the account cursor in IndexedDB and calls `/v1/sync?since=<cursor>` for compact room/message changes instead of reloading the broad room list on every wakeup.
 
 The goal is faster first paint after sign-in/session restore, fewer duplicate API calls, and clearer diagnostics through `Server-Timing`.
 
@@ -14,7 +14,7 @@ The preferred client restore path is:
 2. paint the authenticated shell immediately when cached identity exists;
 3. hydrate account/principal-scoped cached rooms and recent messages from IndexedDB;
 4. refresh product identity through `GET /v1/app/session`;
-5. run `GET /v1/sync` in the background;
+5. run `GET /v1/sync` or `GET /v1/sync?since=<cursor>` in the background;
 6. connect Messaging Core realtime for foreground hints.
 
 `GET /v1/app/bootstrap?limit=100` remains a compatibility and empty-cache fallback endpoint. The response includes:
@@ -22,6 +22,7 @@ The preferred client restore path is:
 - current account, principal, device, and roles;
 - the first page of rooms with members;
 - pending messages for the current device;
+- optional sync cursor fields used by local-first delta repair;
 - `serverTime` and `requestId` diagnostics.
 
 The app layout still consumes a bootstrap payload when one is available, but normal reopen starts from local cache and then runs sync. Non-critical lists, such as principals, invitations, and sidebar collections, load after first paint.
@@ -37,6 +38,8 @@ Existing endpoints remain available for compatibility:
 ## Read-Path Changes
 
 Room listing no longer loads members with one Core request per room on the Core-cutover path. Messaging Core returns `roomViews` by fetching rooms first, then fetching all room memberships for those room IDs in one set-based query and grouping them in the Worker. Voyager consumes those views directly; if an older Core deployment does not provide `roomViews`, Voyager falls back to the old room-detail fanout and reports `roomDetailFanoutCount` in `messagingCoreCutover` diagnostics.
+
+After the first broad sync/bootstrap stores a cursor, web reconnects and periodic repair use account-level delta sync. `room.upsert` changes update the room list, `room.remove` drops the room and cached messages, `message.upsert` ingests the adapted envelope, and `message.remove` deletes the envelope from memory and IndexedDB. If the backend response does not include delta cursor fields, the client falls back to the previous broad-sync behavior.
 
 Sidebar collections follow the same pattern: collections are fetched once, then all collection items are fetched in one query and grouped by collection ID.
 
@@ -74,7 +77,7 @@ Login timing reports password verification, device/session creation, audit, and 
 
 Do not treat this as the final global performance architecture. Remaining candidates are deliberately separate:
 
-- Cursor-based account/device delta sync, so periodic repair can fetch ordered changes since the last applied cursor instead of a broad sync page.
+- Compaction/retention policy for old Core delta events once all clients have advanced beyond them.
 - D1 read replication after duplicate reads and unnecessary auth writes stay reduced.
 - Future durable outbox/reconciliation work if Conversation DOs gain separate durable state or side-effect queues, not startup speed.
 - Password-hash/passkey strategy review only after login timing data is collected; do not lower PBKDF2 cost as a quick speed fix.

@@ -241,6 +241,14 @@ export function assertBootstrapResponse(payload, context) {
   array(bootstrap.pendingMessages, `${context}.bootstrap.pendingMessages`).forEach((message, index) =>
     assertMessage(message, `${context}.bootstrap.pendingMessages[${index}]`)
   );
+  if ("syncCursor" in bootstrap) nullableString(bootstrap.syncCursor, `${context}.bootstrap.syncCursor`);
+  if ("nextSyncCursor" in bootstrap) nullableString(bootstrap.nextSyncCursor, `${context}.bootstrap.nextSyncCursor`);
+  if ("hasMore" in bootstrap) boolean(bootstrap.hasMore, `${context}.bootstrap.hasMore`);
+  if ("changes" in bootstrap) {
+    array(bootstrap.changes, `${context}.bootstrap.changes`).forEach((change, index) =>
+      assertSyncChange(change, `${context}.bootstrap.changes[${index}]`)
+    );
+  }
   string(bootstrap.serverTime, `${context}.bootstrap.serverTime`);
   string(bootstrap.requestId, `${context}.bootstrap.requestId`);
 }
@@ -253,6 +261,29 @@ export function assertSyncResponse(payload, context) {
   array(sync.pendingMessages, `${context}.sync.pendingMessages`).forEach((message, index) =>
     assertMessage(message, `${context}.sync.pendingMessages[${index}]`)
   );
+  if ("syncCursor" in sync) nullableString(sync.syncCursor, `${context}.sync.syncCursor`);
+  if ("nextSyncCursor" in sync) nullableString(sync.nextSyncCursor, `${context}.sync.nextSyncCursor`);
+  if ("hasMore" in sync) boolean(sync.hasMore, `${context}.sync.hasMore`);
+  if ("changes" in sync) {
+    array(sync.changes, `${context}.sync.changes`).forEach((change, index) =>
+      assertSyncChange(change, `${context}.sync.changes[${index}]`)
+    );
+  }
+  if ("serverTime" in sync) nullableString(sync.serverTime, `${context}.sync.serverTime`);
+}
+
+function assertSyncChange(change, context) {
+  const value = object(change, context);
+  if ("cursor" in value) nullableString(value.cursor, `${context}.cursor`);
+  enumValue(value.type, ["room.upsert", "room.remove", "message.upsert", "message.remove"], `${context}.type`);
+  if ("roomId" in value) nullableString(value.roomId, `${context}.roomId`);
+  if ("envelopeId" in value) nullableString(value.envelopeId, `${context}.envelopeId`);
+  if ("rootEnvelopeId" in value) nullableString(value.rootEnvelopeId, `${context}.rootEnvelopeId`);
+  if ("targetPrincipalId" in value) nullableString(value.targetPrincipalId, `${context}.targetPrincipalId`);
+  if ("reason" in value) nullableString(value.reason, `${context}.reason`);
+  if ("room" in value) assertRoom(value.room, `${context}.room`);
+  if ("message" in value) assertMessage(value.message, `${context}.message`);
+  if ("createdAt" in value) nullableString(value.createdAt, `${context}.createdAt`);
 }
 
 export function assertRoomResponse(payload, context) {

@@ -798,6 +798,10 @@ async function handleMessagingCoreBootstrap(
   const pendingMessages = Array.isArray(syncPayload.pendingMessages) ? syncPayload.pendingMessages : [];
   const serverTime = typeof syncPayload.serverTime === "string" ? syncPayload.serverTime : new Date().toISOString();
   const roomsNextCursor = typeof syncPayload.roomsNextCursor === "string" ? syncPayload.roomsNextCursor : null;
+  const syncCursor = typeof syncPayload.syncCursor === "string" ? syncPayload.syncCursor : null;
+  const nextSyncCursor = typeof syncPayload.nextSyncCursor === "string" ? syncPayload.nextSyncCursor : null;
+  const hasMore = typeof syncPayload.hasMore === "boolean" ? syncPayload.hasMore : false;
+  const changes = Array.isArray(syncPayload.changes) ? syncPayload.changes : [];
   return json(
     {
       ok: true,
@@ -809,6 +813,10 @@ async function handleMessagingCoreBootstrap(
         rooms,
         roomsNextCursor,
         pendingMessages,
+        syncCursor,
+        nextSyncCursor,
+        hasMore,
+        changes,
         serverTime,
         requestId,
       },
@@ -1502,7 +1510,7 @@ async function handleMessagingCoreSyncCutover(
   const result = await fetchMessagingCoreSyncCutoverProxy(
     env,
     messagingCoreIdentity(auth),
-    proxyQuery(url, ["limit"]),
+    proxyQuery(url, ["limit", "since"]),
   );
   return json(result.payload, {
     status: result.status,

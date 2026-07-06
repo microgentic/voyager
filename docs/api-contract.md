@@ -161,7 +161,7 @@ Normal Voyager message, thread, and attachment routes proxy to the matching Core
 
 Legacy Voyager-only hidden-message rows, legacy Voyager-only attachment rows, and non-pending room-invitation history are retained in the pre-cleanup D1/R2 backups and rollback tag for audit/rollback reference, but they are not migrated into the Core-only runtime unless a future production data-retention decision explicitly requires it. Current delete-for-me, completed-attachment, pending-invitation, invitation accept, and invitation decline behavior is owned by Messaging Core and covered by the all-Core parity smoke.
 
-Normal `GET /v1/sync` calls Core `/sync`, prefers Core `roomViews` when available, adapts rooms and pending messages back to Voyager-compatible shapes, and returns the existing `{ ok, sync }` envelope plus `messagingCoreCutover` diagnostics. If an older Core deployment does not include `roomViews`, Voyager falls back to the older per-room detail expansion and reports the fanout count in diagnostics. Normal `GET /v1/app/bootstrap` keeps Voyager product identity/session fields but sources rooms and pending messages through the same Core sync bridge.
+Normal `GET /v1/sync` calls Core `/sync`, prefers Core `roomViews` when available, adapts rooms and pending messages back to Voyager-compatible shapes, and returns the existing `{ ok, sync }` envelope plus `messagingCoreCutover` diagnostics. The route also forwards `since=<syncCursor>` when present and adapts Core delta changes into Voyager-compatible `room.upsert`, `room.remove`, `message.upsert`, and `message.remove` entries. If an older Core deployment does not include `roomViews`, Voyager falls back to the older per-room detail expansion and reports the fanout count in diagnostics; if Core does not yet return delta fields, the web client treats the response as the existing broad sync. Normal `GET /v1/app/bootstrap` keeps Voyager product identity/session fields but sources rooms and pending messages through the same Core sync bridge and stores returned sync cursors when present.
 
 Current boundary classification: room/message/attachment/thread/sync, app-bootstrap, and call lifecycle/media routes are `core-runtime`; messaging identity/key-package routes are `product-token-bridge`; `/v1/calls/realtime/token` and `/v1/calls/realtime` are retired; Voyager admin, auth, account/device-management, sidebar, agent provisioning/review, and product usage/audit routes are `product-only`. Default responses must not emit `messagingCoreCutover.source: "voyager_legacy"`.
 
@@ -245,7 +245,7 @@ Key package payloads are opaque to the backend. MLS/E2EE semantics are future-se
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/pin` | `{ message }` |
 | `DELETE` | `/v1/rooms/{roomId}/messages/{envelopeId}/pin` | `{ message }` |
 | `POST` | `/v1/rooms/{roomId}/messages/{envelopeId}/ack` | `{ receipt }` |
-| `GET` | `/v1/sync` | `{ sync: { rooms, roomsNextCursor, pendingMessages } }` |
+| `GET` | `/v1/sync` | `{ sync: { rooms, roomsNextCursor, pendingMessages, syncCursor?, nextSyncCursor?, changes? } }` |
 
 Group creation rejects initial `memberPrincipalIds`. Human members join through room invitations. Agent principals may be added through the explicit member endpoint.
 
