@@ -290,6 +290,11 @@ export async function saveCachedSyncCursor(scopeKey: CacheScope, cursor: string 
 	);
 }
 
+export async function clearCachedSyncCursor(scopeKey: CacheScope): Promise<void> {
+	if (!scopeKey) return;
+	await writeStores(SYNC_STORE, (stores) => stores.get(SYNC_STORE)!.delete(accountSyncCursorKey(scopeKey)));
+}
+
 export async function clearClientCache(): Promise<void> {
 	await writeStores([ROOM_STORE, MESSAGE_STORE, SYNC_STORE], (stores) => {
 		stores.get(ROOM_STORE)!.clear();
