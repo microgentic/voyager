@@ -225,6 +225,7 @@ export function assertAuthResult(payload, context) {
   assertAccount(value.account, `${context}.account`);
   assertPrincipal(value.principal, `${context}.principal`);
   assertDevice(value.device, `${context}.device`);
+  assertSession(value.session, `${context}.session`);
   string(value.sessionToken, `${context}.sessionToken`);
   if ("messagingCore" in value) assertMessagingCoreSession(value.messagingCore, `${context}.messagingCore`);
 }
@@ -235,6 +236,7 @@ export function assertBootstrapResponse(payload, context) {
   assertAccount(bootstrap.account, `${context}.bootstrap.account`);
   assertPrincipal(bootstrap.principal, `${context}.bootstrap.principal`);
   assertDevice(bootstrap.device, `${context}.bootstrap.device`);
+  assertSession(bootstrap.session, `${context}.bootstrap.session`);
   array(bootstrap.roles, `${context}.bootstrap.roles`).forEach((role, index) => string(role, `${context}.bootstrap.roles[${index}]`));
   array(bootstrap.rooms, `${context}.bootstrap.rooms`).forEach((room, index) => assertRoom(room, `${context}.bootstrap.rooms[${index}]`));
   nullableString(bootstrap.roomsNextCursor, `${context}.bootstrap.roomsNextCursor`);
@@ -818,6 +820,18 @@ function assertDevice(value, context) {
   nullableString(device.lastSeenAt, `${context}.lastSeenAt`);
   nullableString(device.revokedAt, `${context}.revokedAt`);
   nullableString(device.revocationReason, `${context}.revocationReason`);
+}
+
+function assertSession(value, context) {
+  const session = object(value, context);
+  string(session.sessionId, `${context}.sessionId`);
+  string(session.accountId, `${context}.accountId`);
+  string(session.deviceId, `${context}.deviceId`);
+  string(session.createdAt, `${context}.createdAt`);
+  string(session.expiresAt, `${context}.expiresAt`);
+  nullableString(session.lastUsedAt, `${context}.lastUsedAt`);
+  nullableString(session.revokedAt, `${context}.revokedAt`);
+  string(session.riskState, `${context}.riskState`);
 }
 
 function assertRoom(value, context) {

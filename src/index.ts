@@ -299,6 +299,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
         account: publicAccount(auth.account),
         principal: publicPrincipal(auth.principal),
         device: publicDevice(auth.device),
+        session: publicSession(auth.session),
         roles: auth.roles,
       },
       { headers: readTimingHeaders("session", authTimingMs, startedAt) }
@@ -314,6 +315,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
         account: publicAccount(auth.account),
         principal: publicPrincipal(auth.principal),
         device: publicDevice(auth.device),
+        session: publicSession(auth.session),
         roles: auth.roles,
         messagingCore: await createMessagingCoreSessionPayload(env, {
           account: auth.account,
@@ -702,6 +704,7 @@ async function authResultPayload(
     account: AuthContext["account"];
     principal: AuthContext["principal"];
     device: AuthContext["device"];
+    session: AuthContext["session"];
     sessionToken: string;
   },
 ) {
@@ -711,6 +714,7 @@ async function authResultPayload(
     account: publicAccount(result.account),
     principal: publicPrincipal(result.principal),
     device: publicDevice(result.device),
+    session: publicSession(result.session),
     sessionToken: result.sessionToken,
     messagingCore: await createMessagingCoreSessionPayload(env, {
       account: result.account,
@@ -809,6 +813,7 @@ async function handleMessagingCoreBootstrap(
         account: publicAccount(auth.account),
         principal: publicPrincipal(auth.principal),
         device: publicDevice(auth.device),
+        session: publicSession(auth.session),
         roles: auth.roles,
         rooms,
         roomsNextCursor,
