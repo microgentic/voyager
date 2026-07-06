@@ -571,6 +571,7 @@ if (staleDeviceLogin.error !== "device_not_available") {
   throw new Error(`stale device login returned unexpected error: ${JSON.stringify(staleDeviceLogin)}`);
 }
 if (
+  staleDeviceLogin.details?.reason !== "device_revoked_or_missing" ||
   staleDeviceLogin.details?.canReenroll !== true ||
   staleDeviceLogin.details?.clearStoredDeviceId !== true ||
   staleDeviceLogin.details?.retryWithoutDeviceId !== true
