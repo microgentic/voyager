@@ -14,7 +14,14 @@ import type {
 	AttachmentVariant,
 	AttachmentVariantName
 } from '$lib/api/types';
-import { clientCacheScope, loadCachedRoomCursor, loadCachedRoomMessages, saveCachedMessages } from '$lib/local-cache';
+import {
+	clientCacheScope,
+	loadCachedRoomCursor,
+	loadCachedRoomMessages,
+	removeCachedMessages,
+	removeCachedRoomMessages,
+	saveCachedMessages
+} from '$lib/local-cache';
 import {
 	messageCodec,
 	type AttachmentRef,
@@ -930,6 +937,7 @@ class MessagesStore {
 			}
 		}
 		if (changed) this.threads = nextThreads;
+		void removeCachedMessages(this.cacheScope(), roomId, [...ids]);
 	}
 
 	removeKeys(roomId: string, keys: string[]): void {
@@ -1010,8 +1018,19 @@ class MessagesStore {
 		const next = { ...this.byRoom };
 		delete next[roomId];
 		this.byRoom = next;
+		const nextThreads = { ...this.threads };
+		let changed = false;
+		for (const [rootEnvelopeId, list] of Object.entries(this.threads)) {
+			const filtered = list.filter((message) => message.roomId !== roomId);
+			if (filtered.length === list.length) continue;
+			if (filtered.length) nextThreads[rootEnvelopeId] = filtered;
+			else delete nextThreads[rootEnvelopeId];
+			changed = true;
+		}
+		if (changed) this.threads = nextThreads;
 		this.loadedRooms.delete(roomId);
 		delete this.cursor[roomId];
+		void removeCachedRoomMessages(this.cacheScope(), roomId);
 	}
 }
 

@@ -519,14 +519,38 @@ export interface BootstrapResult extends MeResult {
 	rooms: Room[];
 	roomsNextCursor: string | null;
 	pendingMessages: MessageEnvelope[];
+	syncCursor?: string | null;
+	nextSyncCursor?: string | null;
+	hasMore?: boolean;
+	changes?: SyncChange[];
 	serverTime: string;
 	requestId: string;
+}
+
+export type SyncChangeType = 'room.upsert' | 'room.remove' | 'message.upsert' | 'message.remove';
+
+export interface SyncChange {
+	cursor?: string | null;
+	type: SyncChangeType;
+	roomId?: string | null;
+	envelopeId?: string | null;
+	rootEnvelopeId?: string | null;
+	targetPrincipalId?: string | null;
+	reason?: string | null;
+	room?: Room;
+	message?: MessageEnvelope;
+	createdAt?: string | null;
 }
 
 export interface SyncResult {
 	rooms: Room[];
 	roomsNextCursor: string | null;
 	pendingMessages: MessageEnvelope[];
+	syncCursor?: string | null;
+	nextSyncCursor?: string | null;
+	hasMore?: boolean;
+	changes?: SyncChange[];
+	serverTime?: string | null;
 }
 
 export interface CreateCallInput {

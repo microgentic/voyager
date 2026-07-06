@@ -1,7 +1,15 @@
-import { api } from '$lib/api';
+import { api, isApiError } from '$lib/api';
+import type { MessageEnvelope, SyncChange, SyncResult } from '$lib/api/types';
+import {
+	clearCachedSyncCursor,
+	clientCacheScope,
+	loadCachedSyncCursor,
+	saveCachedSyncCursor
+} from '$lib/local-cache';
 import { auth } from './auth.svelte';
 import { messages } from './messages.svelte';
 import { rooms } from './rooms.svelte';
+import { threads } from './threads.svelte';
 
 /*
  * Sync engine.
@@ -23,9 +31,14 @@ class SyncStore {
 	private fullQueued = false;
 	private queuedRooms = new Map<string, Set<number>>();
 	private visibilityBound = false;
+	private rememberedSyncCursor: string | null = null;
 
 	constructor() {
 		auth.onSignOut(() => this.stop());
+	}
+
+	private cacheScope(): string | null {
+		return clientCacheScope(auth.account?.accountId, auth.principal?.principalId);
 	}
 
 	start(options: { immediate?: boolean } = {}): void {
@@ -43,10 +56,16 @@ class SyncStore {
 		this.activeRoomId = null;
 		this.fullQueued = false;
 		this.queuedRooms.clear();
+		this.rememberedSyncCursor = null;
 	}
 
 	setActiveRoom(roomId: string | null): void {
 		this.activeRoomId = roomId;
+	}
+
+	rememberCursor(cursor: string | null | undefined): void {
+		this.rememberedSyncCursor = cursor ?? null;
+		void saveCachedSyncCursor(this.cacheScope(), cursor);
 	}
 
 	/** Force an immediate sync (e.g. right after sending or a membership change). */
@@ -105,14 +124,94 @@ class SyncStore {
 
 	private async runFullSync(): Promise<void> {
 		const startedAt = performance.now();
-		const result = await api.sync({ limit: 100 });
-		rooms.hydrate(result.rooms);
-		await messages.ingest(result.pendingMessages);
+		const scope = this.cacheScope();
+		const cachedCursor = this.rememberedSyncCursor ?? (await loadCachedSyncCursor(scope));
+		let result = await this.fetchAccountSync(cachedCursor, scope);
+		if (cachedCursor && this.isDeltaSync(result)) {
+			const seenCursors = new Set<string>();
+			while (true) {
+				await this.applyDeltaChanges(result.changes ?? []);
+				await this.saveSyncCursor(scope, result);
+				const nextCursor = result.nextSyncCursor;
+				if (!result.hasMore || !nextCursor || seenCursors.has(nextCursor)) break;
+				seenCursors.add(nextCursor);
+				result = await this.fetchAccountSync(nextCursor, scope);
+			}
+		} else {
+			rooms.hydrate(result.rooms);
+			await messages.ingest(result.pendingMessages);
+			await this.saveSyncCursor(scope, result);
+		}
 		if (this.activeRoomId) {
 			await this.runRoomSync(this.activeRoomId).catch(() => undefined);
 		}
 		this.lastSyncedAt = new Date();
 		this.lastSyncDurationMs = Math.round(performance.now() - startedAt);
+	}
+
+	private isDeltaSync(result: SyncResult): boolean {
+		return (
+			Array.isArray(result.changes) &&
+			result.rooms.length === 0 &&
+			result.pendingMessages.length === 0 &&
+			Boolean(result.nextSyncCursor ?? result.syncCursor)
+		);
+	}
+
+	private async fetchAccountSync(cursor: string | null, scope: string | null): Promise<SyncResult> {
+		try {
+			return await api.sync({ limit: 100, since: cursor });
+		} catch (error) {
+			if (cursor && isApiError(error) && error.code === 'invalid_sync_cursor') {
+				this.rememberedSyncCursor = null;
+				await clearCachedSyncCursor(scope);
+				return api.sync({ limit: 100 });
+			}
+			throw error;
+		}
+	}
+
+	private async applyDeltaChanges(changes: SyncChange[]): Promise<void> {
+		const messageUpserts: MessageEnvelope[] = [];
+		const threadRefreshes = new Map<string, string>();
+		for (const change of changes) {
+			if (change.type === 'room.upsert' && change.room) {
+				rooms.upsert(change.room);
+				continue;
+			}
+			if (change.type === 'room.remove' && change.roomId) {
+				rooms.remove(change.roomId);
+				messages.dropRoom(change.roomId);
+				continue;
+			}
+			if (change.type === 'message.upsert' && change.message) {
+				messageUpserts.push(change.message);
+				if (change.message.threadRootEnvelopeId) {
+					threadRefreshes.set(change.message.threadRootEnvelopeId, change.message.roomId);
+				}
+				continue;
+			}
+			if (change.type === 'message.remove' && change.roomId && change.envelopeId) {
+				messages.removeEnvelopeIds(change.roomId, [change.envelopeId]);
+				if (change.rootEnvelopeId) threadRefreshes.set(change.rootEnvelopeId, change.roomId);
+			}
+		}
+		await messages.ingest(messageUpserts);
+		if (threadRefreshes.size) {
+			await Promise.allSettled(
+				[...threadRefreshes.entries()].map(([rootEnvelopeId, roomId]) =>
+					messages.syncThread(roomId, rootEnvelopeId)
+				)
+			);
+			void threads.load(true);
+		}
+	}
+
+	private async saveSyncCursor(scope: string | null, result: SyncResult): Promise<void> {
+		const cursor = result.nextSyncCursor ?? result.syncCursor ?? null;
+		this.rememberedSyncCursor = cursor;
+		if (cursor) await saveCachedSyncCursor(scope, cursor);
+		else await clearCachedSyncCursor(scope);
 	}
 
 	private async runRoomSync(roomId: string, serverSequences: number[] = []): Promise<void> {

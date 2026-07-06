@@ -7,6 +7,7 @@ const ROOM_STORE = 'rooms';
 const MESSAGE_STORE = 'messages';
 const SYNC_STORE = 'syncState';
 const ROOM_CURSOR_PREFIX = 'roomCursor:';
+const ACCOUNT_SYNC_CURSOR_KEY = 'accountSyncCursor';
 
 type CacheScope = string | null | undefined;
 
@@ -126,6 +127,10 @@ function roomCursorKey(scopeKey: string, roomId: string): string {
 	return scopedKey(scopeKey, `${ROOM_CURSOR_PREFIX}${roomId}`);
 }
 
+function accountSyncCursorKey(scopeKey: string): string {
+	return scopedKey(scopeKey, ACCOUNT_SYNC_CURSOR_KEY);
+}
+
 function stableMessageCacheKey(scopeKey: string, message: ChatMessage): string | null {
 	if (!message.envelopeId || message.serverSequence <= 0) return null;
 	return scopedKey(scopeKey, `${message.roomId}:${message.envelopeId}`);
@@ -162,6 +167,33 @@ export async function saveCachedRooms(scopeKey: CacheScope, rooms: Room[]): Prom
 export async function removeCachedRoom(scopeKey: CacheScope, roomId: string): Promise<void> {
 	if (!scopeKey) return;
 	await writeStores(ROOM_STORE, (stores) => stores.get(ROOM_STORE)!.delete(scopedKey(scopeKey, roomId)));
+}
+
+export async function removeCachedRoomMessages(scopeKey: CacheScope, roomId: string): Promise<void> {
+	if (!scopeKey) return;
+	const db = await openDatabase();
+	if (!db) return;
+	const tx = db.transaction([MESSAGE_STORE, SYNC_STORE], 'readwrite');
+	try {
+		const messageStore = tx.objectStore(MESSAGE_STORE);
+		const index = messageStore.index('roomSequence');
+		const range = IDBKeyRange.bound([scopeKey, roomId, 0], [scopeKey, roomId, Number.MAX_SAFE_INTEGER]);
+		const request = index.openCursor(range);
+		request.onsuccess = () => {
+			const cursor = request.result;
+			if (!cursor) return;
+			cursor.delete();
+			cursor.continue();
+		};
+		tx.objectStore(SYNC_STORE).delete(roomCursorKey(scopeKey, roomId));
+		await transactionDone(tx);
+	} catch {
+		try {
+			tx.abort();
+		} catch {
+			/* already finished */
+		}
+	}
 }
 
 export async function loadCachedRoomMessages(scopeKey: CacheScope, roomId: string, limit = 200): Promise<ChatMessage[]> {
@@ -219,6 +251,16 @@ export async function saveCachedMessages(scopeKey: CacheScope, messages: ChatMes
 	});
 }
 
+export async function removeCachedMessages(scopeKey: CacheScope, roomId: string, envelopeIds: string[]): Promise<void> {
+	if (!scopeKey || !envelopeIds.length) return;
+	await writeStores(MESSAGE_STORE, (stores) => {
+		const store = stores.get(MESSAGE_STORE)!;
+		for (const envelopeId of new Set(envelopeIds.filter(Boolean))) {
+			store.delete(scopedKey(scopeKey, `${roomId}:${envelopeId}`));
+		}
+	});
+}
+
 export async function loadCachedRoomCursor(scopeKey: CacheScope, roomId: string): Promise<number> {
 	if (!scopeKey) return 0;
 	const row = await readStore<SyncStateRow | undefined>(SYNC_STORE, (store) =>
@@ -226,6 +268,31 @@ export async function loadCachedRoomCursor(scopeKey: CacheScope, roomId: string)
 	);
 	const value = row?.value;
 	return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+export async function loadCachedSyncCursor(scopeKey: CacheScope): Promise<string | null> {
+	if (!scopeKey) return null;
+	const row = await readStore<SyncStateRow | undefined>(SYNC_STORE, (store) =>
+		requestResult(store.get(accountSyncCursorKey(scopeKey)) as IDBRequest<SyncStateRow | undefined>)
+	);
+	const value = row?.value;
+	return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+export async function saveCachedSyncCursor(scopeKey: CacheScope, cursor: string | null | undefined): Promise<void> {
+	if (!scopeKey || !cursor) return;
+	await writeStores(SYNC_STORE, (stores) =>
+		stores.get(SYNC_STORE)!.put({
+			key: accountSyncCursorKey(scopeKey),
+			value: cursor,
+			updatedAt: new Date().toISOString()
+		} satisfies SyncStateRow)
+	);
+}
+
+export async function clearCachedSyncCursor(scopeKey: CacheScope): Promise<void> {
+	if (!scopeKey) return;
+	await writeStores(SYNC_STORE, (stores) => stores.get(SYNC_STORE)!.delete(accountSyncCursorKey(scopeKey)));
 }
 
 export async function clearClientCache(): Promise<void> {

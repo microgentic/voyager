@@ -754,9 +754,9 @@ export class VoyagerClient {
 		return res.receipt;
 	}
 
-	async sync(opts: { limit?: number } = {}, signal?: AbortSignal): Promise<SyncResult> {
+	async sync(opts: { limit?: number; since?: string | null } = {}, signal?: AbortSignal): Promise<SyncResult> {
 		const res = await this.request<{ sync: SyncResult }>('GET', '/v1/sync', {
-			query: { limit: opts.limit },
+			query: { limit: opts.limit, since: opts.since ?? undefined },
 			signal
 		});
 		return res.sync;
