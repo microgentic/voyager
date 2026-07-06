@@ -544,6 +544,41 @@ assertAuthResult(relogin, "POST /v1/auth/password/login relogin");
 if (relogin.device.deviceId !== login.device.deviceId) throw new Error("login did not reuse the supplied device ID");
 userHeaders = auth(relogin.sessionToken);
 
+const staleLogin = await api("/v1/auth/password/login", {
+  method: "POST",
+  json: {
+    email: invite.account.email,
+    password: "backend-user-passphrase-very-long-updated",
+    device: { platform: "smoke", label: "Stale login device smoke" }
+  }
+});
+assertAuthResult(staleLogin, "POST /v1/auth/password/login stale device setup");
+await api(`/v1/devices/${staleLogin.device.deviceId}/revoke`, {
+  method: "POST",
+  headers: userHeaders,
+  json: { reason: "stale_login_device_smoke" }
+});
+const staleDeviceLogin = await expectFailure("/v1/auth/password/login", {
+  method: "POST",
+  json: {
+    email: invite.account.email,
+    password: "backend-user-passphrase-very-long-updated",
+    device: { deviceId: staleLogin.device.deviceId, platform: "smoke", label: "Stale login retry" }
+  }
+}, 403);
+assertApiErrorShape(staleDeviceLogin, "POST /v1/auth/password/login stale device");
+if (staleDeviceLogin.error !== "device_not_available") {
+  throw new Error(`stale device login returned unexpected error: ${JSON.stringify(staleDeviceLogin)}`);
+}
+if (
+  staleDeviceLogin.details?.reason !== "device_revoked_or_missing" ||
+  staleDeviceLogin.details?.canReenroll !== true ||
+  staleDeviceLogin.details?.clearStoredDeviceId !== true ||
+  staleDeviceLogin.details?.retryWithoutDeviceId !== true
+) {
+  throw new Error(`stale device login did not include reenrollment hints: ${JSON.stringify(staleDeviceLogin)}`);
+}
+
 assertApiErrorShape(await expectFailure("/v1/app/bootstrap", {}, 401), "unauthenticated bootstrap");
 
 await expectFailure(`/v1/devices/${owner.device.deviceId}/revoke`, {
