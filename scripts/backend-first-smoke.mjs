@@ -352,10 +352,16 @@ const owner = await api("/v1/admin/bootstrap", {
   }
 });
 assertAuthResult(owner, "POST /v1/admin/bootstrap");
+if (owner.session.deviceId !== owner.device.deviceId) {
+  throw new Error("POST /v1/admin/bootstrap session should belong to returned device");
+}
 const ownerHeaders = auth(owner.sessionToken);
 const ownerSession = await api("/v1/app/session", { headers: ownerHeaders });
 if (ownerSession.account.accountId !== owner.account.accountId) {
   throw new Error("GET /v1/app/session account did not match bootstrap account");
+}
+if (ownerSession.session?.sessionId !== owner.session.sessionId) {
+  throw new Error("GET /v1/app/session did not return the current session");
 }
 if ("messagingCore" in ownerSession) {
   throw new Error("GET /v1/app/session should not include a Messaging Core session payload");
@@ -589,13 +595,13 @@ if (cleanupApply.cleanup.revoked !== 2) {
   throw new Error(`cleanup apply did not revoke the expected devices: ${JSON.stringify(cleanupApply.cleanup)}`);
 }
 const ownerDevicesAfterCleanup = await api("/v1/devices", { headers: ownerHeaders });
-const revokedCleanupIds = new Set(
+const visibleCleanupIds = new Set(
   ownerDevicesAfterCleanup.devices
-    .filter((device) => [cleanupDeviceA.device.deviceId, cleanupDeviceB.device.deviceId].includes(device.deviceId) && device.revokedAt)
+    .filter((device) => [cleanupDeviceA.device.deviceId, cleanupDeviceB.device.deviceId].includes(device.deviceId))
     .map((device) => device.deviceId)
 );
-if (revokedCleanupIds.size !== 2) {
-  throw new Error("cleanup apply did not mark both probe devices revoked");
+if (visibleCleanupIds.size !== 0) {
+  throw new Error("cleanup apply left revoked probe devices in the active device list");
 }
 
 const invitee = await api("/v1/admin/invitations", {

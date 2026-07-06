@@ -503,6 +503,7 @@ export interface AuthResult {
 	account: Account;
 	principal: Principal;
 	device: Device;
+	session: Session;
 	sessionToken: string;
 	messagingCore?: MessagingCoreSession;
 }
@@ -511,6 +512,7 @@ export interface MeResult {
 	account: Account;
 	principal: Principal;
 	device: Device;
+	session: Session;
 	roles: string[];
 	messagingCore?: MessagingCoreSession;
 }

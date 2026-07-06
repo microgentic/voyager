@@ -239,7 +239,7 @@ export async function bootstrapAdmin(
     password: string;
     device: DeviceInput;
   }
-): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; sessionToken: string }> {
+): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; session: SessionRow; sessionToken: string }> {
   const existing = await env.CONTROL_DB.prepare(
     `SELECT COUNT(*) AS count
      FROM account_admin_roles aar
@@ -279,8 +279,8 @@ export async function bootstrapAdmin(
   const account = await getAccount(env, accountId);
   const principal = await getPrincipal(env, principalId);
   const device = await createDeviceForPrincipal(env, accountId, principalId, input.device);
-  const sessionToken = await createSession(env, accountId, device.device_id);
-  return { account, principal, device, sessionToken };
+  const { session, sessionToken } = await createSession(env, accountId, device.device_id);
+  return { account, principal, device, session, sessionToken };
 }
 
 export async function createInvitation(
@@ -326,7 +326,7 @@ export async function createInvitation(
 export async function acceptInvitation(
   env: Env,
   input: { token: string; password: string; device: DeviceInput }
-): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; sessionToken: string }> {
+): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; session: SessionRow; sessionToken: string }> {
   const tokenHash = await sha256Base64Url(input.token);
   const invitation = await env.CONTROL_DB.prepare(
     `SELECT invitation_id, account_id
@@ -392,14 +392,14 @@ export async function acceptInvitation(
   const activeAccount = await getAccount(env, account.account_id);
   const principal = await getPrincipal(env, account.default_principal_id);
   const device = await createDeviceForPrincipal(env, account.account_id, principal.principal_id, input.device);
-  const sessionToken = await createSession(env, account.account_id, device.device_id);
-  return { account: activeAccount, principal, device, sessionToken };
+  const { session, sessionToken } = await createSession(env, account.account_id, device.device_id);
+  return { account: activeAccount, principal, device, session, sessionToken };
 }
 
 export async function loginWithPassword(
   env: Env,
   input: { email: string; password: string; device: DeviceInput }
-): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; sessionToken: string; metrics: LoginWithPasswordMetrics }> {
+): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; session: SessionRow; sessionToken: string; metrics: LoginWithPasswordMetrics }> {
   const startedAt = performance.now();
   const accountStartedAt = performance.now();
   const account = await env.CONTROL_DB.prepare("SELECT * FROM accounts WHERE lower(email) = lower(?)")
@@ -441,12 +441,13 @@ export async function loginWithPassword(
   const device = await getOrCreateLoginDevice(env, account.account_id, principal.principal_id, input.device);
   const deviceMs = durationSince(deviceStartedAt);
   const sessionStartedAt = performance.now();
-  const sessionToken = await createSession(env, account.account_id, device.device_id);
+  const { session, sessionToken } = await createSession(env, account.account_id, device.device_id);
   const sessionMs = durationSince(sessionStartedAt);
   return {
     account,
     principal,
     device,
+    session,
     sessionToken,
     metrics: {
       accountMs,
@@ -526,7 +527,7 @@ export async function createCredentialReset(
 export async function completeCredentialReset(
   env: Env,
   input: { token: string; password: string; device: DeviceInput }
-): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; sessionToken: string }> {
+): Promise<{ account: AccountRow; principal: PrincipalRow; device: DeviceRow; session: SessionRow; sessionToken: string }> {
   const tokenHash = await sha256Base64Url(input.token);
   const reset = await env.CONTROL_DB.prepare(
     `SELECT reset_id, account_id
@@ -619,8 +620,8 @@ export async function completeCredentialReset(
   const activeAccount = await getAccount(env, account.account_id);
   const principal = await getPrincipal(env, account.default_principal_id);
   const device = await createDeviceForPrincipal(env, activeAccount.account_id, principal.principal_id, input.device);
-  const sessionToken = await createSession(env, activeAccount.account_id, device.device_id);
-  return { account: activeAccount, principal, device, sessionToken };
+  const { session, sessionToken } = await createSession(env, activeAccount.account_id, device.device_id);
+  return { account: activeAccount, principal, device, session, sessionToken };
 }
 
 export async function getActiveAccountByEmail(env: Env, email: string): Promise<AccountRow | null> {
@@ -698,16 +699,27 @@ async function getOrCreateLoginDevice(env: Env, accountId: string, principalId: 
   return getDevice(env, deviceId);
 }
 
-export async function createSession(env: Env, accountId: string, deviceId: string): Promise<string> {
+export async function createSession(env: Env, accountId: string, deviceId: string): Promise<{ session: SessionRow; sessionToken: string }> {
   const token = randomToken();
   const tokenHash = await sha256Base64Url(token);
+  const sessionId = randomId("ses");
   const expiresAt = sqliteTimestamp(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   await env.CONTROL_DB.prepare(
     "INSERT INTO sessions (session_id, account_id, device_id, refresh_token_hash, expires_at) VALUES (?, ?, ?, ?, ?)"
   )
-    .bind(randomId("ses"), accountId, deviceId, tokenHash, expiresAt)
+    .bind(sessionId, accountId, deviceId, tokenHash, expiresAt)
     .run();
-  return token;
+  return { session: await getSession(env, sessionId), sessionToken: token };
+}
+
+async function getSession(env: Env, sessionId: string): Promise<SessionRow> {
+  const session = await env.CONTROL_DB.prepare("SELECT * FROM sessions WHERE session_id = ?")
+    .bind(sessionId)
+    .first<SessionRow>();
+  if (!session) {
+    throw new HttpError(500, "session_create_failed", "Session could not be created.");
+  }
+  return session;
 }
 
 export async function revokeSession(env: Env, sessionId: string, accountId?: string): Promise<void> {
@@ -761,7 +773,9 @@ export async function listAccounts(env: Env): Promise<AccountRow[]> {
 }
 
 export async function listDevices(env: Env, accountId: string): Promise<DeviceRow[]> {
-  const result = await env.CONTROL_DB.prepare("SELECT * FROM devices WHERE account_id = ? ORDER BY created_at DESC")
+  const result = await env.CONTROL_DB.prepare(
+    "SELECT * FROM devices WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC"
+  )
     .bind(accountId)
     .all<DeviceRow>();
   return result.results ?? [];
@@ -860,7 +874,15 @@ export async function cleanupTestDevices(
 
 export async function listSessions(env: Env, accountId: string): Promise<SessionRow[]> {
   const result = await env.CONTROL_DB.prepare(
-    "SELECT * FROM sessions WHERE account_id = ? ORDER BY created_at DESC LIMIT 100"
+    `SELECT s.*
+     FROM sessions s
+     JOIN devices d ON d.device_id = s.device_id
+     WHERE s.account_id = ?
+       AND s.revoked_at IS NULL
+       AND s.expires_at > CURRENT_TIMESTAMP
+       AND d.revoked_at IS NULL
+     ORDER BY s.created_at DESC
+     LIMIT 100`
   )
     .bind(accountId)
     .all<SessionRow>();

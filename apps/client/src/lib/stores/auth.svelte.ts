@@ -1,5 +1,5 @@
 import { api } from '$lib/api';
-import type { Account, AuthResult, BootstrapResult, Device, Principal } from '$lib/api/types';
+import type { Account, AuthResult, BootstrapResult, Device, Principal, Session } from '$lib/api/types';
 import { APP_VERSION, CLIENT_PROTOCOL_VERSION } from '$lib/config';
 import { clearClientCache } from '$lib/local-cache';
 import { deviceLabel, devicePlatform } from '$lib/platform';
@@ -31,6 +31,7 @@ class AuthStore {
 	account = $state<Account | null>(null);
 	principal = $state<Principal | null>(null);
 	device = $state<Device | null>(null);
+	session = $state<Session | null>(null);
 	roles = $state<string[]>([]);
 	private pendingBootstrap: BootstrapResult | null = null;
 
@@ -79,12 +80,14 @@ class AuthStore {
 				account: me.account,
 				principal: me.principal,
 				device: me.device,
+				session: me.session,
 				roles: me.roles
 			});
 			saveIdentity({
 				account: me.account,
 				principal: me.principal,
 				device: me.device,
+				session: me.session,
 				roles: me.roles
 			});
 			this.status = 'authed';
@@ -115,12 +118,14 @@ class AuthStore {
 				account: me.account,
 				principal: me.principal,
 				device: me.device,
+				session: me.session,
 				roles: me.roles
 			});
 			saveIdentity({
 				account: me.account,
 				principal: me.principal,
 				device: me.device,
+				session: me.session,
 				roles: me.roles
 			});
 		} catch {
@@ -144,11 +149,13 @@ class AuthStore {
 		this.account = result.account;
 		this.principal = result.principal;
 		this.device = result.device;
+		this.session = result.session;
 		this.roles = [];
 		saveIdentity({
 			account: this.account,
 			principal: this.principal,
 			device: this.device,
+			session: this.session,
 			roles: this.roles
 		});
 		this.status = 'authed';
@@ -165,6 +172,7 @@ class AuthStore {
 		this.account = identity.account;
 		this.principal = identity.principal;
 		this.device = identity.device;
+		this.session = identity.session ?? null;
 		this.roles = identity.roles ?? [];
 	}
 
@@ -174,6 +182,7 @@ class AuthStore {
 		this.account = null;
 		this.principal = null;
 		this.device = null;
+		this.session = null;
 		this.roles = [];
 		this.pendingBootstrap = null;
 		this.status = 'anon';

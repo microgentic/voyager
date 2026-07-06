@@ -232,7 +232,7 @@
 						<div class="p-4 text-sm text-muted">No active sessions.</div>
 					{:else}
 						{#each sessions as session (session.sessionId)}
-							{@const isCurrent = session.deviceId === auth.device?.deviceId}
+							{@const isCurrent = session.sessionId === auth.session?.sessionId}
 							<div class="flex items-center gap-3 p-4">
 								<Monitor class="h-5 w-5 shrink-0 text-muted" />
 								<div class="min-w-0 flex-1">

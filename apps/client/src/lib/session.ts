@@ -1,4 +1,4 @@
-import type { Account, Device, Principal } from '$lib/api/types';
+import type { Account, Device, Principal, Session } from '$lib/api/types';
 
 // Local persistence of the session.
 //
@@ -16,6 +16,7 @@ export interface PersistedIdentity {
 	account: Account;
 	principal: Principal;
 	device: Device;
+	session?: Session | null;
 	roles: string[];
 }
 

@@ -92,9 +92,9 @@ normal reopen.
 The startup sequence is:
 
 1. `POST /v1/auth/password/login`
-2. Store the returned `sessionToken`
+2. Store the returned `sessionToken`, `session.sessionId`, and enrolled `device.deviceId`
 3. Paint the app shell from cached identity/rooms/messages when present
-4. `GET /v1/app/session` to refresh account, principal, device, and roles without minting a Messaging Core token
+4. `GET /v1/app/session` to refresh account, principal, device, current session, and roles without minting a Messaging Core token
 5. `GET /v1/sync` in the background to reconcile rooms and pending messages
 6. `POST /v1/messaging-core/realtime/token`
 7. Open the returned Messaging Core `connectPath` with the returned short-lived `mrt_...` token for foreground messaging event hints
@@ -111,6 +111,7 @@ Bootstrap response:
     "account": {},
     "principal": {},
     "device": {},
+    "session": {},
     "roles": [],
     "rooms": [],
     "roomsNextCursor": null,
@@ -134,12 +135,12 @@ Bootstrap response:
 
 | Method | Path | Response |
 | --- | --- | --- |
-| `POST` | `/v1/auth/password/login` | `{ account, principal, device, sessionToken, messagingCore? }` |
+| `POST` | `/v1/auth/password/login` | `{ account, principal, device, session, sessionToken, messagingCore? }` |
 | `POST` | `/v1/auth/logout` | `{ ok: true }` |
 | `POST` | `/v1/auth/password/change` | `{ ok: true }` |
-| `POST` | `/v1/auth/password/reset/complete` | `{ account, principal, device, sessionToken, messagingCore? }` |
-| `GET` | `/v1/app/session` | `{ account, principal, device, roles }` |
-| `GET` | `/v1/me` | `{ account, principal, device, roles, messagingCore? }` |
+| `POST` | `/v1/auth/password/reset/complete` | `{ account, principal, device, session, sessionToken, messagingCore? }` |
+| `GET` | `/v1/app/session` | `{ account, principal, device, session, roles }` |
+| `GET` | `/v1/me` | `{ account, principal, device, session, roles, messagingCore? }` |
 | `POST` | `/v1/messaging-core/realtime/token` | `{ messagingCore, realtime, proxied }` |
 | `GET` | `/v1/sessions` | `{ sessions }` |
 | `DELETE` | `/v1/sessions/{sessionId}` | `{ ok: true }` |
@@ -147,7 +148,7 @@ Bootstrap response:
 | `POST` | `/v1/devices` | `{ device }` |
 | `POST` | `/v1/devices/{deviceId}/revoke` | `{ ok: true }` |
 
-Login accepts `email`, `password`, and an optional `device` object. Existing-device login may send `device.deviceId`. Today that is a development contract; future device private-key proof can extend this without changing the route.
+Login accepts `email`, `password`, and an optional `device` object. Existing-device login may send `device.deviceId`. Today that is a development contract; future device private-key proof can extend this without changing the route. Auth and session-restore responses include the exact current `session` object so clients can distinguish the current login token from other sessions on the same device. `GET /v1/sessions` returns active, non-expired sessions only. `GET /v1/devices` returns active, non-revoked devices only.
 
 `messagingCore` is the Voyager token/session bridge to Messaging Core. Voyager can mint a scoped Messaging Core bearer token for the compatibility tenant `tenant_voyager_default`; if internal service credentials are configured, Voyager also bootstraps the Core tenant/policy and upserts the account, principal, and device through Messaging Core internal routes. Messaging Core is the only Voyager messaging backend: normal Voyager messaging routes require `MESSAGING_CORE_BASE_URL` plus `MESSAGING_CORE_TOKEN_SECRET`; if those are missing, messaging routes fail as Core-unconfigured instead of using a live legacy path. Sync status includes `tenantSynced`, `accountSynced`, `principalSynced`, `deviceSynced`, and a sanitized `failedStep`/`reason` pair when a step fails.
 
