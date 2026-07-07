@@ -50,10 +50,11 @@ if (providedSecrets.size === requiredSecrets.length) {
   const existingSecrets = listWorkerSecretNames();
   const missing = requiredSecrets.filter((name) => !existingSecrets.has(name));
   if (missing.length > 0) {
-    throw new Error(
-      `APNs Worker secrets are missing: ${missing.join(", ")}. ` +
-        "Add them as GitHub Actions secrets or run wrangler secret put before deploying.",
+    console.warn(
+      `::warning::APNs Worker secrets are missing: ${missing.join(", ")}. ` +
+        "Push delivery will stay disabled until they are added as GitHub Actions secrets or Cloudflare Worker secrets.",
     );
+  } else {
+    console.log("APNs Worker secrets already exist in Cloudflare; no GitHub secret sync needed.");
   }
-  console.log("APNs Worker secrets already exist in Cloudflare; no GitHub secret sync needed.");
 }
