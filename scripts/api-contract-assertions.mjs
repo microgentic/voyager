@@ -12,6 +12,9 @@ export const endpointStabilityCatalog = [
   { method: "DELETE", path: "/v1/sessions/{sessionId}", stability: "stable/current" },
   { method: "GET", path: "/v1/devices", stability: "stable/current" },
   { method: "POST", path: "/v1/devices", stability: "stable/current" },
+  { method: "GET", path: "/v1/devices/me/push-tokens", stability: "future-sensitive" },
+  { method: "POST", path: "/v1/devices/me/push-tokens", stability: "future-sensitive" },
+  { method: "DELETE", path: "/v1/devices/me/push-tokens/{pushTokenId}", stability: "future-sensitive" },
   { method: "POST", path: "/v1/devices/{deviceId}/revoke", stability: "stable/current" },
   { method: "GET", path: "/v1/principals", stability: "stable/current" },
   { method: "GET", path: "/v1/principals/{principalId}/devices", stability: "stable/current" },
@@ -300,6 +303,28 @@ export function assertCallsResponse(payload, context) {
   const value = success(payload, context);
   array(value.calls, `${context}.calls`).forEach((call, index) => assertCall(call, `${context}.calls[${index}]`));
   nullableString(value.nextCursor, `${context}.nextCursor`);
+}
+
+export function assertPushTokenResponse(payload, context) {
+  const token = object(success(payload, context).pushToken, `${context}.pushToken`);
+  string(token.pushTokenId, `${context}.pushToken.pushTokenId`);
+  enumValue(token.provider, ["apns"], `${context}.pushToken.provider`);
+  enumValue(token.environment, ["development", "production"], `${context}.pushToken.environment`);
+  string(token.bundleId, `${context}.pushToken.bundleId`);
+  string(token.accountId, `${context}.pushToken.accountId`);
+  string(token.principalId, `${context}.pushToken.principalId`);
+  string(token.deviceId, `${context}.pushToken.deviceId`);
+  string(token.sessionId, `${context}.pushToken.sessionId`);
+  string(token.createdAt, `${context}.pushToken.createdAt`);
+  string(token.updatedAt, `${context}.pushToken.updatedAt`);
+  string(token.lastRegisteredAt, `${context}.pushToken.lastRegisteredAt`);
+  nullableString(token.lastSentAt, `${context}.pushToken.lastSentAt`);
+  nullableString(token.disabledAt, `${context}.pushToken.disabledAt`);
+  nullableString(token.invalidatedAt, `${context}.pushToken.invalidatedAt`);
+  number(token.failureCount, `${context}.pushToken.failureCount`);
+  nullableString(token.lastFailureCode, `${context}.pushToken.lastFailureCode`);
+  nullableString(token.lastFailureAt, `${context}.pushToken.lastFailureAt`);
+  if ("token" in token || "tokenHash" in token) fail(`${context}.pushToken must not expose raw token material`);
 }
 
 export function assertCallRealtimeConfigResponse(payload, context) {

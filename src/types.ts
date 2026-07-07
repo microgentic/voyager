@@ -18,6 +18,11 @@ export interface Env {
   MESSAGING_CORE_INTERNAL_SERVICE_ISSUER?: string;
   MESSAGING_CORE_INTERNAL_SERVICE_AUDIENCE?: string;
   MESSAGING_CORE_INTERNAL_SERVICE_TTL_SECONDS?: string;
+  APNS_TEAM_ID?: string;
+  APNS_KEY_ID?: string;
+  APNS_PRIVATE_KEY?: string;
+  APNS_BUNDLE_ID?: string;
+  APNS_ALLOWED_BUNDLE_IDS?: string;
   // Comma-separated extra origins allowed by CORS (e.g. the production web host).
   // Dev/localhost and Tauri app origins are always allowed.
   CORS_ALLOWED_ORIGINS?: string;
