@@ -551,7 +551,7 @@ const pushTokenRegistration = await api("/v1/devices/me/push-tokens", {
   json: {
     provider: "apns",
     environment: "development",
-    bundleId: "com.microgentic.voyager.smoke",
+    bundleId: "com.microgentic.voyager.ios",
     token: "a".repeat(64)
   }
 });
