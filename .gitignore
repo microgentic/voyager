@@ -10,4 +10,5 @@ dist/
 build/
 coverage/
 *.log
+AuthKey_*.p8
 client-ios-voyager/
