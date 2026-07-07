@@ -46,6 +46,15 @@ import {
   syncMessagingCorePrincipal,
 } from "./backend/messaging-core-bridge";
 import { ROOM_INVITATION_DAYS } from "./backend/rooms/types";
+import {
+  disablePushTokensForDevice,
+  disablePushTokensForSession,
+  listCurrentDevicePushTokens,
+  queuePrincipalPushNotification,
+  queueRoomPushNotification,
+  registerCurrentDevicePushToken,
+  unregisterCurrentDevicePushToken,
+} from "./backend/push-notifications";
 import { sqliteTimestamp } from "./backend/utils";
 import { randomId } from "./crypto";
 import { errorResponse, HttpError, json, optionalObject, publicAccount, readJsonObject, readOptionalJsonObject, requireMethod, routeParams, serverTimingHeader, stringField } from "./http";
@@ -67,7 +76,7 @@ const REALTIME_TOKEN_LIMIT = 60;
 const REALTIME_TOKEN_WINDOW_SECONDS = 5 * 60;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const requestId = randomId("req");
     const url = new URL(request.url);
 
@@ -76,14 +85,14 @@ export default {
     }
 
     try {
-      return applyCors(await handleRequest(request, env, url, requestId), request, env);
+      return applyCors(await handleRequest(request, env, ctx, url, requestId), request, env);
     } catch (error) {
       return applyCors(errorResponse(error, requestId), request, env);
     }
   }
 };
 
-async function handleRequest(request: Request, env: Env, url: URL, requestId: string): Promise<Response> {
+async function handleRequest(request: Request, env: Env, ctx: ExecutionContext, url: URL, requestId: string): Promise<Response> {
   if (url.pathname === "/" || url.pathname === "/health") {
     requireMethod(request, "GET");
     return json({
@@ -265,12 +274,12 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return messagingCoreBootstrapResponse;
   }
 
-  const messagingCoreRoomCutoverResponse = await handleMessagingCoreRoomCutover(request, env, url, auth);
+  const messagingCoreRoomCutoverResponse = await handleMessagingCoreRoomCutover(request, env, url, auth, ctx);
   if (messagingCoreRoomCutoverResponse) {
     return messagingCoreRoomCutoverResponse;
   }
 
-  const messagingCoreMessageCutoverResponse = await handleMessagingCoreMessageCutover(request, env, url, auth);
+  const messagingCoreMessageCutoverResponse = await handleMessagingCoreMessageCutover(request, env, ctx, url, auth);
   if (messagingCoreMessageCutoverResponse) {
     return messagingCoreMessageCutoverResponse;
   }
@@ -280,7 +289,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     return messagingCoreSyncCutoverResponse;
   }
 
-  const messagingCoreCallCutoverResponse = await handleMessagingCoreCallCutover(request, env, url, auth);
+  const messagingCoreCallCutoverResponse = await handleMessagingCoreCallCutover(request, env, ctx, url, auth);
   if (messagingCoreCallCutoverResponse) {
     return messagingCoreCallCutoverResponse;
   }
@@ -331,6 +340,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   if (url.pathname === "/v1/auth/logout") {
     requireMethod(request, "POST");
     await revokeSession(env, auth.session.session_id, auth.account.account_id);
+    await disablePushTokensForSession(env, auth.session.session_id);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "auth.logout",
@@ -371,6 +381,7 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
   if (sessionDeleteMatch) {
     requireMethod(request, "DELETE");
     await revokeSession(env, sessionDeleteMatch[1], auth.account.account_id);
+    await disablePushTokensForSession(env, sessionDeleteMatch[1]);
     await audit(env, {
       actorAccountId: auth.account.account_id,
       action: "session.revoke",
@@ -401,11 +412,45 @@ async function handleRequest(request: Request, env: Env, url: URL, requestId: st
     }
   }
 
+  if (url.pathname === "/v1/devices/me/push-tokens") {
+    if (request.method === "GET") {
+      return json({ ok: true, pushTokens: await listCurrentDevicePushTokens(env, auth) });
+    }
+    if (request.method === "POST") {
+      const pushToken = await registerCurrentDevicePushToken(env, auth, await readJsonObject(request));
+      await audit(env, {
+        actorAccountId: auth.account.account_id,
+        action: "device.push_token.register",
+        targetType: "device",
+        targetId: auth.device.device_id,
+        requestId,
+        result: "success"
+      });
+      return json({ ok: true, pushToken }, { status: 201 });
+    }
+  }
+
+  const pushTokenDeleteMatch = routeParams(/^\/v1\/devices\/me\/push-tokens\/([^/]+)$/, url.pathname);
+  if (pushTokenDeleteMatch) {
+    requireMethod(request, "DELETE");
+    await unregisterCurrentDevicePushToken(env, auth, pushTokenDeleteMatch[1]);
+    await audit(env, {
+      actorAccountId: auth.account.account_id,
+      action: "device.push_token.unregister",
+      targetType: "device",
+      targetId: auth.device.device_id,
+      requestId,
+      result: "success"
+    });
+    return json({ ok: true });
+  }
+
   const deviceRevokeMatch = routeParams(/^\/v1\/devices\/([^/]+)\/revoke$/, url.pathname);
   if (deviceRevokeMatch) {
     requireMethod(request, "POST");
     const body = await readJsonObject(request);
     await revokeOwnDevice(env, auth.account.account_id, deviceRevokeMatch[1], stringField(body, "reason", { max: 120 }) ?? "user_requested");
+    await disablePushTokensForDevice(env, deviceRevokeMatch[1]);
     await revokeMessagingCoreDevice(env, deviceRevokeMatch[1]);
     await audit(env, {
       actorAccountId: auth.account.account_id,
@@ -842,6 +887,7 @@ async function handleMessagingCoreRoomCutover(
   env: Env,
   url: URL,
   auth: AuthContext,
+  ctx: ExecutionContext,
 ): Promise<Response | null> {
   const startedAt = performance.now();
   const route = await messagingCoreRoomCutoverRoute(request, env, url);
@@ -859,6 +905,9 @@ async function handleMessagingCoreRoomCutover(
       memberPrincipalId: route.memberPrincipalId,
     },
   );
+  if (result.status >= 200 && result.status < 300 && route.pushNotification) {
+    queuePrincipalPushNotification(ctx, env, route.pushNotification);
+  }
   return json(result.payload, {
     status: result.status,
     headers: coreProxyTimingHeaders(messagingCoreRoomTimingMetric(route), startedAt),
@@ -876,6 +925,12 @@ async function messagingCoreRoomCutoverRoute(
   body?: Record<string, unknown>;
   responseKind: "rooms" | "room" | "deletedRooms" | "member" | "invitation" | "invitations" | "transfer" | "ok";
   memberPrincipalId?: string;
+  pushNotification?: {
+    type: "room_invitation";
+    principalId: string;
+    roomId: string;
+    invitationId?: string | null;
+  };
 } | null> {
   if (url.pathname === "/v1/rooms" && request.method === "GET") {
     return { method: "GET", path: "/rooms", query: proxyQuery(url, ["limit", "cursor"]), responseKind: "rooms" };
@@ -943,11 +998,17 @@ async function messagingCoreRoomCutoverRoute(
 
   const roomInvitationsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/invitations$/, url.pathname);
   if (request.method === "POST" && roomInvitationsMatch) {
+    const body = await messagingCoreInvitationBody(env, await readJsonObject(request));
     return {
       method: "POST",
       path: `/rooms/${roomInvitationsMatch[1]}/invitations`,
-      body: await messagingCoreInvitationBody(env, await readJsonObject(request)),
+      body,
       responseKind: "invitation",
+      pushNotification: {
+        type: "room_invitation",
+        principalId: requiredMessagingCoreBodyString(body, "principalId"),
+        roomId: roomInvitationsMatch[1],
+      },
     };
   }
 
@@ -1231,9 +1292,14 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
 async function handleMessagingCoreMessageCutover(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
   url: URL,
   auth: AuthContext,
 ): Promise<Response | null> {
@@ -1276,6 +1342,18 @@ async function handleMessagingCoreMessageCutover(
       roomId: route.roomId,
     },
   );
+  if (result.status >= 200 && result.status < 300 && route.pushNotificationType) {
+    const message = objectValue(result.payload.message);
+    if (message) {
+      queueRoomPushNotification(ctx, env, {
+        type: route.pushNotificationType,
+        roomId: stringValue(message.roomId) ?? route.roomId ?? "",
+        senderPrincipalId: stringValue(message.senderPrincipalId) ?? auth.principal.principal_id,
+        envelopeId: stringValue(message.envelopeId),
+        rootEnvelopeId: stringValue(message.threadRootEnvelopeId),
+      });
+    }
+  }
   return json(result.payload, {
     status: result.status,
     headers: coreProxyTimingHeaders(messagingCoreMessageTimingMetric(route), startedAt),
@@ -1294,6 +1372,7 @@ async function messagingCoreMessageCutoverRoute(
       body?: Record<string, unknown>;
       responseKind: "messages" | "message" | "deleted" | "receipt" | "thread" | "threads" | "threadState" | "attachment" | "ok";
       roomId?: string;
+      pushNotificationType?: "new_message" | "new_thread_reply" | "forwarded_message";
     }
   | {
       kind: "attachmentUpload" | "attachmentDownload";
@@ -1370,7 +1449,15 @@ async function messagingCoreMessageCutoverRoute(
     }
     if (request.method === "POST") {
       const body = await readJsonObject(request);
-      return { kind: "json", method: "POST", path: roomPath, body: messagingCorePublicSendBody(body), responseKind: "message" };
+      return {
+        kind: "json",
+        method: "POST",
+        path: roomPath,
+        body: messagingCorePublicSendBody(body),
+        responseKind: "message",
+        roomId: messagesMatch[1],
+        pushNotificationType: "new_message",
+      };
     }
   }
 
@@ -1406,6 +1493,8 @@ async function messagingCoreMessageCutoverRoute(
       path: `/rooms/${messageForwardMatch[1]}/messages/${messageForwardMatch[2]}/forward`,
       body,
       responseKind: "message",
+      roomId: messageForwardMatch[1],
+      pushNotificationType: "forwarded_message",
     };
   }
 
@@ -1472,6 +1561,8 @@ async function messagingCoreMessageCutoverRoute(
         path: threadPath,
         body,
         responseKind: "message",
+        roomId: threadMatch[1],
+        pushNotificationType: "new_thread_reply",
       };
     }
   }
@@ -1526,6 +1617,7 @@ async function handleMessagingCoreSyncCutover(
 async function handleMessagingCoreCallCutover(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
   url: URL,
   auth: AuthContext,
 ): Promise<Response | null> {
@@ -1544,6 +1636,17 @@ async function handleMessagingCoreCallCutover(
       responseKind: route.responseKind,
     },
   );
+  if (result.status >= 200 && result.status < 300 && route.pushNotificationType) {
+    const call = objectValue(result.payload.call);
+    if (call) {
+      queueRoomPushNotification(ctx, env, {
+        type: route.pushNotificationType,
+        roomId: stringValue(call.roomId) ?? route.roomId ?? "",
+        senderPrincipalId: stringValue(call.createdByPrincipalId) ?? auth.principal.principal_id,
+        callId: stringValue(call.callId),
+      });
+    }
+  }
   return json(result.payload, {
     status: result.status,
     headers: coreProxyTimingHeaders(messagingCoreCallTimingMetric(route), startedAt),
@@ -1559,6 +1662,8 @@ async function messagingCoreCallCutoverRoute(
   query?: URLSearchParams;
   body?: Record<string, unknown>;
   responseKind: "calls" | "call" | "realtime" | "signal" | "usageReport";
+  roomId?: string;
+  pushNotificationType?: "incoming_call";
 } | null> {
   const roomCallsMatch = routeParams(/^\/v1\/rooms\/([^/]+)\/calls$/, url.pathname);
   if (roomCallsMatch) {
@@ -1576,6 +1681,8 @@ async function messagingCoreCallCutoverRoute(
         path: `/rooms/${roomCallsMatch[1]}/calls`,
         body: await readJsonObject(request),
         responseKind: "call",
+        roomId: roomCallsMatch[1],
+        pushNotificationType: "incoming_call",
       };
     }
   }

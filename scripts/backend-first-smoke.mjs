@@ -23,6 +23,7 @@ import {
   assertPaginatedKeyPackagesResponse,
   assertPaginatedRoomInvitationsResponse,
   assertPaginatedRoomsResponse,
+  assertPushTokenResponse,
   assertRealtimeRoomMessageEvent,
   assertRealtimeRoomThreadEvent,
   assertRealtimeCallEvent,
@@ -543,6 +544,47 @@ const relogin = await api("/v1/auth/password/login", {
 assertAuthResult(relogin, "POST /v1/auth/password/login relogin");
 if (relogin.device.deviceId !== login.device.deviceId) throw new Error("login did not reuse the supplied device ID");
 userHeaders = auth(relogin.sessionToken);
+
+const pushTokenRegistration = await api("/v1/devices/me/push-tokens", {
+  method: "POST",
+  headers: userHeaders,
+  json: {
+    provider: "apns",
+    environment: "development",
+    bundleId: "com.microgentic.voyager.smoke",
+    token: "a".repeat(64)
+  }
+});
+assertPushTokenResponse(pushTokenRegistration, "POST /v1/devices/me/push-tokens");
+if (pushTokenRegistration.pushToken.deviceId !== relogin.device.deviceId) {
+  throw new Error("push token was not registered against the current device");
+}
+const pushTokens = await api("/v1/devices/me/push-tokens", {
+  method: "GET",
+  headers: userHeaders
+});
+if (!pushTokens.ok || !Array.isArray(pushTokens.pushTokens) || !pushTokens.pushTokens.some((token) => token.pushTokenId === pushTokenRegistration.pushToken.pushTokenId)) {
+  throw new Error(`push token list did not include the registered token: ${JSON.stringify(pushTokens)}`);
+}
+const sessionAfterPushRegistration = await api("/v1/app/session", { headers: userHeaders });
+if (sessionAfterPushRegistration.device.notificationCapability !== "apns") {
+  throw new Error("push token registration did not mark the device as APNs-capable");
+}
+await api(`/v1/devices/me/push-tokens/${pushTokenRegistration.pushToken.pushTokenId}`, {
+  method: "DELETE",
+  headers: userHeaders
+});
+const pushTokensAfterUnregister = await api("/v1/devices/me/push-tokens", {
+  method: "GET",
+  headers: userHeaders
+});
+if (!pushTokensAfterUnregister.ok || pushTokensAfterUnregister.pushTokens.some((token) => token.pushTokenId === pushTokenRegistration.pushToken.pushTokenId)) {
+  throw new Error(`push token unregister did not remove the token: ${JSON.stringify(pushTokensAfterUnregister)}`);
+}
+const sessionAfterPushUnregister = await api("/v1/app/session", { headers: userHeaders });
+if (sessionAfterPushUnregister.device.notificationCapability !== null) {
+  throw new Error("push token unregister did not clear the device notification capability");
+}
 
 const staleLogin = await api("/v1/auth/password/login", {
   method: "POST",
