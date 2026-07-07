@@ -16,7 +16,18 @@
     "MESSAGING_CORE_TOKEN_ISSUER": "voyager",
     "MESSAGING_CORE_TOKEN_AUDIENCE": "messaging-core",
     "MESSAGING_CORE_INTERNAL_SERVICE_ISSUER": "voyager",
-    "MESSAGING_CORE_INTERNAL_SERVICE_AUDIENCE": "messaging-core-internal"
+    "MESSAGING_CORE_INTERNAL_SERVICE_AUDIENCE": "messaging-core-internal",
+    "APNS_BUNDLE_ID": "com.microgentic.voyager.ios"
+  },
+  "secrets": {
+    "required": [
+      "BOOTSTRAP_TOKEN",
+      "MESSAGING_CORE_INTERNAL_SERVICE_SECRET",
+      "MESSAGING_CORE_TOKEN_SECRET",
+      "APNS_TEAM_ID",
+      "APNS_KEY_ID",
+      "APNS_PRIVATE_KEY"
+    ]
   },
   "migrations": [
     {
